@@ -2,6 +2,8 @@
 
 MJr is a probabilistic programming language based on pattern-rewriting, heavily inspired by [MarkovJunior](https://github.com/mxgmn/MarkovJunior) by Maxim Gumin. This project provides a compiler for the MJr programming language, which compiles MJr programs to JavaScript, TypeScript or Python 3.
 
+![image](https://user-images.githubusercontent.com/32057631/188284857-b152cc85-d08d-4be1-9844-6c81b2a6acea.png)
+
 ## Examples
 
 - [Basic.mjr](https://kaya3.github.io/MJr/playground/#IyBUcmFuc2xhdGVkIGZyb20gTWF4aW0gR3VtaW4ncyAnQmFzaWMnIG1vZGVsCiMgaHR0cHM6Ly9naXRodWIuY29tL214Z21uL01hcmtvdkp1bmlvci9ibG9iL21haW4vbW9kZWxzL0Jhc2ljLnhtbAoKZ3JpZCBbQlddCm9uZTogW0JdIC0+IFtXXQo=,JavaScript,1,1,17,17,0): the simplest MJr program that does anything. Hello, World!

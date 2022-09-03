@@ -1,6 +1,6 @@
 # Translated from Maxim Gumin's 'NystromDungeon' model, which
 # is based on Bob Nystrom's dungeon generation algorithm
-# https://github.com/mxgmn/MarkovJunior/blob/main/models/Basic.xml
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/NystromDungeon.xml
 # http://journal.stuffwithstuff.com/2014/12/21/rooms-and-mazes/
 
 let NUM_CYCLES = 5

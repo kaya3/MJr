@@ -29,7 +29,7 @@ CharSet = '[' Char+ ']'
 Char    = PATTERN_CHAR
 ```
 
-## Declarations
+### Declarations
 
 ```
 Declaration = LegendDecl | LetDecl | SymmetryDecl | UnionDecl
@@ -40,7 +40,7 @@ SymmetryDecl = 'symmetry' Expression
 UnionDecl    = 'union' PatternExpr '=' Expression
 ```
 
-## Expressions
+### Expressions
 
 ```
 Expression = TernaryExpr
@@ -80,7 +80,7 @@ KeywordNameExpr = 'at' | 'origin' | 'random'
 SimpleNameExpr  = NAME
 ```
 
-## Rules
+### Rules
 
 ```
 Rule = DeclarationRule | FieldRule | ObserveRule | RewriteRule
@@ -93,7 +93,7 @@ RewriteRule     = OrExpr '->' OrExpr ('if' OrExpr)? NEWLINE
 RuleBlockChildren = ':' (Rule | NEWLINE INDENT Rule+ DEDENT)
 ```
 
-## Statements
+### Statements
 
 ```
 Statement = BareUseStmt | DeclarationStmt | LogStmt | ModifiableStmt | PassStmt | UseStmt

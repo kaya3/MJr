@@ -154,7 +154,7 @@ path {<i>Arguments</i>}
 
 A `put` statement writes a pattern to the current grid at a given position, if it is not already present there. The position determines the top-left corner of where the pattern should be written. The pattern's type must be an [output pattern type](types.md#pattern-types).
 
-A `put` statement always "returns false", even when writing the pattern changes the grid. This is because even when a `put` statement is not idempotent, it is normally intended only execute once per execution of their containing block.
+A `put` statement always "returns false", even when writing the pattern changes the grid. This is because even when a `put` statement is not idempotent, it is normally not intended to repeat.
 
 <pre>
 put <i>Expression</i> at <i>Expression</i>

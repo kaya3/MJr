@@ -28,6 +28,5 @@ The following table shows the precedences of operators, plus some other syntacti
 | `=` | Not an operator | — |
 | `,` | Not an operator; delimits name/value pairs | — |
 | Declaration&nbsp;`in`&nbsp;… | Lowest precedence. Not an operator; may only occur in bracketed expressions | Right |
-|
 
 The comparison operators are neither left- nor right-associative. This is intended to catch mistakes like `a < b < c` in the parser, so that a specific syntax error message can be emitted instead of a less helpful type error. Additionally, by not allowing otherwise-valid expressions like `a == b == c` (where `c` is a `bool`), this design decision also leaves open the possibility to later add chained comparisons to the language without breaking existing programs.

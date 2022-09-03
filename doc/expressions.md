@@ -80,7 +80,6 @@ Operators in the table below are binary unless shown otherwise via their syntax;
 | `randint` X | `int` | [Randint operator](#randint-operator) |
 | `sum` X | 1x1 `pattern` | [Sum operator](#sum-operator) |
 | A&nbsp;`if`&nbsp;condition&nbsp;`else`&nbsp;B | condition:&nbsp;`bool` | Conditional expression; A and B must have a common type (after [coercion](types.md#type-coercion)). |
-|
 
 The binary operators `+`, `-`, `*`, `//` and the unary operator `-` may overflow on values of type `int`, such that the result is within the signed 32-bit integer range.
 

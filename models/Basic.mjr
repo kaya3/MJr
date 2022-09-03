@@ -1,0 +1,5 @@
+# Translated from Maxim Gumin's 'Basic' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/Basic.xml
+
+grid [BW]
+one: [B] -> [W]

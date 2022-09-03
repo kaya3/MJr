@@ -1,0 +1,41 @@
+# Author: Andrew Kay
+
+use let g = grid [BWREI]
+
+let LAKE_SEEDS = 4
+let LAKE_SIZE = g.width * g.height // 4
+let LAND_SEEDS = 32
+let ANIMATE_WATER = true
+
+# make a few lakes by random growth
+@limit LAKE_SEEDS
+one: [B] -> [I]
+
+@limit LAKE_SIZE - LAKE_SEEDS
+one: [IB] -> [.I]
+
+# make some land by a self-avoiding random walk with backtracking
+@limit LAND_SEEDS
+one: [B] -> [R]
+
+markov:
+    one: [RBB] -> [WWR]
+    one: [RWW] -> [EER]
+
+one: [R] -> [E]
+
+# erode narrow sections of land
+one: [BBWBB] -> [..B..]
+
+# replace the solid lakes with isolated pixels
+@limit LAKE_SIZE // 2
+one: [II] -> [BB]
+
+markov:
+    # fill unused space with a water texture
+    one:
+        [BB./BBB/.B.] -> [.../.I./...]
+        [.I./IBI/.I.] -> [.../.I./...]
+
+    # delete water pixels at random, for an animated effect
+    one: [I] -> [B] if ANIMATE_WATER

@@ -1,0 +1,21 @@
+# Translated from Maxim Gumin's 'BasicBrickWall' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/BasicBrickWall.xml
+
+grid [BWO]
+symmetry "x"
+
+all: [B/.] -> [O/.]
+all: [O/./.] -> [W/./.]
+
+markov:
+    all: [BW] -> [BB]
+    one: [W/W/W/W/W/W/W/W] -> [./././B/./././.]
+
+one: [OOOOOOOO/BBBBBBBB] -> [...B..../........]
+
+markov:
+    symmetry "xy" in:
+        all: [OW] -> [.O]
+    all: [OO/OB] -> [.B/..]
+    one: [OOOO/BBBB/OOOO] -> [..B./..../....]
+    one: [WW/BB/OB] -> [.O/../..]

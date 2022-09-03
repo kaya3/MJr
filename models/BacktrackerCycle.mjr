@@ -1,0 +1,15 @@
+# Translated from Maxim Gumin's 'BacktrackerCycle' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/BacktrackerCycle.xml
+
+grid [BRGWA]
+
+put [R] at origin
+
+markov:
+    one: [RBB] -> [GGR]
+    one: [RGG] -> [WAR]
+
+once: [R] -> [W]
+once: [WBW] -> [WAW]
+all: [A] -> [W]
+all: [BBB/BWB] -> [.../.B.]

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MJr Playground</title>
+    <style type="text/css">
+        @import url('https://kaya3.github.io/papyri/fonts/iosevka-papyri-light.css');
+        @import url('https://fonts.googleapis.com/css?family=Roboto');
+        
+        #container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 0.5em; box-sizing: border-box; display: flex; flex-direction: row; }
+        .panel { display: flex; flex-direction: column; }
+        .panel > :not(:first-child) { margin-top: 0.25em; }
+        #output_panel { flex-grow: 1; }
+        #editor { min-width: 40%; margin-right: 0.25em; }
+        #output_canvas { margin-bottom: 0.25em; }
+        span, label { user-select: none; }
+        textarea { font-family: 'Iosevka Papyri Light', monospace; color: black; padding: 0.25em; resize: none; flex-basis: 0; flex-grow: 1; }
+        .buttonrow { display: flex; flex-direction: row; align-items: baseline; }
+        .buttonrow * { font-family: Roboto, sans-serif; font-size: 1em; }
+        .buttonrow > :not(:first-child) { margin-left: 0.25em; }
+        .buttonrow > span:not(:first-child) { flex-grow: 1; text-align: right; align-self: center; }
+        .hidden { display: none; }
+        input[type="number"] { width: 2.5em; text-align: right; }
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    </style>
+    <script src="../mjrc.js"></script>
+</head>
+<body>
+<div id="container">
+<div id="editor" class="panel">
+<div class="buttonrow">
+    <span>
+        Target language:
+        <select id="target_language">
+            <option value="JavaScript">JavaScript</option>
+            <option value="TypeScript">TypeScript</option>
+            <option value="Python">Python</option>
+        </select>
+    </span>
+    <span>
+        Flags:
+        <input type="checkbox" id="emit_checks" name="emit_checks" checked="true"><label for="emit_checks">emitChecks</label>
+        <input type="checkbox" id="animate" name="animate" checked="true"><label for="animate">animate</label>
+    </span>
+    <button id="compile">Compile</button>
+</div>
+<textarea id="src" spellcheck="false"></textarea>
+<div class="buttonrow">
+    <button id="tokenize">Tokenize</button>
+    <span>Parse:</span>
+    <button id="parse_root">Root</button>
+    <button id="parse_decl">Decl</button>
+    <button id="parse_expr">Expr</button>
+    <button id="parse_rule">Rule</button>
+    <button id="parse_stmt">Stmt</button>
+    <span>Resolve:</span>
+    <button id="asg">ASG</button>
+    <button id="cfg">CFG</button>
+</div>
+</div>
+<div id="output_panel" class="panel">
+<div class="buttonrow">
+    <button id="run">Run</button>
+    <button id="stop" disabled="true">Stop</button>
+    <span>
+        Grid size:
+        <input id="grid_width" type="number" min="8" max="1024" value="17">
+        &times;
+        <input id="grid_height" type="number" min="8" max="1024" value="17">
+        Speed:
+        <input id="animation_speed" type="range" min="-6" max="10" value="0">
+    </span>
+</div>
+<canvas id="output_canvas" class="hidden"></canvas>
+<textarea id="output" readonly="true" disabled="true" wrap="off"></textarea>
+</div>
+</div>
+<script type="text/javascript">
+const targetLanguageElem = document.getElementById('target_language');
+const emitChecksCheckbox = document.getElementById('emit_checks');
+const animateCheckbox = document.getElementById('animate');
+function getConfig() {
+    return {
+        _targetLanguage: targetLanguageElem.value,
+        emitChecks: emitChecksCheckbox.checked,
+        animate: animateCheckbox.checked,
+    };
+}
+
+const widthElem = document.getElementById('grid_width');
+const heightElem = document.getElementById('grid_height');
+const speedElem = document.getElementById('animation_speed');
+
+function stripNode(node) {
+    if(typeof node === 'object') {
+        delete node.pos;
+        delete node._key;
+        for(const v of Object.values(node)) { stripNode(v); }
+    } else if(Array.isArray(node)) {
+        for(const v of node) { stripNode(v); }
+    }
+}
+
+const srcElem = document.getElementById('src');
+const outputElem = document.getElementById('output');
+function go(action) {
+    animator.stop();
+    canvasElem.classList.add('hidden');
+    try {
+        const r = action(srcElem.value);
+        if(typeof r === 'string') {
+            outputElem.value = r;
+        } else {
+            stripNode(r);
+            outputElem.value = JSON.stringify(r, undefined, 2);
+        }
+    } catch(e) {
+        if(e instanceof Diagnostics) {
+            outputElem.value = e.errors.join('\n');
+        } else {
+            outputElem.value = e.stack || e.toString();
+            console.log(e);
+        }
+    }
+}
+
+document.getElementById('tokenize').onclick = () => go(src =>
+    Tokenizer.tokenize(src)
+        .map(token => `${token.kind.padEnd(16, ' ')} ${JSON.stringify(token.s).padEnd(24, ' ')} at line ${token.pos.line}, col ${token.pos.col}`)
+        .join('\n')
+);
+document.getElementById('parse_root').onclick = () => go(src => Parser.parse(src, 'root'));
+document.getElementById('parse_decl').onclick = () => go(src => Parser.parse(src, 'decl'));
+document.getElementById('parse_expr').onclick = () => go(src => Parser.parse(src, 'expr'));
+document.getElementById('parse_rule').onclick = () => go(src => Parser.parse(src, 'rule'));
+document.getElementById('parse_stmt').onclick = () => go(src => Parser.parse(src, 'stmt'));
+document.getElementById('asg').onclick = () => go(src => Resolver.resolve(Parser.parse(src, 'root')));
+document.getElementById('cfg').onclick = () => go(src => {
+    const nodes = CFG.build(Resolver.resolve(Parser.parse(src, 'root')).root).nodes;
+    nodes.forEach(node => {
+        if(node.stmt !== undefined) { node.stmt = `${node.stmt.kind} {...}`; }
+    });
+    return nodes;
+});
+document.getElementById('compile').onclick = () => go(src => {
+    const config = getConfig();
+    return Compiler.compile(src, config._targetLanguage, config);
+});
+
+const canvasElem = document.getElementById('output_canvas');
+const canvasCtx = canvasElem.getContext('2d');
+
+const animator = {
+    runButton: document.getElementById('run'),
+    stopButton: document.getElementById('stop'),
+    generator: undefined,
+    
+    gridWidth: undefined,
+    gridHeight: undefined,
+    pixelSize: 16,
+    
+    cacheKey: undefined,
+    cachedFunc: undefined,
+    
+    // https://lospec.com/palette-list/pico-8
+    palette: {
+        B: '#000000',
+        I: '#1D2B53',
+        P: '#7E2553',
+        E: '#008751',
+        N: '#AB5236',
+        D: '#5F574F',
+        A: '#C2C3C7',
+        W: '#FFF1E8',
+        R: '#FF004D',
+        O: '#FFA300',
+        Y: '#FFEC27',
+        G: '#00E436',
+        U: '#29ADFF',
+        S: '#83769C',
+        K: '#FF77A8',
+        F: '#FFCCAA',
+    },
+    
+    clock: 0,
+    
+    start() {
+        go(src => {
+            const config = getConfig();
+            const key = `${JSON.stringify(config)}\n${src}`;
+            const func = key === this.cacheKey ? this.cachedFunc
+                : (this.cacheKey = key, this.cachedFunc = Function('w', 'h', `return (${Compiler.compile(src, 'JavaScript', config)})(w, h);`));
+            
+            const width = widthElem.value, height = heightElem.value;
+            const result = func(width, height);
+            canvasElem.classList.remove('hidden');
+            if(config.animate) {
+                this.generator = result;
+                this.runButton.disabled = true;
+                this.stopButton.disabled = false;
+                this.clock = 1;
+                this.step();
+                return '';
+            } else {
+                this.draw({done: true, value: result});
+                return result.toString();
+            }
+        });
+    },
+    step() {
+        requestAnimationFrame(() => {
+            if(this.generator === undefined) { return; }
+            
+            let r = undefined;
+            try {
+                while(this.clock >= 1) {
+                    --this.clock;
+                    r = this.generator.next();
+                    this.draw(r);
+                    if(r.done) {
+                        outputElem.value = r.value.toString();
+                        this.stop();
+                        return;
+                    }
+                }
+            } catch(e) {
+                outputElem.value = e.stack || e.toString();
+                console.log(e);
+                if(r !== undefined) {
+                    outputElem.value = (r.done ? r.value : r.value.grid).toString();
+                }
+                this.stop();
+                return;
+            }
+            
+            this.clock += 2 ** speedElem.value;
+            this.step();
+        });
+    },
+    resize(width, height) {
+        if(width === this.gridWidth && height === this.gridHeight) { return; }
+        
+        const ps = Math.max(Math.min(600 / width, 600 / height, 16), 1) | 0;
+        canvasElem.style.width = (canvasElem.width = width * ps) + 'px';
+        canvasElem.style.height = (canvasElem.height = height * ps) + 'px';
+        this.gridWidth = width;
+        this.gridHeight = height;
+        this.pixelSize = ps;
+    },
+    draw(r) {
+        if(r === undefined) { return; }
+        
+        const grid = r.done ? r.value : r.value.grid;
+        const x = r.done ? 0 : r.value.x;
+        const y = r.done ? 0 : r.value.y;
+        const width = r.done ? grid.width : r.value.width;
+        const height = r.done ? grid.height : r.value.height;
+        
+        this.resize(grid.width, grid.height);
+        const ps = this.pixelSize;
+        for(let yi = y; yi < y + height; ++yi) {
+            for(let xi = x; xi < x + width; ++xi) {
+                const c = grid.alphabet[grid.data[xi + grid.width * yi]];
+                canvasCtx.fillStyle = this.palette[c] ?? this.addColour(c);
+                canvasCtx.fillRect(xi * ps, yi * ps, ps, ps);
+            }
+        }
+    },
+    addColour(c) {
+        // extend the palette with a random-ish but deterministic colour
+        const cc = c.charCodeAt(0);
+        const red = Math.imul(cc, 0x12345679) & 0xFF;
+        const green = Math.imul(cc, 0x87654321) & 0xFF;
+        const blue = Math.imul(cc, 0xFEDC1235) & 0xFF;
+        return this.palette[c] = `rgba(${red},${green},${blue},1)`;
+    },
+    stop() {
+        this.generator = undefined;
+        this.runButton.disabled = false;
+        this.stopButton.disabled = true;
+    },
+};
+
+animator.runButton.onclick = () => animator.start();
+animator.stopButton.onclick = () => animator.stop();
+
+srcElem.oninput = targetLanguageElem.onchange = emitChecksCheckbox.onchange = animateCheckbox.onchange = widthElem.oninput = heightElem.oninput = speedElem.onchange = () => {
+    location.hash = '#' + [
+        btoa(srcElem.value),
+        targetLanguageElem.value,
+        animateCheckbox.checked ? 1 : 0,
+        emitChecksCheckbox.checked ? 1 : 0,
+        widthElem.value,
+        heightElem.value,
+        speedElem.value,
+    ].join(',');
+};
+if(location.hash) {
+    const [src, targetLanguage, animate, emitChecks, w, h, speed] = location.hash.replace('#', '').split(',');
+    srcElem.value = src ? atob(src) : '';
+    targetLanguageElem.value = targetLanguage;
+    targetLanguageElem.value ||= 'JavaScript';
+    emitChecks.checked = emitChecks !== '0';
+    animateCheckbox.checked = animate !== '0';
+    widthElem.value = w ? parseInt(w) : 17;
+    heightElem.value = h ? parseInt(h) : 17;
+    speedElem.value = speed ?? 0;
+}
+</script>
+</body>
+</html>

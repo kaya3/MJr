@@ -1,0 +1,10 @@
+# Translated from Maxim Gumin's 'Backtracker' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/Backtracker.xml
+
+grid [BRWU]
+
+put [R] at origin
+
+markov:
+    one: [RB] -> [WR]
+    one: [RW] -> [UR]

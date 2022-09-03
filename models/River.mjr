@@ -1,0 +1,27 @@
+# Translated from Maxim Gumin's 'River' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/River.xml
+
+grid [BWRUGE]
+
+once: [B] -> [W]
+once: [B] -> [R]
+
+one:
+    [RB] -> [RR]
+    [WB] -> [WW]
+
+all: [RW] -> [UU]
+all: [[WR]] -> [B]
+
+@limit 1
+all: [UB] -> [UU]
+
+all: [BU/UB] -> [U./..]
+all: [UB] -> [.G]
+
+@limit 13
+one: [B] -> [E]
+
+one:
+    [EB] -> [.E]
+    [GB] -> [.G]

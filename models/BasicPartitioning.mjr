@@ -1,0 +1,9 @@
+# Translated from Maxim Gumin's 'BasicPartitioning' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/BasicPartitioning.xml
+
+grid [BW]
+all: [.../.B./...] -> [.../.W./...]
+
+markov:
+    one: [WWW/WBW] -> [WBW/WBW]
+    one: [WWW/BBB] -> [WBW/BBB]

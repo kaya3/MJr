@@ -1,0 +1,22 @@
+# Translated from Maxim Gumin's 'BasicSnake' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/BasicSnake.xml
+
+grid [BWDPGR]
+
+put [W] at origin
+
+all: [[WD]BB] -> [..D]
+
+once: [WBD] -> [PGR]
+
+@limit 2
+one: [RBD] -> [GGR]
+
+@limit 15
+one: [D] -> [W]
+
+markov:
+    one: [RBW] -> [GGR]
+    all:
+        [RBD] -> [GGR]
+        [PGG] -> [DBP] if count [RBD] > 0

@@ -1,0 +1,9 @@
+{
+    "compilerOptions": {
+        "rootDir": "src/",
+        "outFile": "mjrc.js",
+        "lib": ["ESNext", "DOM"],
+        "target": "ESNext",
+        "strict": true,
+    },
+}

@@ -1,0 +1,28 @@
+# Translated from Maxim Gumin's 'River' model, optimised to use a smaller alphabet
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/River.xml
+
+grid [BUGE]
+
+once: [B] -> [G]
+once: [B] -> [E]
+
+one:
+    [EB] -> [EE]
+    [GB] -> [GG]
+
+all: [GE] -> [UU]
+all: [[GE]] -> [B]
+
+@limit 1
+all: [UB] -> [UU]
+
+all: [BU/UB] -> [U./..]
+
+all: [UB] -> [.G]
+
+@limit 13
+one: [B] -> [E]
+
+one:
+    [EB] -> [.E]
+    [GB] -> [.G]

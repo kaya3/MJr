@@ -1,0 +1,17 @@
+# Translated from Maxim Gumin's 'BasicDungeonGrowth' model
+# https://github.com/mxgmn/MarkovJunior/blob/main/models/BasicDungeonGrowth.xml
+
+grid [BRACDG]
+union [?] = [[BR]]
+
+put [R] at origin
+
+one: [..?../.BBB./.BBB?/.BBB./..R..] -> [AARAA/ADDDA/ADDDR/ADDDA/AACAA]
+one: [ACA/BBB] -> [ARA/BBB]
+
+all: [C] -> [D]
+all: [R] -> [D]
+
+all: [BD] -> [.A]
+all: [DDD/ADA/DDD] -> [.../D.D/...]
+all: [DDD/DAD/DDD] -> [.../.D./...]

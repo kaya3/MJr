@@ -51,7 +51,7 @@ markov:
 
 # insert cycles
 @limit NUM_CYCLES
-one: [GBW] -> [.W.]
+one: [GBG] -> [.W.]
 
 # forget structure
 all: [G] -> [W]

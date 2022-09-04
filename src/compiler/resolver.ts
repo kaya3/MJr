@@ -745,8 +745,8 @@ namespace Resolver {
         ctx.isRuleContext = true;
         const via = _resolveProp(rule, 'via', 'pattern.out?', ctx);
         const to = ctx.withOutGrid(outGrid, rule.from.pos, () => _resolveProp(rule, 'to', 'pattern.out', ctx));
-        const condition = _resolveProp(rule, 'condition', 'bool?', ctx) ?? _makeConstantExpr(Type.BOOL, true, pos);
         ctx.inputPattern = undefined;
+        const condition = _resolveProp(rule, 'condition', 'bool?', ctx) ?? _makeConstantExpr(Type.BOOL, true, pos);
         ctx.isRuleContext = false;
         if(via === PROP_ERROR || to === undefined || to === PROP_ERROR || condition === PROP_ERROR) { return undefined; }
         

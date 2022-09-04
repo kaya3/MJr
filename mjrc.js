@@ -2667,7 +2667,6 @@ var Compiler;
                 if (uncertainties.length === 0) {
                     throw new Error();
                 }
-                // TODO: replace `toUncertainties` with a conditional MatchHandler
                 const { pattern, width } = patternExpr.constant.value;
                 const isEffective = uncertainties.map(i => OP.ne(g.access(g.relativeIndex(i % width, (i / width) | 0)), IR.int(pattern[i])));
                 out.push(isEffective.reduce(OP.or));
@@ -2708,7 +2707,9 @@ var Compiler;
         const g = c.grids[stmt.inGrid];
         const k = rewrites.length;
         const out = [];
-        const conditionIsSameEverywhere = rewrites.map(rule => (rule.condition.flags & 12 /* ExprFlags.SAME_EVERYWHERE */) === 12 /* ExprFlags.SAME_EVERYWHERE */);
+        const conditionIsSameEverywhere = rewrites.map(rule => (rule.condition.flags & 12 /* ExprFlags.SAME_EVERYWHERE */) === 12 /* ExprFlags.SAME_EVERYWHERE */
+            && rule.to.kind === 'expr.constant'
+            && rule.toUncertainties === undefined);
         const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
         const outPatternIsSameEverywhere = rewrites.map(rule => (rule.to.flags & 12 /* ExprFlags.SAME_EVERYWHERE */) === 12 /* ExprFlags.SAME_EVERYWHERE */);
         // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
@@ -3586,7 +3587,7 @@ var Parser;
         }
         /**
          * ```none
-         * WithDeclaration<T> = Declaration (NEWLINE T+ | 'in' BlockChildren<T>)
+         * WithDeclaration<T> = Declaration (NEWLINE T* | 'in' BlockChildren<T>)
          * ```
          */
         parseDeclChildren(kind, declaration) {
@@ -3881,16 +3882,15 @@ var Parser;
         /**
          * UseStmt = UseExprStmt | UseLetStmt
          * UseExprStmt = 'use' Expression NEWLINE
-         * UseLetStmt = 'use' LetDecl NEWLINE
+         * UseLetStmt = 'use' LetDecl NEWLINE Statement*
          */
         parseUseStmt() {
             const { pos } = this.assertPollS('use');
             if (this.q.hasNextS('let')) {
                 let decl;
-                let children;
                 return (decl = this.parseLetDecl())
-                    && (children = this.parseDeclChildren('stmt', decl))
-                    && { kind: 'stmt.use.let', decl, children: children.children, pos };
+                    && this.expectPoll('NEWLINE')
+                    && { kind: 'stmt.use.let', decl, children: this.parseUntil('stmt', 'DEDENT'), pos };
             }
             else {
                 let expr;
@@ -4828,8 +4828,8 @@ var Resolver;
         ctx.isRuleContext = true;
         const via = _resolveProp(rule, 'via', 'pattern.out?', ctx);
         const to = ctx.withOutGrid(outGrid, rule.from.pos, () => _resolveProp(rule, 'to', 'pattern.out', ctx));
-        const condition = _resolveProp(rule, 'condition', 'bool?', ctx) ?? _makeConstantExpr(Type.BOOL, true, pos);
         ctx.inputPattern = undefined;
+        const condition = _resolveProp(rule, 'condition', 'bool?', ctx) ?? _makeConstantExpr(Type.BOOL, true, pos);
         ctx.isRuleContext = false;
         if (via === PROP_ERROR || to === undefined || to === PROP_ERROR || condition === PROP_ERROR) {
             return undefined;

@@ -1160,7 +1160,11 @@ namespace Compiler {
         const k = rewrites.length;
         const out: IR.Stmt[] = [];
         
-        const conditionIsSameEverywhere = rewrites.map(rule => (rule.condition.flags & ExprFlags.SAME_EVERYWHERE) === ExprFlags.SAME_EVERYWHERE);
+        const conditionIsSameEverywhere = rewrites.map(rule =>
+            (rule.condition.flags & ExprFlags.SAME_EVERYWHERE) === ExprFlags.SAME_EVERYWHERE
+            && rule.to.kind === 'expr.constant'
+            && rule.toUncertainties === undefined
+        );
         const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
         const outPatternIsSameEverywhere = rewrites.map(rule => (rule.to.flags & ExprFlags.SAME_EVERYWHERE) === ExprFlags.SAME_EVERYWHERE);
         

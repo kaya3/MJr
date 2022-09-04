@@ -1,0 +1,60 @@
+# Author: Andrew Kay
+
+grid [BWDPYIERO]
+
+# draw maze
+put [P] at origin
+all: [PBB] -> [..P]
+put [W] at origin
+all: [WBPBP] -> [....W]
+put [D] at origin
+all: [DBPBW] -> [..W.D]
+one: [DBPBDBP/BBBBBBB/.BPBPBP] -> [..W..../......./.......]
+
+@limit 5
+one: [DBPBD] -> [..W..]
+all: [PBP] -> [.P.]
+all: [D] -> [W]
+one: [BBBBBB/BPBWBP/BBBBBB] -> [....../..PPP./......]
+
+# add player and enemies
+put [Y] at origin
+
+@limit 4
+one: [W] -> [O]
+
+# play!
+
+union [?] = [[WB]]
+
+sequence:
+    # mark unsafe moves
+    all: [.BBB/[RO]B?B/.BBB] -> [..I./.I.I/..I.] if count [Y] > 0
+    
+    # allow player to backtrack if they have no safe move
+    one: [YE] -> [.B] if count [YB?] == 0
+    
+    # allow player to make an unsafe move if they have no safe move
+    one: [YI] -> [.B] if count [YB?] == 0
+    
+    # player moves
+    @limit 1
+    all:
+        [YBW] -> [BEY]
+        [YBB] -> [BEY] if count [YBW] == 0
+        [[IE]] -> [B]
+    
+    # enemy eats player, if possible
+    once:
+        [R.Y] -> [B.R]
+        [O.Y] -> [W.R]
+    
+    # enemies move
+    @limit 1
+    all:
+        let alive = count [Y] > 0
+        [RBW] -> [BDO] if alive
+        [OBW] -> [WDO] if alive
+        [RBB] -> [BDR] if alive
+        [OBB] -> [WDR] if alive
+        [D] -> [B]

@@ -31,4 +31,4 @@ Additionally, there some features of the MarkovJunior programming language which
 - 3D grids
 - [Wave Function Collapse](https://github.com/mxgmn/WaveFunctionCollapse) statements
 
-Some of these features need some more thought to the language design before they are implemented.
+Some of these features need some more thought to the language design before they are implemented. See also the project's [GitHub issue tracker](https://github.com/kaya3/MJr/issues).

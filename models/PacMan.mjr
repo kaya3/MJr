@@ -32,10 +32,10 @@ sequence:
     all: [.BBB/[RO]B?B/.BBB] -> [..I./.I.I/..I.] if count [Y] > 0
     
     # allow player to backtrack if they have no safe move
-    one: [YE] -> [.B] if count [YB?] == 0
+    one: [E] -> [B] if count [YB?] == 0
     
     # allow player to make an unsafe move if they have no safe move
-    one: [YI] -> [.B] if count [YB?] == 0
+    one: [I] -> [B] if count [YB?] == 0
     
     # player moves
     @limit 1
@@ -46,8 +46,8 @@ sequence:
     
     # enemy eats player, if possible
     once:
-        [R.Y] -> [B.R]
-        [O.Y] -> [W.R]
+        [RBY] -> [BBR]
+        [OBY] -> [WBR]
     
     # enemies move
     @limit 1

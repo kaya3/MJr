@@ -1073,9 +1073,9 @@ namespace Compiler {
         } else {
             // output pattern determined at runtime
             // this requires that `p` is already declared
-            out.push(IR.localCallStmt(
-                'Pattern_put',
-                [P, outGrid.useObj(), useMask ? c.mask.name : IR.NULL, AT_X, AT_Y],
+            out.push(IR.libMethodCallStmt(
+                'Pattern', 'put', P,
+                [outGrid.useObj(), useMask ? c.mask.name : IR.NULL, AT_X, AT_Y],
             ));
             
             mX = IR.attr(P, 'minX');

@@ -188,8 +188,13 @@ const animator = {
         go(src => {
             const config = getConfig();
             const key = `${JSON.stringify(config)}\n${src}`;
-            const func = key === this.cacheKey ? this.cachedFunc
-                : (this.cacheKey = key, this.cachedFunc = Function('w', 'h', `return (${Compiler.compile(src, 'JavaScript', config)})(w, h);`));
+            let func = undefined;
+            if(key === this.cacheKey) {
+                func = this.cachedFunc;
+            } else {
+                func = this.cachedFunc = Function('w', 'h', `return (${Compiler.compile(src, 'JavaScript', config)})(w, h);`);
+                this.cacheKey = key;
+            }
             
             const width = widthElem.value, height = heightElem.value;
             const result = func(width, height);

@@ -1196,7 +1196,7 @@ namespace Resolver {
             if((value.flags & ExprFlags.RUNTIME_CONSTANT) === 0) { ctx.error(`limit must be a runtime constant`, stmt.arg.pos); }
             if(r === undefined) {
                 return undefined;
-            } else if(r.kind === 'stmts' || r.stmt.kind === 'stmt.log' || r.stmt.kind === 'stmt.rules.map' || r.stmt.kind === 'stmt.put') {
+            } else if(r.kind === 'stmts' || r.stmt.kind === 'stmt.log' || r.stmt.kind === 'stmt.rules.map' || r.stmt.kind === 'stmt.put' || r.stmt.kind === 'stmt.use') {
                 ctx.error(`'@limit' cannot modify '${stmt.child.kind}'`, stmt.child.pos);
                 return undefined;
             } else if(r.stmt.kind === 'stmt.modified.limit') {
@@ -1245,24 +1245,27 @@ namespace Resolver {
         'stmt.rules.one': _resolveAllOnceOneStmt,
         'stmt.rules.prl': _resolveConvolutionPrlStmt,
         'stmt.use.expr': (stmt, ctx) => {
-            const gridID = _resolveProp(stmt, 'expr', 'const grid', ctx);
-            if(gridID === PROP_ERROR) { return undefined; }
+            const grid = _resolveProp(stmt, 'expr', 'const grid', ctx);
+            if(grid === PROP_ERROR) { return undefined; }
             
-            ctx.grid = ctx.globals.grids[gridID];
-            return undefined;
+            ctx.grid = ctx.globals.grids[grid];
+            return {kind: 'stmt', stmt: {kind: 'stmt.use', grid, pos: stmt.pos}};
         },
         'stmt.use.let': (stmt, ctx, canReset) => {
             if(stmt.decl.isParam) { ctx.error(`'use let' declaration cannot be a 'param'`, stmt.pos); }
             
-            const gridID = _resolveProp(stmt.decl, 'rhs', 'const grid', ctx);
-            if(gridID === PROP_ERROR) { return undefined; }
+            const grid = _resolveProp(stmt.decl, 'rhs', 'const grid', ctx);
+            if(grid === PROP_ERROR) { return undefined; }
             
-            ctx.grid = ctx.globals.grids[gridID];
+            ctx.grid = ctx.globals.grids[grid];
             
             const {name, rhs, pos} = stmt.decl;
-            const variable = ctx.makeVariable(name.name, Type.GRID, ExprFlags.CONSTANT, _makeConstantExpr(Type.GRID, gridID, rhs.pos), false, name.pos);
+            const variable = ctx.makeVariable(name.name, Type.GRID, ExprFlags.CONSTANT, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
             const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children, canReset));
-            stmts.unshift({kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, gridID, rhs.pos), pos});
+            stmts.unshift(
+                {kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos},
+                {kind: 'stmt.use', grid, pos: stmt.pos}
+            );
             return {kind: 'stmts', stmts};
         },
     };

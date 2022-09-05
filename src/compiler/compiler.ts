@@ -656,7 +656,7 @@ namespace Compiler {
             readonly asg: ASG.ASG,
             readonly config: Readonly<Config>,
         ) {
-            this.cfg = CFG.build(asg.root);
+            this.cfg = CFG.build(asg.root, config.animate);
             this.grids = asg.grids.map(g => new CGrid(g));
             this.flags = new CFlags(this.cfg.numFlags);
             this.limits = new CLimits(asg.limits);
@@ -704,9 +704,6 @@ namespace Compiler {
                 
                 gridDecls.push(...g.declareVars());
                 gridUpdateDecls.push(...g.matcher.declareUpdateFunc());
-                
-                // TODO: emit `stmt.use` statements and only yield when a grid is selected
-                if(this.config.animate) { gridDecls.push(g.yield_()); }
             }
             
             const mainParams: string[] = [WIDTH.name, HEIGHT.name];
@@ -1011,6 +1008,10 @@ namespace Compiler {
                     _doWrite(c, g, undefined, pattern, false, undefined, c.config.animate),
                 ),
             ]);
+        },
+        'stmt.use': (c, stmt) => {
+            if(!c.config.animate) { throw new Error(); }
+            return c.grids[stmt.grid].yield_();
         },
         
         // branching

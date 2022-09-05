@@ -24,7 +24,6 @@ Several features of the MJr programming language are not yet supported:
 - `field` and `observe` rules
 - Search
 - Periodic grids
-- Rewrite rules whose output pattern is dependent on both the current grid state and the match position
 
 Additionally, there some features of the MarkovJunior programming language which are not yet included:
 

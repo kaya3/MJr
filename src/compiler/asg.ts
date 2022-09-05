@@ -145,11 +145,12 @@ namespace ASG {
     export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, sample: Type.Value<'pattern'>, n: number, temperature: Prop<'float?'>, on: Prop<'charset.in'>, periodic: boolean | undefined}> {}
     export interface PathStmt extends _StmtNode<'path', {inGrid: number, from: Prop<'charset.in'>, to: Prop<'charset.in'>, input: Prop<'charset.in'>, output: Prop<'charset.out'>, longest: Prop<'bool?'>, inertia: Prop<'bool?'>}> {}
     
-    export type NonBranchingStmt = AssignStmt | LogStmt | MapStmt | PutStmt
+    export type NonBranchingStmt = AssignStmt | LogStmt | MapStmt | PutStmt | UseStmt
     export interface AssignStmt extends _StmtNode<'assign', {variable: FormalVariable, rhs: Expression}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Prop<'str'>}> {}
     export interface MapStmt extends _RulesStmtNode<'map', {outGrid: number}> {}
     export interface PutStmt extends _StmtNode<'put', {inGrid: number, pattern: Prop<'pattern.out'>, at: Prop<'position'>, uncertainties: readonly number[], condition: Prop<'bool?'>}> {}
+    export interface UseStmt extends _StmtNode<'use', {grid: number}> {}
 }
 
 const enum ExprFlags {

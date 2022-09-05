@@ -27,6 +27,8 @@ namespace CFG {
         readonly nodes: Node[] = [];
         numFlags = 0;
         
+        constructor(readonly animate: boolean) {}
+        
         makeNode<K extends Kind>(partialNode: {kind: K} & Omit<NodeOfKind<K>, 'id'>): Node {
             return withNextID(this.nodes, partialNode);
         }
@@ -93,12 +95,15 @@ namespace CFG {
                 }
                 
                 case 'stmt.assign':
-                    if(stmt.variable.references === 0) { return this.makeNode({kind: 'pass', then}); }
-                    // intentional fall-through
                 case 'stmt.log':
-                case 'stmt.rules.map':
                 case 'stmt.put':
+                case 'stmt.rules.map':
+                case 'stmt.use': {
+                    if((stmt.kind === 'stmt.assign' && stmt.variable.references === 0) || (stmt.kind === 'stmt.use' && !this.animate)) {
+                        return this.makeNode({kind: 'pass', then});
+                    }
                     return this.makeNode({kind: 'stmt.nonbranching', stmt, then});
+                }
                 
                 case 'stmt.convchain':
                 case 'stmt.path':
@@ -122,8 +127,8 @@ namespace CFG {
         }
     }
     
-    export function build(root: ASG.BlockStmt): CFG {
-        const builder = new CFGBuilder();
+    export function build(root: ASG.BlockStmt, animate: boolean): CFG {
+        const builder = new CFGBuilder(animate);
         const stopLabel = newLabel();
         const rootNode = builder.buildBlock(root, -1, stopLabel);
         stopLabel.nodeID = builder.makeNode({kind: 'stop'}).id;

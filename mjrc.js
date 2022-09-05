@@ -1088,8 +1088,12 @@ var CFG;
 (function (CFG) {
     const newLabel = () => ({ nodeID: -1 });
     class CFGBuilder {
+        animate;
         nodes = [];
         numFlags = 0;
+        constructor(animate) {
+            this.animate = animate;
+        }
         makeNode(partialNode) {
             return withNextID(this.nodes, partialNode);
         }
@@ -1149,14 +1153,15 @@ var CFG;
                     return r;
                 }
                 case 'stmt.assign':
-                    if (stmt.variable.references === 0) {
+                case 'stmt.log':
+                case 'stmt.put':
+                case 'stmt.rules.map':
+                case 'stmt.use': {
+                    if ((stmt.kind === 'stmt.assign' && stmt.variable.references === 0) || (stmt.kind === 'stmt.use' && !this.animate)) {
                         return this.makeNode({ kind: 'pass', then });
                     }
-                // intentional fall-through
-                case 'stmt.log':
-                case 'stmt.rules.map':
-                case 'stmt.put':
                     return this.makeNode({ kind: 'stmt.nonbranching', stmt, then });
+                }
                 case 'stmt.convchain':
                 case 'stmt.path':
                 case 'stmt.rules.basic.all':
@@ -1179,8 +1184,8 @@ var CFG;
             }
         }
     }
-    function build(root) {
-        const builder = new CFGBuilder();
+    function build(root, animate) {
+        const builder = new CFGBuilder(animate);
         const stopLabel = newLabel();
         const rootNode = builder.buildBlock(root, -1, stopLabel);
         stopLabel.nodeID = builder.makeNode({ kind: 'stop' }).id;
@@ -2260,7 +2265,7 @@ var Compiler;
         constructor(asg, config) {
             this.asg = asg;
             this.config = config;
-            this.cfg = CFG.build(asg.root);
+            this.cfg = CFG.build(asg.root, config.animate);
             this.grids = asg.grids.map(g => new CGrid(g));
             this.flags = new CFlags(this.cfg.numFlags);
             this.limits = new CLimits(asg.limits);
@@ -2302,10 +2307,6 @@ var Compiler;
                 }
                 gridDecls.push(...g.declareVars());
                 gridUpdateDecls.push(...g.matcher.declareUpdateFunc());
-                // TODO: emit `stmt.use` statements and only yield when a grid is selected
-                if (this.config.animate) {
-                    gridDecls.push(g.yield_());
-                }
             }
             const mainParams = [WIDTH.name, HEIGHT.name];
             const mainParamTypes = [IR.INT_TYPE, IR.INT_TYPE];
@@ -2588,6 +2589,12 @@ var Compiler;
                 pattern.kind !== 'expr.constant' ? IR.declVar(P.name, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
                 IR.if_(_writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition), _doWrite(c, g, undefined, pattern, false, undefined, c.config.animate)),
             ]);
+        },
+        'stmt.use': (c, stmt) => {
+            if (!c.config.animate) {
+                throw new Error();
+            }
+            return c.grids[stmt.grid].yield_();
         },
         // branching
         'stmt.convchain': _stmtNotSupported,
@@ -5319,7 +5326,7 @@ var Resolver;
             if (r === undefined) {
                 return undefined;
             }
-            else if (r.kind === 'stmts' || r.stmt.kind === 'stmt.log' || r.stmt.kind === 'stmt.rules.map' || r.stmt.kind === 'stmt.put') {
+            else if (r.kind === 'stmts' || r.stmt.kind === 'stmt.log' || r.stmt.kind === 'stmt.rules.map' || r.stmt.kind === 'stmt.put' || r.stmt.kind === 'stmt.use') {
                 ctx.error(`'@limit' cannot modify '${stmt.child.kind}'`, stmt.child.pos);
                 return undefined;
             }
@@ -5372,26 +5379,26 @@ var Resolver;
         'stmt.rules.one': _resolveAllOnceOneStmt,
         'stmt.rules.prl': _resolveConvolutionPrlStmt,
         'stmt.use.expr': (stmt, ctx) => {
-            const gridID = _resolveProp(stmt, 'expr', 'const grid', ctx);
-            if (gridID === PROP_ERROR) {
+            const grid = _resolveProp(stmt, 'expr', 'const grid', ctx);
+            if (grid === PROP_ERROR) {
                 return undefined;
             }
-            ctx.grid = ctx.globals.grids[gridID];
-            return undefined;
+            ctx.grid = ctx.globals.grids[grid];
+            return { kind: 'stmt', stmt: { kind: 'stmt.use', grid, pos: stmt.pos } };
         },
         'stmt.use.let': (stmt, ctx, canReset) => {
             if (stmt.decl.isParam) {
                 ctx.error(`'use let' declaration cannot be a 'param'`, stmt.pos);
             }
-            const gridID = _resolveProp(stmt.decl, 'rhs', 'const grid', ctx);
-            if (gridID === PROP_ERROR) {
+            const grid = _resolveProp(stmt.decl, 'rhs', 'const grid', ctx);
+            if (grid === PROP_ERROR) {
                 return undefined;
             }
-            ctx.grid = ctx.globals.grids[gridID];
+            ctx.grid = ctx.globals.grids[grid];
             const { name, rhs, pos } = stmt.decl;
-            const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ExprFlags.CONSTANT */, _makeConstantExpr(Type.GRID, gridID, rhs.pos), false, name.pos);
+            const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ExprFlags.CONSTANT */, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
             const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children, canReset));
-            stmts.unshift({ kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, gridID, rhs.pos), pos });
+            stmts.unshift({ kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos }, { kind: 'stmt.use', grid, pos: stmt.pos });
             return { kind: 'stmts', stmts };
         },
     };

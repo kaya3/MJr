@@ -61,15 +61,15 @@ namespace IR {
     export interface DeclVarsStmt extends _StmtNode<'decl.vars', {decls: readonly VarDecl[], mutable: boolean}> {}
     export interface ExprStmt extends _StmtNode<'expr', {expr: CallLibExpr | CallLocalExpr}> {}
     export interface ForRangeStmt extends _StmtNode<'for.range', {indexName: string, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
-    export interface IfStmt extends _StmtNode<'if', {condition: Expr, then: Stmt, otherwise?: Stmt}> {}
+    export interface IfStmt extends _StmtNode<'if', {condition: Expr, then: Stmt, otherwise: Stmt | undefined}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Expr}> {}
     export interface PassStmt extends _StmtNode<'pass', {}> {}
     export interface PreambleStmt extends _StmtNode<'preamble', {paramTypes: DictType, emitChecks: boolean, libVersion: number, opsUsed: readonly Op[]}> {}
-    export interface ReturnStmt extends _StmtNode<'return', {expr?: Expr}> {}
+    export interface ReturnStmt extends _StmtNode<'return', {expr: Expr | undefined}> {}
     export interface SwitchStmt extends _StmtNode<'switch', {expr: Expr, cases: readonly Case[]}> {}
     export interface ThrowStmt extends _StmtNode<'throw', {message: string}> {}
     export interface WhileStmt extends _StmtNode<'while', {condition: Expr, then: Stmt}> {}
-    export interface YieldStmt extends _StmtNode<'yield', {expr?: Expr}> {}
+    export interface YieldStmt extends _StmtNode<'yield', {expr: Expr | undefined}> {}
     
     type _ExprNode<K extends string, T> = Readonly<{kind: `expr.${K}`} & T> & {[JSON_KEY]?: string}
     export interface AttrExpr extends _ExprNode<'attr', {left: Expr, attr: string}> {}
@@ -413,9 +413,21 @@ namespace IR {
                 : _binOp('bool_or', left, right);
         },
         not(expr: Expr): Expr {
-            return expr.kind === 'expr.op.unary' && expr.op === 'bool_not' ? expr.child
-                : expr.kind === 'expr.op.binary' && expr.op in OP_NEGATIONS ? _binOp(OP_NEGATIONS[expr.op]!, expr.left, expr.right)
-                : _unOp('bool_not', expr);
+            if(expr.kind === 'expr.op.binary') {
+                if(expr.op === 'bool_and' || expr.op === 'bool_or') {
+                    // https://en.wikipedia.org/wiki/De_Morgan's_laws
+                    return _binOp(
+                        expr.op === 'bool_and' ? 'bool_or' : 'bool_and',
+                        OP.not(expr.left),
+                        OP.not(expr.right),
+                    );
+                } else if(expr.op in OP_NEGATIONS) {
+                    return _binOp(OP_NEGATIONS[expr.op]!, expr.left, expr.right);
+                }
+            } else if(expr.kind === 'expr.op.unary' && expr.op === 'bool_not') {
+                return expr.child;
+            }
+            return _unOp('bool_not', expr);
         },
         
         add(left: Expr, right: Expr): Expr {
@@ -502,21 +514,39 @@ namespace IR {
         },
         
         eq(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value === right.value ? TRUE : FALSE;
+            }
             return _binOp('int_eq', left, right);
         },
         ne(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value !== right.value ? TRUE : FALSE;
+            }
             return _binOp('int_ne', left, right);
         },
         lt(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value < right.value ? TRUE : FALSE;
+            }
             return _binOp('int_lt', left, right);
         },
         le(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value <= right.value ? TRUE : FALSE;
+            }
             return _binOp('int_le', left, right);
         },
         gt(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value > right.value ? TRUE : FALSE;
+            }
             return _binOp('int_gt', left, right);
         },
         ge(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value >= right.value ? TRUE : FALSE;
+            }
             return _binOp('int_ge', left, right);
         },
     };

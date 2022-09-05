@@ -215,7 +215,7 @@ namespace Compiler {
     }
     
     // TODO: more kinds of match handler (e.g. conditional on another pattern not being
-    // present, conditional on a boolean expression, or simple counters for `convchain`)
+    // present, conditional on a boolean expression)
     type MatchHandler = Readonly<
         | {kind: 'sampler', pattern: Pattern, sampler: CSampler, i: number}
         | {kind: 'counter', pattern: Pattern, counter: IR.NameExpr}

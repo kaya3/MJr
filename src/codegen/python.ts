@@ -130,7 +130,7 @@ namespace CodeGen {
                 out.beginLine();
                 out.write(`if rng is None: rng = ${RUNTIME_LIB_NAME}.DefaultPRNG()`);
                 out.beginLine();
-                out.write(`import array`)
+                out.write(`import array`);
                 out.beginLine();
                 out.write(`int32 = ${RUNTIME_LIB_NAME}.int32`);
                 if(stmt.opsUsed.includes('int_truediv') || stmt.opsUsed.includes('int_to_fraction')) {
@@ -194,7 +194,7 @@ namespace CodeGen {
                 if(bits === 8) {
                     out.write(`bytearray(`);
                     out.writeExpr(expr.length);
-                    out.write(')')
+                    out.write(')');
                 } else {
                     // https://docs.python.org/3/library/array.html
                     out.write(`array.array("${bits === 16 ? 'H' : 'L'}", (0,)) * `);

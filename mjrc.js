@@ -1621,9 +1621,19 @@ var IR;
                     : _binOp('bool_or', left, right);
         },
         not(expr) {
-            return expr.kind === 'expr.op.unary' && expr.op === 'bool_not' ? expr.child
-                : expr.kind === 'expr.op.binary' && expr.op in OP_NEGATIONS ? _binOp(OP_NEGATIONS[expr.op], expr.left, expr.right)
-                    : _unOp('bool_not', expr);
+            if (expr.kind === 'expr.op.binary') {
+                if (expr.op === 'bool_and' || expr.op === 'bool_or') {
+                    // https://en.wikipedia.org/wiki/De_Morgan's_laws
+                    return _binOp(expr.op === 'bool_and' ? 'bool_or' : 'bool_and', IR.OP.not(expr.left), IR.OP.not(expr.right));
+                }
+                else if (expr.op in OP_NEGATIONS) {
+                    return _binOp(OP_NEGATIONS[expr.op], expr.left, expr.right);
+                }
+            }
+            else if (expr.kind === 'expr.op.unary' && expr.op === 'bool_not') {
+                return expr.child;
+            }
+            return _unOp('bool_not', expr);
         },
         add(left, right) {
             return left.kind === 'expr.literal.int' && left.value === 0 ? right
@@ -1714,21 +1724,39 @@ var IR;
                 : _unOp('int_not', expr);
         },
         eq(left, right) {
+            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value === right.value ? IR.TRUE : IR.FALSE;
+            }
             return _binOp('int_eq', left, right);
         },
         ne(left, right) {
+            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value !== right.value ? IR.TRUE : IR.FALSE;
+            }
             return _binOp('int_ne', left, right);
         },
         lt(left, right) {
+            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value < right.value ? IR.TRUE : IR.FALSE;
+            }
             return _binOp('int_lt', left, right);
         },
         le(left, right) {
+            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value <= right.value ? IR.TRUE : IR.FALSE;
+            }
             return _binOp('int_le', left, right);
         },
         gt(left, right) {
+            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value > right.value ? IR.TRUE : IR.FALSE;
+            }
             return _binOp('int_gt', left, right);
         },
         ge(left, right) {
+            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+                return left.value >= right.value ? IR.TRUE : IR.FALSE;
+            }
             return _binOp('int_ge', left, right);
         },
     };

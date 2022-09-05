@@ -145,8 +145,6 @@ namespace CodeGen {
                     out.write(`if(typeof ${RUNTIME_LIB_NAME} !== "object" || typeof ${RUNTIME_LIB_NAME}.VERSION !== "number") throw new Error("${RUNTIME_LIB_NAME} runtime library not found");`);
                     out.beginLine();
                     out.write(`if(${RUNTIME_LIB_NAME}.VERSION !== ${libVersion}) throw new Error("Requires ${RUNTIME_LIB_NAME} runtime library version ${libVersion}");`);
-                    out.beginLine();
-                    out.write(`if(width <= 0 || height <= 0) throw new Error("Grid dimensions must be positive");`);
                 }
                 
                 out.beginLine();
@@ -171,6 +169,10 @@ namespace CodeGen {
             'stmt.switch': (out, stmt) => {
                 out.beginLine();
                 out.writeSwitch(stmt);
+            },
+            'stmt.throw': (out, stmt) => {
+                out.beginLine();
+                out.write(`throw new Error(${JSON.stringify(stmt.message)});`);
             },
             'stmt.while': (out, stmt) => {
                 const {then} = stmt;

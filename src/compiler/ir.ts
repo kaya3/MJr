@@ -21,7 +21,7 @@ namespace IR {
     }
     
     export type Expr = AttrExpr | LetInExpr | LiteralExpr | NameExpr | ObjectExpr | OpExpr | ParamExpr
-    export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | WhileStmt | YieldStmt
+    export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
     
     export type IRType = Readonly<
         | {kind: Type.PrimitiveKind | 'byte' | 'pattern' | 'prng' | 'rewriteinfo' | 'sampler' | 'void'}
@@ -67,6 +67,7 @@ namespace IR {
     export interface PreambleStmt extends _StmtNode<'preamble', {paramTypes: DictType, emitChecks: boolean, libVersion: number, opsUsed: readonly Op[]}> {}
     export interface ReturnStmt extends _StmtNode<'return', {expr?: Expr}> {}
     export interface SwitchStmt extends _StmtNode<'switch', {expr: Expr, cases: readonly Case[]}> {}
+    export interface ThrowStmt extends _StmtNode<'throw', {message: string}> {}
     export interface WhileStmt extends _StmtNode<'while', {condition: Expr, then: Stmt}> {}
     export interface YieldStmt extends _StmtNode<'yield', {expr?: Expr}> {}
     
@@ -340,6 +341,9 @@ namespace IR {
             : cases.length === 1 && exhaustive ? firstCase
             : {kind: 'stmt.switch', expr, cases};
     }
+    export function throw_(message: string): ThrowStmt {
+        return {kind: 'stmt.throw', message};
+    }
     export function while_(condition: Expr, then: Stmt): Stmt {
         return {kind: 'stmt.while', condition, then};
     }
@@ -351,11 +355,12 @@ namespace IR {
         bool_eq: 'bool_ne',
         bool_ne: 'bool_eq',
         
-        // float comparison ops cannot be swapped like this, due to NaN
-        // TODO: disallow Infinity/NaN completely?
-        /*
         float_eq: 'float_ne',
         float_ne: 'float_eq',
+        // float comparison ops cannot be swapped like this, due to NaN
+        // https://en.wikipedia.org/wiki/NaN#Comparison_with_NaN
+        // TODO: disallow Infinity/NaN completely?
+        /*
         float_lt: 'float_ge',
         float_le: 'float_gt',
         float_gt: 'float_le',

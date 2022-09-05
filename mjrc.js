@@ -291,8 +291,6 @@ var CodeGen;
                     out.write(`if(typeof ${RUNTIME_LIB_NAME} !== "object" || typeof ${RUNTIME_LIB_NAME}.VERSION !== "number") throw new Error("${RUNTIME_LIB_NAME} runtime library not found");`);
                     out.beginLine();
                     out.write(`if(${RUNTIME_LIB_NAME}.VERSION !== ${libVersion}) throw new Error("Requires ${RUNTIME_LIB_NAME} runtime library version ${libVersion}");`);
-                    out.beginLine();
-                    out.write(`if(width <= 0 || height <= 0) throw new Error("Grid dimensions must be positive");`);
                 }
                 out.beginLine();
                 out.write(`rng ??= ${RUNTIME_LIB_NAME}.DEFAULT_PRNG;`);
@@ -315,6 +313,10 @@ var CodeGen;
             'stmt.switch': (out, stmt) => {
                 out.beginLine();
                 out.writeSwitch(stmt);
+            },
+            'stmt.throw': (out, stmt) => {
+                out.beginLine();
+                out.write(`throw new Error(${JSON.stringify(stmt.message)});`);
             },
             'stmt.while': (out, stmt) => {
                 const { then } = stmt;
@@ -745,8 +747,6 @@ var CodeGen;
                     const { libVersion } = stmt;
                     out.beginLine();
                     out.write(`if ${RUNTIME_LIB_NAME}.VERSION !== ${libVersion}: raise Error("Requires ${RUNTIME_LIB_NAME} runtime library version ${libVersion}")`);
-                    out.beginLine();
-                    out.write(`if width <= 0 or height <= 0: raise Error("Grid dimensions must be positive")`);
                 }
                 out.beginLine();
                 out.write(`if rng is None: rng = ${RUNTIME_LIB_NAME}.DefaultPRNG()`);
@@ -779,6 +779,10 @@ var CodeGen;
                     out.writeIndentedBlock(c.then);
                 }
                 out.dedent();
+            },
+            'stmt.throw': (out, stmt) => {
+                out.beginLine();
+                out.write(`raise Error(${JSON.stringify(stmt.message)})`);
             },
             'stmt.while': (out, stmt) => {
                 out.beginLine();
@@ -1549,6 +1553,10 @@ var IR;
                 : { kind: 'stmt.switch', expr, cases };
     }
     IR.switch_ = switch_;
+    function throw_(message) {
+        return { kind: 'stmt.throw', message };
+    }
+    IR.throw_ = throw_;
     function while_(condition, then) {
         return { kind: 'stmt.while', condition, then };
     }
@@ -1560,11 +1568,12 @@ var IR;
     const OP_NEGATIONS = {
         bool_eq: 'bool_ne',
         bool_ne: 'bool_eq',
-        // float comparison ops cannot be swapped like this, due to NaN
-        // TODO: disallow Infinity/NaN completely?
-        /*
         float_eq: 'float_ne',
         float_ne: 'float_eq',
+        // float comparison ops cannot be swapped like this, due to NaN
+        // https://en.wikipedia.org/wiki/NaN#Comparison_with_NaN
+        // TODO: disallow Infinity/NaN completely?
+        /*
         float_lt: 'float_ge',
         float_le: 'float_gt',
         float_gt: 'float_le',
@@ -2325,6 +2334,7 @@ var Compiler;
             return IR.declFunc(this.config.entryPointName, this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${Compiler_1.COMPILER_VERSION} on ${date}`),
                 // TODO: compute and pass max width/height, to ensure no overflow of "loose" integer operations
+                this.config.emitChecks ? IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_("Grid dimensions must be positive")) : IR.PASS,
                 IR.preamble(this.dictType(params), this.config.emitChecks, Compiler_1.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,
                 ...gridDecls,
@@ -4859,7 +4869,7 @@ var Resolver;
         }
         else {
             // TODO: need to apply symmetries as ASG ops
-            if (ctx.symmetryName === 'none') {
+            if (ctx.symmetryName === 'none' || (from.width === 1 && from.height === 1 && to.type.width === 1 && to.type.height === 1)) {
                 makeRule(from, via, to);
             }
             else {

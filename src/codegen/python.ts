@@ -125,8 +125,6 @@ namespace CodeGen {
                     const {libVersion} = stmt;
                     out.beginLine();
                     out.write(`if ${RUNTIME_LIB_NAME}.VERSION !== ${libVersion}: raise Error("Requires ${RUNTIME_LIB_NAME} runtime library version ${libVersion}")`);
-                    out.beginLine();
-                    out.write(`if width <= 0 or height <= 0: raise Error("Grid dimensions must be positive")`);
                 }
                 
                 out.beginLine();
@@ -160,6 +158,10 @@ namespace CodeGen {
                     out.writeIndentedBlock(c.then);
                 }
                 out.dedent();
+            },
+            'stmt.throw': (out, stmt) => {
+                out.beginLine();
+                out.write(`raise Error(${JSON.stringify(stmt.message)})`);
             },
             'stmt.while': (out, stmt) => {
                 out.beginLine();

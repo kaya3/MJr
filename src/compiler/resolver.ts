@@ -776,7 +776,7 @@ namespace Resolver {
             }
         } else {
             // TODO: need to apply symmetries as ASG ops
-            if(ctx.symmetryName === 'none') {
+            if(ctx.symmetryName === 'none' || (from.width === 1 && from.height === 1 && to.type.width === 1 && to.type.height === 1)) {
                 makeRule(from, via, to);
             } else {
                 ctx.error(`non-constant pattern requires 'symmetry "none"'`, rule.pos);

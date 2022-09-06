@@ -157,6 +157,16 @@ class Partition {
         }
     }
     
+    public getSet(x: number): ISet {
+        const {arr} = this;
+        const {start, end} = this.map[x];
+        const out = ISet.empty(arr.length);
+        for(let i = start; i < end; ++i) {
+            ISet.add(out, arr[i]);
+        }
+        return out;
+    }
+    
     /**
      * Refines this partition by splitting any subsets which partly intersect
      * with the given set. If an unprocessed subset is split, both parts are

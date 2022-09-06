@@ -30,6 +30,7 @@ namespace Compiler {
         AT = IR.name('at'),
         AT_X = IR.name('atX'),
         AT_Y = IR.name('atY'),
+        AT_CONV = IR.name('atConv'),
         MATCHES = 'matches',
         MATCH_COUNT = 'count',
         MATCH = IR.name('m'),
@@ -69,6 +70,7 @@ namespace Compiler {
         
         readonly counters = new Map<string, IR.NameExpr>();
         readonly samplers = new Map<string, CSampler>();
+        readonly convBuffers = new Map<string, CConvBuffer>();
         readonly matcher: CMatcher;
         
         constructor(readonly grid: ASG.FormalGrid) {
@@ -120,6 +122,21 @@ namespace Compiler {
             return sampler;
         }
         
+        makeConvBuffer(p: ASG.ConvPattern): CConvBuffer {
+            const {convBuffers} = this;
+            const key = Convolution.Kernel.key(p.kernel);
+            let buffer = convBuffers.get(key);
+            if(buffer !== undefined) { return buffer; }
+            
+            const charsets: ISet[] = [];
+            this.grid.convPatterns.forEach(q => {
+                if(p.kernel.equals(q.kernel)) { charsets.push(q.chars); }
+            });
+            
+            convBuffers.set(key, buffer = new CConvBuffer(convBuffers.size, this, charsets, p.kernel));
+            return buffer;
+        }
+        
         useOrigin(): IR.NameExpr {
             return this.origin ??= IR.name(`grid${this.grid.id}_origin`);
         }
@@ -140,7 +157,7 @@ namespace Compiler {
             }
             consts.push(
                 {name: n.name, type: IR.INT_TYPE, initialiser: OP.mult(width, height)},
-                {name: data.name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newArray(n, alphabetKey.length)},
+                {name: data.name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(n)},
             );
             if(obj !== undefined) {
                 const initialiser = IR.libConstructorCall('Grid', [width, height, data, IR.str(alphabetKey)]);
@@ -150,6 +167,9 @@ namespace Compiler {
                 consts.push({name: origin.name, type: IR.INT_TYPE, initialiser: OP.add(originX, OP.mult(originY, width))});
             }
             
+            for(const buffer of this.convBuffers.values()) {
+                consts.push(...buffer.declare());
+            }
             for(const sampler of this.samplers.values()) {
                 consts.push(sampler.declare());
             }
@@ -219,6 +239,7 @@ namespace Compiler {
     type MatchHandler = Readonly<
         | {kind: 'sampler', pattern: Pattern, sampler: CSampler, i: number}
         | {kind: 'counter', pattern: Pattern, counter: IR.NameExpr}
+        | {kind: 'convolution', pattern: Pattern, buffer: CConvBuffer, i: number}
     >
     
     class CMatcher {
@@ -233,6 +254,20 @@ namespace Compiler {
         
         addMatchHandler(handler: MatchHandler): void {
             this.matchHandlers.push(handler);
+        }
+        
+        private makeMatchHandler(h: MatchHandler, f: 'add' | 'del'): IR.Stmt {
+            switch(h.kind) {
+                case 'sampler':
+                    const match = OP.multAddConstant(I, h.sampler.numPatterns, IR.int(h.i));
+                    return IR.libMethodCallStmt('Sampler', f, h.sampler.name, [match]);
+                
+                case 'counter':
+                    return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.ONE);
+                
+                case 'convolution':
+                    return h.buffer.update(h.i, X, Y, f === 'add' ? '+=' : '-=');
+            }
         }
         
         declareUpdateFunc(): IR.Stmt[] {
@@ -256,25 +291,17 @@ namespace Compiler {
             }
             
             // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            function makeStateChangeHandlers(f: 'add' | 'del'): IR.Stmt[] {
+            const makeStateChangeHandlers = (f: 'add' | 'del'): IR.Stmt[] => {
                 return _colDFA.acceptSetMap.map(patternIDs => {
                     const out: IR.Stmt[] = [];
                     for(const patternID of patternIDs) {
-                        for(const h of handlersByPattern[patternID]) switch(h.kind) {
-                            case 'sampler': {
-                                const match = OP.multAddConstant(I, h.sampler.numPatterns, IR.int(h.i));
-                                out.push(IR.libMethodCallStmt('Sampler', f, h.sampler.name, [match]));
-                                break;
-                            }
-                            case 'counter': {
-                                out.push(IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.ONE));
-                                break;
-                            }
+                        for(const h of handlersByPattern[patternID]) {
+                            out.push(this.makeMatchHandler(h, f));
                         }
                     }
                     return IR.block(out);
                 });
-            }
+            };
             
             const rowDFAType = IR.constArrayType(_rowDFA.size()),
                 rowAcceptSetsType = IR.constArrayType(_rowDFA.acceptSetMap.size()),
@@ -306,13 +333,13 @@ namespace Compiler {
                         IR.BLANK_LINE,
                         
                         IR.comment('recompute row states'),
-                        IR.forRange(Y.name, START_Y, END_Y, IR.block([
+                        IR.forRange(Y, START_Y, END_Y, IR.block([
                             IR.declVar(S.name, IR.INT_TYPE, IR.ternary(
                                 OP.lt(END_X, g.width),
                                 IR.access(rowStates, g.index(END_X, Y)),
                                 IR.ZERO,
                             ), true),
-                            IR.forRangeReverse(X.name, IR.ZERO, END_X, IR.block([
+                            IR.forRangeReverse(X, IR.ZERO, END_X, IR.block([
                                 IR.declVars([
                                     {name: I.name, type: IR.INT_TYPE, initialiser: g.index(X, Y)},
                                     {name: OLD_S.name, type: IR.INT_TYPE, initialiser: IR.access(rowStates, I)},
@@ -334,13 +361,13 @@ namespace Compiler {
                         IR.BLANK_LINE,
                         
                         IR.comment('recompute col states'),
-                        IR.forRange(X.name, START_X, END_X, IR.block([
+                        IR.forRange(X, START_X, END_X, IR.block([
                             IR.declVar(S.name, IR.INT_TYPE, IR.ternary(
                                 OP.lt(END_Y, g.height),
                                 IR.access(colStates, g.index(X, END_Y)),
                                 IR.ZERO,
                             ), true),
-                            IR.forRangeReverse(Y.name, IR.ZERO, END_Y, IR.block([
+                            IR.forRangeReverse(Y, IR.ZERO, END_Y, IR.block([
                                 IR.declVars([
                                     {name: I.name, type: IR.INT_TYPE, initialiser: g.index(X, Y)},
                                     {name: OLD_S.name, type: IR.INT_TYPE, initialiser: IR.access(colStates, I)},
@@ -473,7 +500,7 @@ namespace Compiler {
                     IR.VOID_TYPE,
                     IR.block([
                         IR.assign(N, '=', this.maskN(N)),
-                        IR.forRange(I.name, IR.ZERO, N, IR.assign(IR.access(this.name, I), '=', IR.ZERO)),
+                        IR.forRange(I, IR.ZERO, N, IR.assign(IR.access(this.name, I), '=', IR.ZERO)),
                     ]),
                 ),
                 IR.declFunc(
@@ -557,7 +584,7 @@ namespace Compiler {
             ]);
         }
         forEach(indexVar: IR.NameExpr, then: readonly IR.Stmt[]): IR.Stmt {
-            return IR.forRange(indexVar.name, IR.ZERO, this.count, IR.block([
+            return IR.forRange(indexVar, IR.ZERO, this.count, IR.block([
                 IR.declVar(MATCH.name, IR.INT_TYPE, this.get(indexVar)),
                 ...then,
             ]));
@@ -571,7 +598,7 @@ namespace Compiler {
         readonly isNotEmpty: IR.Expr;
         
         constructor(
-            readonly id: number,
+            id: number,
             readonly inGrid: CGrid,
             readonly numPatterns: number,
         ) {
@@ -598,7 +625,92 @@ namespace Compiler {
                 : IR.libMethodCall('Sampler', 'sample', this.name, [this.count, RNG]);
         }
         forEach(indexVar: IR.NameExpr, then: readonly IR.Stmt[]): IR.Stmt {
-            return IR.forRange(indexVar.name, IR.ZERO, this.count, IR.block(then));
+            return IR.forRange(indexVar, IR.ZERO, this.count, IR.block(then));
+        }
+    }
+    
+    class CConvBuffer {
+        private readonly name: IR.NameExpr;
+        readonly width: IR.Expr;
+        readonly height: IR.Expr;
+        readonly n: IR.NameExpr;
+        private readonly k: number;
+        readonly values: ReadonlyMap<bigint, IR.Expr>;
+        
+        constructor(
+            id: number,
+            g: CGrid,
+            charsets: readonly ISet[],
+            private readonly kernel: Convolution.Kernel,
+        ) {
+            this.width = OP.add(g.width, IR.int(kernel.width - 1));
+            this.height = OP.add(g.height, IR.int(kernel.height - 1));
+            const n = this.n = IR.name(`grid${g.grid.id}_conv${id}_n`);
+            const name = this.name = IR.name(`grid${g.grid.id}_conv${id}`);
+            
+            // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
+            const alphabetSize = g.grid.alphabet.key.length;
+            const alphabetPartition = new Partition(alphabetSize);
+            charsets.forEach(set => alphabetPartition.refine(set));
+            
+            const repMap = IDMap.withKey<number>(i => alphabetPartition.getRepresentative(i));
+            const mappedBuffers: readonly ReadonlySet<number>[] = charsets.map(chars => {
+                const out = new Set<number>();
+                ISet.forEach(chars, i => out.add(repMap.getOrCreateID(i)));
+                return out;
+            });
+            repMap.forEach((rep, i) => {
+                const chars = alphabetPartition.getSet(rep);
+                const pattern = new Pattern(1, 1, [-1], [chars], true);
+                g.matcher.addMatchHandler({kind: 'convolution', buffer: this, pattern, i});
+            });
+            this.k = repMap.size();
+            
+            const values = this.values = new Map<bigint, IR.Expr>();
+            charsets.forEach((chars, i) => {
+                const exprs: IR.Expr[] = Array.from(mappedBuffers[i], j => {
+                    const index = OP.add(OP.multConstant(n, j), AT_CONV);
+                    return IR.access(name, index);
+                });
+                // sanity check
+                if(exprs.length === 0) { throw new Error(); }
+                values.set(ISet.toBigInt(chars), exprs.reduce(OP.add));
+            });
+        }
+        
+        declare(): IR.VarDeclWithInitialiser[] {
+            const {n, name, k, width, height} = this;
+            return [
+                {name: n.name, type: IR.INT_TYPE, initialiser: OP.mult(width, height)},
+                {name: name.name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(OP.multConstant(n, k))},
+            ];
+        }
+        
+        get(chars: ISet): IR.Expr {
+            const expr = this.values.get(ISet.toBigInt(chars));
+            if(expr === undefined) { throw new Error(); }
+            return expr;
+        }
+        
+        update(i: number, xVar: IR.NameExpr, yVar: IR.NameExpr, op: '+=' | '-='): IR.Stmt {
+            const {name, width, n, kernel} = this;
+            const out: IR.Stmt[] = [];
+            for(let dy = 0; dy < kernel.height; ++dy) {
+                for(let dx = 0; dx < kernel.width; ++dx) {
+                    const delta = kernel.data[dx + kernel.width * dy];
+                    if(delta !== 0) {
+                        const index = OP.add(
+                            OP.multConstant(n, i),
+                            OP.add(
+                                OP.add(xVar, IR.int(dx)),
+                                OP.mult(OP.add(yVar, IR.int(dy)), width),
+                            ),
+                        );
+                        out.push(IR.assign(IR.access(name, index), op, IR.int(delta)));
+                    }
+                }
+            }
+            return IR.block(out);
         }
     }
     
@@ -984,8 +1096,9 @@ namespace Compiler {
                 : IR.libFunctionCall('nextIntChecked', [RNG, max]);
         },
         'expr.sum': (c, expr) => {
-            c.notSupported(`'sum' expression`, expr.pos);
-            return IR.NULL;
+            const g = c.grids[expr.inGrid];
+            const p = g.grid.convPatterns.getByID(expr.patternID);
+            return g.makeConvBuffer(p).get(p.chars);
         },
     };
     
@@ -1007,7 +1120,7 @@ namespace Compiler {
                 pattern.kind !== 'expr.constant' ? IR.declVar(P.name, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
                 IR.if_(
                     _writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition),
-                    _doWrite(c, g, undefined, pattern, false, undefined, c.config.animate),
+                    _doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate),
                 ),
             ]);
         },
@@ -1024,6 +1137,7 @@ namespace Compiler {
         'stmt.rules.basic.prl': _basicAllPrl,
         'stmt.rules.biased.all': _stmtNotSupported,
         'stmt.rules.biased.one': _stmtNotSupported,
+        'stmt.rules.convolution': _stmtConvolution,
         'stmt.rules.search.all': _stmtNotSupported,
         'stmt.rules.search.one': _stmtNotSupported,
     };
@@ -1041,7 +1155,7 @@ namespace Compiler {
         ]);
     }
     
-    function _doWrite(c: Compiler, outGrid: CGrid, from: Pattern | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doYield: boolean): IR.Stmt {
+    function _doWrite(c: Compiler, outGrid: CGrid, from: Pattern | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
         const out: IR.Stmt[] = [];
         let mX: IR.Expr, mY: IR.Expr, eW: IR.Expr, eH: IR.Expr;
         
@@ -1087,8 +1201,12 @@ namespace Compiler {
             eH = IR.attr(P, 'effectiveHeight');
         }
         
-        out.push(...outGrid.update(OP.add(AT_X, mX), OP.add(AT_Y, mY), eW, eH, doYield));
-        if(flagVar !== undefined) { out.push(IR.assign(flagVar, '=', IR.TRUE)); }
+        if(doUpdate) {
+            out.push(...outGrid.update(OP.add(AT_X, mX), OP.add(AT_Y, mY), eW, eH, doYield));
+        }
+        if(flagVar !== undefined) {
+            out.push(IR.assign(flagVar, '=', IR.TRUE));
+        }
         return IR.block(out);
     }
     
@@ -1134,7 +1252,7 @@ namespace Compiler {
                     rule.to.kind !== 'expr.constant' ? IR.declVar(P.name, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
                     IR.if_(
                         writeConditions[i],
-                        _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, c.config.animate),
+                        _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate),
                     ),
                 ])),
             ),
@@ -1257,7 +1375,7 @@ namespace Compiler {
                     secondPassConditions[i],
                     useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE,
                 ),
-                _doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, false),
+                _doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false),
             ),
         ]));
         
@@ -1282,6 +1400,50 @@ namespace Compiler {
             useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS,
         );
         return IR.block(out);
+    }
+    
+    function _stmtConvolution(c: Compiler, stmt: ASG.ConvolutionStmt, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
+        const {kernel} = stmt;
+        const g = c.grids[stmt.inGrid];
+        
+        const cases: IR.Stmt[] = emptyArray(g.grid.alphabet.key.length, IR.PASS);
+        for(const rule of stmt.rewrites) {
+            const caseHandler = IR.if_(
+                _writeCondition(c, g, rule.to, undefined, rule.toUncertainties, rule.condition),
+                _doWrite(c, g, rule.from, rule.to, false, ANY, false, false),
+            );
+            ISet.forEach(rule.from.masks[0], i => {
+                if(cases[i] !== IR.PASS) { throw new Error(); }
+                cases[i] = caseHandler;
+            })
+        }
+        
+        const bufferWidth = OP.add(g.width, IR.int(kernel.width - 1)),
+            atConvInitialiser = OP.add(
+                OP.add(AT_X, IR.int(kernel.centreX)),
+                OP.mult(OP.add(AT_Y, IR.int(kernel.centreY)), bufferWidth),
+            );
+        
+        // TODO: different strategy if rules don't cover the whole alphabet?
+        return IR.block([
+            IR.declVar(ANY.name, IR.BOOL_TYPE, IR.FALSE, true),
+            IR.forRange(AT_Y, IR.ZERO, g.height, IR.forRange(AT_X, IR.ZERO, g.width, IR.block([
+                IR.declVars([
+                    {name: AT.name, type: IR.INT_TYPE, initialiser: g.index(AT_X, AT_Y)},
+                    {name: AT_CONV.name, type: IR.INT_TYPE, initialiser: atConvInitialiser},
+                ]),
+                IR.switch_(g.access(AT), cases),
+            ]))),
+            IR.if_(
+                ANY,
+                IR.block([
+                    // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
+                    ...g.update(IR.ZERO, IR.ZERO, g.width, g.height, c.config.animate),
+                    ifChanged,
+                ]),
+                then,
+            ),
+        ]);
     }
     
     type CodeGenClass = new (config: Config) => CodeGen.Base

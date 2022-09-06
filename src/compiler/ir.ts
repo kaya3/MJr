@@ -60,7 +60,7 @@ namespace IR {
     export interface DeclFuncStmt extends _StmtNode<'decl.func', {name: string, yields: IRType | undefined, params: readonly string[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt}> {}
     export interface DeclVarsStmt extends _StmtNode<'decl.vars', {decls: readonly VarDecl[], mutable: boolean}> {}
     export interface ExprStmt extends _StmtNode<'expr', {expr: CallLibExpr | CallLocalExpr}> {}
-    export interface ForRangeStmt extends _StmtNode<'for.range', {indexName: string, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
+    export interface ForRangeStmt extends _StmtNode<'for.range', {index: NameExpr, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
     export interface IfStmt extends _StmtNode<'if', {condition: Expr, then: Stmt, otherwise: Stmt | undefined}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Expr}> {}
     export interface PassStmt extends _StmtNode<'pass', {}> {}
@@ -135,6 +135,9 @@ namespace IR {
     }
     export function newArray(length: Expr, domainSize: number): NewArrayExpr {
         return {kind: 'expr.array.new', length, domainSize};
+    }
+    export function newGridDataArray(length: Expr): NewArrayExpr {
+        return newArray(length, 128);
     }
     export function newInt32Array(length: Expr): NewArrayExpr {
         return newArray(length, 2 ** 32);
@@ -273,11 +276,11 @@ namespace IR {
     export function declVars(decls: readonly VarDecl[], mutable: boolean = false): Stmt {
         return decls.length > 0 ? {kind: 'stmt.decl.vars', decls, mutable} : PASS;
     }
-    export function forRange(indexName: string, low: Expr, high: Expr, body: Stmt): ForRangeStmt {
-        return {kind: 'stmt.for.range', indexName, low, high, reverse: false, body};
+    export function forRange(index: NameExpr, low: Expr, high: Expr, body: Stmt): ForRangeStmt {
+        return {kind: 'stmt.for.range', index, low, high, reverse: false, body};
     }
-    export function forRangeReverse(indexName: string, low: Expr, high: Expr, body: Stmt): ForRangeStmt {
-        return {kind: 'stmt.for.range', indexName, low, high, reverse: true, body};
+    export function forRangeReverse(index: NameExpr, low: Expr, high: Expr, body: Stmt): ForRangeStmt {
+        return {kind: 'stmt.for.range', index, low, high, reverse: true, body};
     }
     export function if_(condition: Expr, then: Stmt, otherwise?: Stmt): Stmt {
         if(otherwise !== undefined && otherwise.kind === 'stmt.pass') { otherwise = undefined; }
@@ -564,7 +567,7 @@ namespace IR {
     export const STR_TYPE: IRType = {kind: 'str'};
     export const VOID_TYPE: IRType = {kind: 'void'};
     
-    export const GRID_DATA_ARRAY_TYPE: IRType = constArrayType(128);
+    export const GRID_DATA_ARRAY_TYPE: IRType = mutableArrayType(128);
     export const INT32_ARRAY_TYPE: IRType = mutableArrayType(2 ** 32);
     
     export function mutableArrayType(domainSize: number): MutableArrayType {

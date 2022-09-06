@@ -84,6 +84,14 @@ namespace ISet {
         }
     }
     
+    export function isDisjoint(a: ISet, b: ISet): boolean {
+        if(a.length < b.length) { throw new Error(); }
+        for(let i = 0; i < b.length; ++i) {
+            if((a[i] & b[i]) !== 0) { return false; }
+        }
+        return true;
+    }
+    
     /**
      * Converts a set from an array to a `bigint`, in O(N^2) time.
      * 

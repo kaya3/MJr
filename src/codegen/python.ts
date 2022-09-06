@@ -69,7 +69,7 @@ namespace CodeGen {
             'stmt.for.range': (out, stmt) => {
                 const {low, high} = stmt;
                 out.beginLine();
-                out.write(`for ${stmt.indexName} in range(`);
+                out.write(`for ${stmt.index.name} in range(`);
                 if(stmt.reverse) {
                     out.writeExpr(IR.OP.minusOne(high));
                     out.write(`, `);

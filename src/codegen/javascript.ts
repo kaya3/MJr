@@ -83,7 +83,7 @@ namespace CodeGen {
                 out.write(';');
             },
             'stmt.for.range': (out, stmt) => {
-                const {indexName: i, low, high, reverse, body} = stmt;
+                const {index: {name: i}, low, high, reverse, body} = stmt;
                 out.beginLine();
                 out.write(`for(let ${i} = `);
                 if(reverse) {

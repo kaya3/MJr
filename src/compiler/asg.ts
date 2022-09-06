@@ -18,6 +18,7 @@ namespace ASG {
         scaleX: number,
         scaleY: number,
         periodic: boolean,
+        convPatterns: ReadonlyIDMap<ConvPattern>,
         pos: SourcePosition,
     }> {}
     
@@ -37,9 +38,14 @@ namespace ASG {
         isTransparent: boolean,
     }> {}
     
+    export interface ConvPattern extends Readonly<{
+        kernel: Convolution.Kernel,
+        chars: ISet,
+    }> {}
+    
     export interface FormalPotential extends Readonly<{
         id: number,
-        inGrid: FormalGrid,
+        inGrid: number,
         for_: ASG.Prop<'charset.in'>,
     }> {}
     
@@ -100,7 +106,7 @@ namespace ASG {
     export interface BinaryOpExpr extends _ExprNode<'op.binary', {op: Op.BinaryOp, left: Expression, right: Expression}> {}
     export interface CountExpr extends _ExprNode<'count', {inGrid: number, patterns: readonly Pattern[]}> {}
     export interface RandIntExpr extends _ExprNode<'randint', {max: Prop<'int'>}> {}
-    export interface SumExpr extends _ExprNode<'sum', {kernel: string, chars: Prop<'const charset.in'>}> {}
+    export interface SumExpr extends _ExprNode<'sum', {inGrid: number, patternID: number}> {}
     export interface TernaryExpr extends _ExprNode<'op.ternary', {condition: Prop<'bool'>, then: Expression, otherwise: Expression}> {}
     export interface UnaryOpExpr extends _ExprNode<'op.unary', {op: Op.UnaryOp, child: Expression}> {}
     
@@ -136,10 +142,11 @@ namespace ASG {
     
     export type BranchingStmt = BranchingRulesStmt | ConvChainStmt | PathStmt
     
-    export type BranchingRulesStmt = BasicRulesStmt | BiasedRulesStmt | SearchRulesStmt
-    type _RulesStmtNode<K extends string, T> = _StmtNode<`rules.${K}`, {inGrid: number, rewrites: readonly RewriteRule[], commutative: boolean} & T>
-    export interface BasicRulesStmt extends _RulesStmtNode<'basic.all' | 'basic.one' | 'basic.prl', {}> {}
+    export type BranchingRulesStmt = BasicRulesStmt | BiasedRulesStmt | ConvolutionStmt | SearchRulesStmt
+    type _RulesStmtNode<K extends string, T> = _StmtNode<`rules.${K}`, {inGrid: number, rewrites: readonly RewriteRule[]} & T>
+    export interface BasicRulesStmt extends _RulesStmtNode<'basic.all' | 'basic.one' | 'basic.prl', {commutative: boolean}> {}
     export interface BiasedRulesStmt extends _RulesStmtNode<'biased.all' | 'biased.one', {temperature: Prop<'float?'>, fields: readonly FieldRule[], observations: readonly ObserveRule[]}> {}
+    export interface ConvolutionStmt extends _RulesStmtNode<'convolution', {kernel: Convolution.Kernel}> {}
     export interface SearchRulesStmt extends _RulesStmtNode<'search.all' | 'search.one', {temperature: Prop<'float?'>, maxStates: Prop<'int?'>, depthCoefficient: Prop<'float?'>, observations: readonly ObserveRule[]}> {}
     
     export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, sample: Type.Value<'pattern'>, n: number, temperature: Prop<'float?'>, on: Prop<'charset.in'>, periodic: boolean | undefined}> {}

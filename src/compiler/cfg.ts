@@ -112,6 +112,7 @@ namespace CFG {
                 case 'stmt.rules.basic.prl':
                 case 'stmt.rules.biased.all':
                 case 'stmt.rules.biased.one':
+                case 'stmt.rules.convolution':
                 case 'stmt.rules.search.all':
                 case 'stmt.rules.search.one': {
                     if(parentFlagID >= 0) {

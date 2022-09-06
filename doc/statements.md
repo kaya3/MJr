@@ -95,7 +95,12 @@ prl:
 
 ### 'Convolution' statements
 
-<!-- TODO -->
+A `convolution` statement applies a set of 1x1 rewrite rules to all matches in parallel, where the rules may make use of ['sum' expressions](expressions.md#sum-operator). There is one required argument, named `kernel`, which determines the convolution kernel used by `sum` expressions within the statement. It must be a compile-time constant `str` equal to one of the following names:
+
+- `Moore`: a [Moore neighbourhood](https://en.wikipedia.org/wiki/Moore_neighborhood).
+- `VonNeumann`: a [Von Neumann neighbourhood](https://en.wikipedia.org/wiki/Von_Neumann_neighborhood).
+
+The statement "returns true" if there were any applicable matches, otherwise it "returns false".
 
 <pre>
 convolution {kernel=<i>Expression</i>}:

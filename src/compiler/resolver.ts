@@ -68,10 +68,9 @@ namespace Resolver {
     type ASTProps<K extends keyof PropTypesMap> = {[J in keyof PropTypesMap[K]]?: AST.Expression}
     type ResolvedProps<K extends keyof PropTypesMap> = {[J in keyof PropTypesMap[K]]: ASG.Prop<PropTypesMap[K][J] & ASG.PropSpec>}
     
-    const CONVOLUTION_KERNELS = (<K extends string>(groups: IRecord<K, readonly (0 | 1)[]>) => groups)({
-        Moore: [1, 1, 1, 1, 0, 1, 1, 1, 1],
-    });
-    type KernelName = keyof typeof CONVOLUTION_KERNELS
+    function _convPatternKey(p: ASG.ConvPattern): string {
+        return `${Convolution.Kernel.key(p.kernel)}:${ISet.toBigInt(p.chars)}`;
+    }
     
     type DeclResolveResult<T> = [decl: ASG.AssignStmt | undefined, result: T | undefined]
     type ExprResolveResult<K extends AST.Expression['kind']> = (
@@ -102,7 +101,7 @@ namespace Resolver {
         potentials: ASG.FormalPotential[],
         variables: FormalVariable[],
     }> {}
-    type FormalGrid = ASG.FormalGrid & {readonly alphabet: Alphabet}
+    type FormalGrid = ASG.FormalGrid & Readonly<{alphabet: Alphabet, convPatterns: IDMap<ASG.ConvPattern>}>
     type FormalVariable = ASG.FormalVariable & {references: number}
     
     class Alphabet {
@@ -153,7 +152,7 @@ namespace Resolver {
         public symmetryName: Symmetry.SymmetryName = 'all';
         public readonly variables = new Map<string, FormalVariable>();
         public readonly errorVariables = new Set<string>();
-        public kernel: KernelName | undefined = undefined;
+        public kernel: Convolution.Kernel | undefined = undefined;
         
         public grid: FormalGrid | undefined = undefined;
         public inputPattern: Pattern | undefined = undefined;
@@ -297,21 +296,18 @@ namespace Resolver {
             return result;
         }
         
-        withKernel<T>(stmt: AST.ConvolutionStmt, f: () => T): T {
+        withKernel<T>(stmt: AST.ConvolutionStmt, f: (kernel: Convolution.Kernel) => T): T | undefined {
             if(this.kernel !== undefined) { throw new Error(); }
             
-            // TODO: make `kernel` a declaration like `symmetry`, or a modifier like `@limit`, get rid of `convolution`?
             const kernel = _resolveProp(stmt, 'kernel', 'const str', this);
-            if(kernel === undefined) { return f(); }
-            
-            if(kernel in CONVOLUTION_KERNELS) {
-                this.kernel = kernel as KernelName;
-                const result = f();
+            if(kernel !== PROP_ERROR && kernel in Convolution.KERNELS) {
+                const k = this.kernel = Convolution.KERNELS[kernel as Convolution.KernelName];
+                const result = f(k);
                 this.kernel = undefined;
                 return result;
             } else {
-                this.error(`convolution kernel must be one of ${quoteJoin(Object.keys(CONVOLUTION_KERNELS))}`, stmt.kernel.pos);
-                return f();
+                this.error(`convolution kernel must be one of ${quoteJoin(Object.keys(Convolution.KERNELS))}`, stmt.kernel.pos);
+                return undefined;
             }
         }
         
@@ -682,16 +678,16 @@ namespace Resolver {
         const {pos} = expr;
         if(!ctx.expectGrid(expr.pos)) { return undefined; }
         
-        const {kernel} = ctx;
-        if(kernel === undefined) { ctx.error(`no kernel for 'sum' in this context`, pos); return undefined; }
-        if(!ctx.isRuleContext) { ctx.error(`'sum' may only be used in rule condition or output pattern`, pos); return undefined; }
+        const {kernel, grid} = ctx;
+        if(kernel === undefined) { ctx.error(`'sum' expression may only be used 'convolution' statement`, pos); return undefined; }
+        if(!ctx.isRuleContext) { ctx.error(`'sum' expression may only be used in a rule condition or output pattern`, pos); return undefined; }
         
         const chars = _resolveProp(expr, 'child', 'const charset.in', ctx);
         if(chars === PROP_ERROR) { return undefined; }
         
-        // TODO: declare buffer for the convolution
+        const patternID = grid.convPatterns.getOrCreateID({chars: chars.masks[0], kernel});
         const flags = ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC;
-        return {kind: 'expr.sum', type: Type.INT, flags, kernel, chars, pos};
+        return {kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos};
     }
     function _checkZero(ctx: Context, child: ASG.Expression): ASG.Expression | undefined {
         if(child.kind !== 'expr.constant') {
@@ -810,17 +806,6 @@ namespace Resolver {
         
         return {kind: 'stmt', stmt: {kind: stmt.kind, inGrid: ctx.grid.id, pos: stmt.pos, ...props}};
     }
-    function _resolveConvolutionPrlStmt(stmt: AST.ConvolutionStmt | AST.PrlStmt, ctx: Context): StmtResolveResult<'stmt.rules.convolution' | 'stmt.rules.prl'> {
-        if(!ctx.expectGrid(stmt.pos)) { return undefined; }
-        
-        const {rewrites, assigns} = _resolveRules(stmt, ctx, ctx.grid, false);
-        const commutative = _rewritesCommute(rewrites);
-        return {
-            kind: 'stmt',
-            assigns,
-            stmt: {kind: 'stmt.rules.basic.prl', inGrid: ctx.grid.id, rewrites, commutative, pos: stmt.pos},
-        };
-    }
     function _resolveAllOnceOneStmt(stmt: AST.AllStmt | AST.OnceStmt | AST.OneStmt, ctx: Context): StmtResolveResult<'stmt.rules.all' | 'stmt.rules.once' | 'stmt.rules.one'> {
         const {pos} = stmt;
         if(!ctx.expectGrid(pos)) { return undefined; }
@@ -834,7 +819,6 @@ namespace Resolver {
         const inGrid = ctx.grid.id;
         const kind = stmt.kind === 'stmt.rules.all' ? 'all' : 'one';
         const isBasic = fields.length === 0 && observations.length === 0;
-        const commutative = _rewritesCommute(rewrites);
         
         if(isSearch) {
             for(const field of fields) { ctx.error(`'field' cannot be used with 'search'`, field.pos); }
@@ -847,12 +831,12 @@ namespace Resolver {
         let r: ASG.BranchingRulesStmt | ASG.LimitStmt;
         if(isBasic) {
             if(temperature !== undefined) { ctx.error(`'temperature' requires at least one 'field' or 'observe'`, temperature.pos); }
-            r = {kind: `stmt.rules.basic.${kind}`, inGrid, rewrites, commutative, pos};
+            r = {kind: `stmt.rules.basic.${kind}`, inGrid, rewrites, commutative: _rewritesCommute(rewrites), pos};
         } else if(isSearch) {
-            r = {kind: `stmt.rules.search.${kind}`, inGrid, temperature, maxStates, depthCoefficient, rewrites, commutative, observations, pos};
+            r = {kind: `stmt.rules.search.${kind}`, inGrid, temperature, maxStates, depthCoefficient, rewrites, observations, pos};
         } else {
             if(fields.length > 0 && observations.length > 0) { ctx.error(`cannot have 'field' and 'observe' rules in the same block`, pos); }
-            r = {kind: `stmt.rules.biased.${kind}`, inGrid, temperature, rewrites, fields, observations, commutative, pos};
+            r = {kind: `stmt.rules.biased.${kind}`, inGrid, temperature, rewrites, fields, observations, pos};
         }
         
         if(stmt.kind === 'stmt.rules.once') {
@@ -966,6 +950,7 @@ namespace Resolver {
             return {kind: 'expr.dict', type, flags, entryExprs, pos};
         },
         'expr.grid': (expr, ctx) => {
+            const {pos} = expr;
             const props = _resolveProps(expr, ctx);
             if(props === undefined) { return undefined; }
             
@@ -974,8 +959,15 @@ namespace Resolver {
             if(scaleY <= 0) { ctx.error(`'scaleY' must be positive`, expr.scaleY!.pos); }
             
             const alphabet = new Alphabet(expr.alphabetKey);
-            const grid = withNextID(ctx.globals.grids, {alphabet, scaleX, scaleY, periodic: props.periodic ?? false, pos: expr.pos});
-            return _makeConstantExpr(Type.GRID, grid.id, expr.pos);
+            const grid = withNextID(ctx.globals.grids, {
+                alphabet,
+                scaleX,
+                scaleY,
+                periodic: props.periodic ?? false,
+                convPatterns: IDMap.withKey(_convPatternKey),
+                pos,
+            });
+            return _makeConstantExpr(Type.GRID, grid.id, pos);
         },
         'expr.literal.bool': _resolveSimpleLiteralExpr,
         'expr.literal.float': _resolveSimpleLiteralExpr,
@@ -1167,7 +1159,7 @@ namespace Resolver {
                 ctx.error(`'field' cannot have both 'from' and 'to'`, pos);
             }
             
-            const potential = withNextID(ctx.globals.potentials, {inGrid: ctx.grid, for_});
+            const potential = withNextID(ctx.globals.potentials, {inGrid: ctx.grid.id, for_});
             return {rules: [{kind: 'rule.field', potential, for_, on, zero, inversed, recompute, essential, pos}]};
         },
         'rule.observe': _resolveObserveOrRewriteRule,
@@ -1225,9 +1217,32 @@ namespace Resolver {
             return {kind: 'stmt', stmt: {kind: 'stmt.put', inGrid, at, pattern, uncertainties, condition, pos: stmt.pos}};
         },
         'stmt.rules.all': _resolveAllOnceOneStmt,
-        'stmt.rules.convolution': (stmt, ctx) => ctx.withKernel(stmt, () => _resolveConvolutionPrlStmt(stmt, ctx)),
+        'stmt.rules.convolution': (stmt, ctx) => ctx.withKernel(stmt, kernel => {
+            const {pos} = stmt;
+            if(!ctx.expectGrid(pos)) { return undefined; }
+            
+            const {rewrites, assigns} = _resolveRules(stmt, ctx, ctx.grid, false);
+            
+            const charsUsed = ISet.empty(ctx.grid.alphabet.key.length);
+            for(const rule of rewrites) {
+                if(rule.from.width !== 1 || rule.from.height !== 1) { ctx.error(`'convolution' rule patterns must be 1x1`, rule.pos); }
+                
+                const chars = rule.from.masks[0];
+                if(!ISet.isDisjoint(chars, charsUsed)) {
+                    ctx.error(`'convolution' input patterns must be disjoint`, rule.pos);
+                }
+                ISet.addAll(charsUsed, chars);
+            }
+            
+            return {
+                kind: 'stmt',
+                assigns,
+                stmt: {kind: 'stmt.rules.convolution', inGrid: ctx.grid.id, rewrites, kernel, pos},
+            };
+        }),
         'stmt.rules.map': (stmt, ctx) => {
-            if(!ctx.expectGrid(stmt.pos)) { return undefined; }
+            const {pos} = stmt;
+            if(!ctx.expectGrid(pos)) { return undefined; }
             
             const inGrid = ctx.grid.id;
             const outGrid = _resolveProp(stmt, 'outGrid', 'const grid', ctx);
@@ -1239,11 +1254,22 @@ namespace Resolver {
             ctx.grid = formalOutGrid;
             
             const commutative = rewrites.every(rule => rule.from.width === 1 && rule.from.height === 1);
-            return {kind: 'stmt', assigns, stmt: {kind: 'stmt.rules.map', inGrid, outGrid, rewrites, commutative, pos: stmt.pos}};
+            return {kind: 'stmt', assigns, stmt: {kind: 'stmt.rules.map', inGrid, outGrid, rewrites, commutative, pos}};
         },
         'stmt.rules.once': _resolveAllOnceOneStmt,
         'stmt.rules.one': _resolveAllOnceOneStmt,
-        'stmt.rules.prl': _resolveConvolutionPrlStmt,
+        'stmt.rules.prl': (stmt, ctx) => {
+            const {pos} = stmt;
+            if(!ctx.expectGrid(pos)) { return undefined; }
+            
+            const {rewrites, assigns} = _resolveRules(stmt, ctx, ctx.grid, false);
+            return {
+                kind: 'stmt',
+                assigns,
+                stmt: {kind: 'stmt.rules.basic.prl', inGrid: ctx.grid.id, rewrites, commutative: _rewritesCommute(rewrites), pos},
+            };
+        },
+        
         'stmt.use.expr': (stmt, ctx) => {
             const grid = _resolveProp(stmt, 'expr', 'const grid', ctx);
             if(grid === PROP_ERROR) { return undefined; }

@@ -105,9 +105,9 @@ A runtime error occurs if the operand's value is less than or equal to zero; a c
 
 ### Sum operator
 
-The `sum` operator evaluates a [convolution](statements.md#convolution-statements) at the "current position" which is defined in a [rule context](rules.md#rule-contexts). The result of the expression is the number of neighbours at that position matching the given 1x1 pattern, as an `int`. The current context's convolution kernel determines which cells are "neighbours".
+The `sum` operator may only be used within a [convolution statement](statements.md#convolution-statements). The result of the expression is the number of neighbours of the "current position" (as defined in a [rule context](rules.md#rule-contexts)) which match the given 1x1 pattern, as an `int`. The `kernel` argument of the `convolution` statement determines which cells are "neighbours".
 
-The operand must be a compile-time constant 1x1 [pattern](types.md#pattern-types) for the current alphabet. A compilation error occurs if the `sum` operator is used outside of a [rule context](rules.md#rule-contexts), or in a context where no convolution kernel is declared.
+The operand must be a compile-time constant 1x1 [pattern](types.md#pattern-types) for the current alphabet. A compilation error occurs if the `sum` operator is used outside of a [rule context](rules.md#rule-contexts), or outside of a `convolution` statement.
 
 
 ## Declaration expressions

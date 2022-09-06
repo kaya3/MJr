@@ -1,0 +1,11 @@
+# Implementation of John Conway's "Game of Life"
+# https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life
+
+grid [DA]
+
+@limit 1
+prl: [D] -> [A] if random < 0.5
+
+convolution {kernel="Moore"}:
+    [D] -> [A] if sum [A] == 3
+    [A] -> [D] if sum [A] < 2 or sum [A] > 3

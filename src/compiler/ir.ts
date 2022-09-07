@@ -354,7 +354,7 @@ namespace IR {
         return {kind: 'stmt.yield', expr};
     }
     
-    const OP_NEGATIONS: {readonly [K in BinaryOp]?: BinaryOp} = {
+    const OP_NEGATIONS = (<K extends BinaryOp>(x: IRecord<K, BinaryOp>) => x)({
         bool_eq: 'bool_ne',
         bool_ne: 'bool_eq',
         
@@ -386,7 +386,7 @@ namespace IR {
         
         str_eq: 'str_ne',
         str_ne: 'str_eq',
-    };
+    });
     
     function _binOp(op: BinaryOp, left: Expr, right: Expr): BinaryOpExpr {
         return {kind: 'expr.op.binary', op, left, right};
@@ -417,15 +417,16 @@ namespace IR {
         },
         not(expr: Expr): Expr {
             if(expr.kind === 'expr.op.binary') {
-                if(expr.op === 'bool_and' || expr.op === 'bool_or') {
+                const {op} = expr;
+                if(op === 'bool_and' || op === 'bool_or') {
                     // https://en.wikipedia.org/wiki/De_Morgan's_laws
                     return _binOp(
-                        expr.op === 'bool_and' ? 'bool_or' : 'bool_and',
+                        op === 'bool_and' ? 'bool_or' : 'bool_and',
                         OP.not(expr.left),
                         OP.not(expr.right),
                     );
-                } else if(expr.op in OP_NEGATIONS) {
-                    return _binOp(OP_NEGATIONS[expr.op]!, expr.left, expr.right);
+                } else if(objHasKey(OP_NEGATIONS, op)) {
+                    return _binOp(OP_NEGATIONS[op], expr.left, expr.right);
                 }
             } else if(expr.kind === 'expr.op.unary' && expr.op === 'bool_not') {
                 return expr.child;

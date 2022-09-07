@@ -151,7 +151,7 @@ namespace CodeGen {
                 out.write(`rng ??= ${RUNTIME_LIB_NAME}.DEFAULT_PRNG;`);
                 
                 for(const op of stmt.opsUsed) {
-                    if(op in MJr.OPS) {
+                    if(objHasKey(MJr.OPS, op)) {
                         out.beginLine();
                         out.write(`const ${op} = ${RUNTIME_LIB_NAME}.OPS.${op};`);
                     }

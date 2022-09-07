@@ -300,12 +300,13 @@ namespace Resolver {
             if(this.kernel !== undefined) { throw new Error(); }
             
             const kernel = _resolveProp(stmt, 'kernel', 'const str', this);
-            if(kernel !== PROP_ERROR && kernel in Convolution.KERNELS) {
-                const k = this.kernel = Convolution.KERNELS[kernel as Convolution.KernelName];
+            if(objHasKey(Convolution.KERNELS, kernel)) {
+                const k = this.kernel = Convolution.KERNELS[kernel];
                 const result = f(k);
                 this.kernel = undefined;
                 return result;
             } else {
+                // this also handles PROP_ERROR
                 this.error(`convolution kernel must be one of ${quoteJoin(Object.keys(Convolution.KERNELS))}`, stmt.kernel.pos);
                 return undefined;
             }
@@ -313,9 +314,9 @@ namespace Resolver {
         
         withSymmetry<T>(decl: AST.SymmetryDecl, f: () => T): T {
             const symmetryName = _resolveProp(decl, 'expr', 'const str', this);
-            if(symmetryName in Symmetry.SYMMETRY_GROUPS) {
+            if(objHasKey(Symmetry.SYMMETRY_GROUPS, symmetryName)) {
                 const oldSymmetryName = this.symmetryName;
-                this.symmetryName = symmetryName as Symmetry.SymmetryName;
+                this.symmetryName = symmetryName;
                 const result = f();
                 this.symmetryName = oldSymmetryName;
                 return result;

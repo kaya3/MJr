@@ -295,7 +295,7 @@ var CodeGen;
                 out.beginLine();
                 out.write(`rng ??= ${RUNTIME_LIB_NAME}.DEFAULT_PRNG;`);
                 for (const op of stmt.opsUsed) {
-                    if (op in MJr.OPS) {
+                    if (objHasKey(MJr.OPS, op)) {
                         out.beginLine();
                         out.write(`const ${op} = ${RUNTIME_LIB_NAME}.OPS.${op};`);
                     }
@@ -1570,7 +1570,7 @@ var IR;
         return { kind: 'stmt.yield', expr };
     }
     IR.yield_ = yield_;
-    const OP_NEGATIONS = {
+    const OP_NEGATIONS = ((x) => x)({
         bool_eq: 'bool_ne',
         bool_ne: 'bool_eq',
         float_eq: 'float_ne',
@@ -1598,7 +1598,7 @@ var IR;
         int_ge: 'int_lt',
         str_eq: 'str_ne',
         str_ne: 'str_eq',
-    };
+    });
     function _binOp(op, left, right) {
         return { kind: 'expr.op.binary', op, left, right };
     }
@@ -1627,12 +1627,13 @@ var IR;
         },
         not(expr) {
             if (expr.kind === 'expr.op.binary') {
-                if (expr.op === 'bool_and' || expr.op === 'bool_or') {
+                const { op } = expr;
+                if (op === 'bool_and' || op === 'bool_or') {
                     // https://en.wikipedia.org/wiki/De_Morgan's_laws
-                    return _binOp(expr.op === 'bool_and' ? 'bool_or' : 'bool_and', IR.OP.not(expr.left), IR.OP.not(expr.right));
+                    return _binOp(op === 'bool_and' ? 'bool_or' : 'bool_and', IR.OP.not(expr.left), IR.OP.not(expr.right));
                 }
-                else if (expr.op in OP_NEGATIONS) {
-                    return _binOp(OP_NEGATIONS[expr.op], expr.left, expr.right);
+                else if (objHasKey(OP_NEGATIONS, op)) {
+                    return _binOp(OP_NEGATIONS[op], expr.left, expr.right);
                 }
             }
             else if (expr.kind === 'expr.op.unary' && expr.op === 'bool_not') {
@@ -3625,7 +3626,7 @@ var Parser;
         }
         hasNextBinaryOp(minPrecedence) {
             const op = this.q.peek().s;
-            return op in Parser_1.BINARY_OPS && Parser_1.BINARY_OPS[op] >= minPrecedence;
+            return objHasKey(Parser_1.BINARY_OPS, op) && Parser_1.BINARY_OPS[op] >= minPrecedence;
         }
         /**
          * ```none
@@ -3671,17 +3672,17 @@ var Parser;
                 }
                 return this.parseDeclarationExpr();
             }
-            const tok = this.q.peek();
-            if (!(tok.s in Parser_1.UNARY_OPS)) {
+            const { s: op, pos } = this.q.peek();
+            if (!objHasKey(Parser_1.UNARY_OPS, op)) {
                 return this.parsePrimaryExpression();
             }
-            const op = this.q.poll().s;
+            const tok = this.q.poll();
             const opPrecedence = Parser_1.UNARY_OPS[op];
             if (opPrecedence < minPrecedence) {
                 this.errorOperatorPrecedence(tok);
             }
             const child = this.expr(opPrecedence);
-            return child && { kind: 'expr.op.unary', op, child, pos: tok.pos };
+            return child && { kind: 'expr.op.unary', op, child, pos };
         }
         /**
          * ```none
@@ -3789,7 +3790,7 @@ var Parser;
                 // sanitise JS keyword
                 const argName = name.name === 'for' ? 'for_' : name.name;
                 args[argName] = expr;
-                if (!(argName in spec)) {
+                if (!objHasKey(spec, argName)) {
                     const hints = ARGS_TO_NODES[argName];
                     const msg = hints !== undefined ? `argument '${name.name}' only valid for ${quoteJoin(hints)}` : `invalid argument '${name.name}'`;
                     this.diagnostics.syntaxError(msg, name.pos);
@@ -4545,20 +4546,21 @@ var Resolver;
                 throw new Error();
             }
             const kernel = _resolveProp(stmt, 'kernel', 'const str', this);
-            if (kernel !== PROP_ERROR && kernel in Convolution.KERNELS) {
+            if (objHasKey(Convolution.KERNELS, kernel)) {
                 const k = this.kernel = Convolution.KERNELS[kernel];
                 const result = f(k);
                 this.kernel = undefined;
                 return result;
             }
             else {
+                // this also handles PROP_ERROR
                 this.error(`convolution kernel must be one of ${quoteJoin(Object.keys(Convolution.KERNELS))}`, stmt.kernel.pos);
                 return undefined;
             }
         }
         withSymmetry(decl, f) {
             const symmetryName = _resolveProp(decl, 'expr', 'const str', this);
-            if (symmetryName in Symmetry.SYMMETRY_GROUPS) {
+            if (objHasKey(Symmetry.SYMMETRY_GROUPS, symmetryName)) {
                 const oldSymmetryName = this.symmetryName;
                 this.symmetryName = symmetryName;
                 const result = f();
@@ -6848,6 +6850,9 @@ function makePatternMatcherDFAs(alphabetSize, patterns) {
     ]);
     const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), numPatterns, colRegex);
     return [rowDFA, colDFA];
+}
+function objHasKey(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
 }
 /**
  * Creates an empty array of length `n`, filled with the given value.

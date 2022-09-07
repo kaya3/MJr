@@ -323,7 +323,7 @@ namespace Parser {
         
         private hasNextBinaryOp(minPrecedence: Precedence): boolean {
             const op = this.q.peek().s;
-            return op in BINARY_OPS && BINARY_OPS[op as AST.BinaryOp] >= minPrecedence;
+            return objHasKey(BINARY_OPS, op) && BINARY_OPS[op] >= minPrecedence;
         }
         
         /**
@@ -375,15 +375,15 @@ namespace Parser {
                 return this.parseDeclarationExpr();
             }
             
-            const tok = this.q.peek();
-            if(!(tok.s in UNARY_OPS)) { return this.parsePrimaryExpression(); }
+            const {s: op, pos} = this.q.peek();
+            if(!objHasKey(UNARY_OPS, op)) { return this.parsePrimaryExpression(); }
             
-            const op = this.q.poll().s as AST.UnaryOp;
+            const tok = this.q.poll();
             const opPrecedence = UNARY_OPS[op];
             if(opPrecedence < minPrecedence) { this.errorOperatorPrecedence(tok); }
             
             const child = this.expr(opPrecedence);
-            return child && {kind: 'expr.op.unary', op, child, pos: tok.pos};
+            return child && {kind: 'expr.op.unary', op, child, pos};
         }
         
         /**
@@ -498,7 +498,7 @@ namespace Parser {
                 // sanitise JS keyword
                 const argName = name.name === 'for' ? 'for_' : name.name;
                 args[argName] = expr;
-                if(!(argName in spec)) {
+                if(!objHasKey(spec, argName)) {
                     const hints = ARGS_TO_NODES[argName];
                     const msg = hints !== undefined ? `argument '${name.name}' only valid for ${quoteJoin(hints)}` : `invalid argument '${name.name}'`;
                     this.diagnostics.syntaxError(msg, name.pos);

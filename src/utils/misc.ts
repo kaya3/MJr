@@ -8,6 +8,10 @@ type Immutable<T> = {readonly [K in keyof T]:
     : Readonly<T[K]>
 }
 
+function objHasKey<T extends object>(obj: T, key: PropertyKey): key is keyof T {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 /**
  * Creates an empty array of length `n`, filled with the given value.
  */

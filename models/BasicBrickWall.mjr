@@ -14,7 +14,7 @@ markov:
 one: [OOOOOOOO/BBBBBBBB] -> [...B..../........]
 
 markov:
-    symmetry "xy" in:
+    symmetry "all" in:
         all: [OW] -> [.O]
     all: [OO/OB] -> [.B/..]
     one: [OOOO/BBBB/OOOO] -> [..B./..../....]

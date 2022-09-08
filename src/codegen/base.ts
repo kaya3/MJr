@@ -40,6 +40,7 @@ namespace CodeGen {
         private readonly _out: string[] = [];
         private _indentationLevel: number = 0;
         private _indent: string = '';
+        private readonly _toAssign = new Map<string, IR.Expr>();
         
         protected abstract readonly STMT_WRITE_FUNCS: StmtWriteFuncs<this>;
         protected abstract readonly EXPR_WRITE_FUNCS: ExprWriteFuncs<this>;
@@ -74,6 +75,27 @@ namespace CodeGen {
         
         public writeExpr(expr: IR.Expr, minPrecedence: number = 0): void {
             switch(expr.kind) {
+                case 'expr.letin': {
+                    if(this.writeAssignExpr !== undefined) {
+                        for(const decl of expr.decls) {
+                            this._toAssign.set(decl.name.name, decl.initialiser);
+                        }
+                        this.writeExpr(expr.child, minPrecedence);
+                        return;
+                    }
+                    break;
+                }
+                case 'expr.name': {
+                    const rhs = this._toAssign.get(expr.name);
+                    if(this.writeAssignExpr !== undefined && rhs !== undefined) {
+                        this._toAssign.delete(expr.name);
+                        if(minPrecedence > 0) { this.write(this.LPAREN); }
+                        this.writeAssignExpr(expr, rhs);
+                        if(minPrecedence > 0) { this.write(this.RPAREN); }
+                        return;
+                    }
+                    break;
+                }
                 case 'expr.op.unary': {
                     const spec = this.UNARY_OPS[expr.op];
                     if(spec === NOOP) {
@@ -99,15 +121,15 @@ namespace CodeGen {
                     if(p < minPrecedence) { this.write(this.RPAREN); }
                     return;
                 }
-                default: {
-                    const [p, f] = this.EXPR_WRITE_FUNCS[expr.kind];
-                    if(p < minPrecedence) { this.write(this.LPAREN); }
-                    f(this, expr as never);
-                    if(p < minPrecedence) { this.write(this.RPAREN); }
-                    return;
-                }
             }
+            const [p, f] = this.EXPR_WRITE_FUNCS[expr.kind];
+            if(p < minPrecedence) { this.write(this.LPAREN); }
+            f(this, expr as never);
+            if(p < minPrecedence) { this.write(this.RPAREN); }
+            return;
         }
+        
+        public writeAssignExpr?(left: IR.NameExpr, right: IR.Expr): void;
         
         public writeIndentedBlock(stmt: IR.Stmt): void {
             this.writeStmt(stmt.kind !== 'stmt.block' ? {kind: 'stmt.block', children: [stmt]} : stmt);

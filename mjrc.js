@@ -26,6 +26,7 @@ var CodeGen;
         _out = [];
         _indentationLevel = 0;
         _indent = '';
+        _toAssign = new Map();
         LPAREN = '(';
         RPAREN = ')';
         constructor(config) {
@@ -55,6 +56,31 @@ var CodeGen;
         }
         writeExpr(expr, minPrecedence = 0) {
             switch (expr.kind) {
+                case 'expr.letin': {
+                    if (this.writeAssignExpr !== undefined) {
+                        for (const decl of expr.decls) {
+                            this._toAssign.set(decl.name.name, decl.initialiser);
+                        }
+                        this.writeExpr(expr.child, minPrecedence);
+                        return;
+                    }
+                    break;
+                }
+                case 'expr.name': {
+                    const rhs = this._toAssign.get(expr.name);
+                    if (this.writeAssignExpr !== undefined && rhs !== undefined) {
+                        this._toAssign.delete(expr.name);
+                        if (minPrecedence > 0) {
+                            this.write(this.LPAREN);
+                        }
+                        this.writeAssignExpr(expr, rhs);
+                        if (minPrecedence > 0) {
+                            this.write(this.RPAREN);
+                        }
+                        return;
+                    }
+                    break;
+                }
                 case 'expr.op.unary': {
                     const spec = this.UNARY_OPS[expr.op];
                     if (spec === CodeGen.NOOP) {
@@ -89,18 +115,16 @@ var CodeGen;
                     }
                     return;
                 }
-                default: {
-                    const [p, f] = this.EXPR_WRITE_FUNCS[expr.kind];
-                    if (p < minPrecedence) {
-                        this.write(this.LPAREN);
-                    }
-                    f(this, expr);
-                    if (p < minPrecedence) {
-                        this.write(this.RPAREN);
-                    }
-                    return;
-                }
             }
+            const [p, f] = this.EXPR_WRITE_FUNCS[expr.kind];
+            if (p < minPrecedence) {
+                this.write(this.LPAREN);
+            }
+            f(this, expr);
+            if (p < minPrecedence) {
+                this.write(this.RPAREN);
+            }
+            return;
         }
         writeIndentedBlock(stmt) {
             this.writeStmt(stmt.kind !== 'stmt.block' ? { kind: 'stmt.block', children: [stmt] } : stmt);
@@ -209,8 +233,14 @@ var CodeGen;
             'stmt.decl.func': (out, stmt) => {
                 const { params, paramTypes } = stmt;
                 out.beginLine();
-                out.write(`function${stmt.yields !== undefined ? '*' : ''} ${stmt.name}(`);
-                out.writeList(i => out.writeParamDecl(params[i], paramTypes[i]), params.length);
+                out.write('function');
+                if (stmt.yields !== undefined) {
+                    out.write('*');
+                }
+                out.write(' ');
+                out.writeExpr(stmt.name);
+                out.write('(');
+                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
                 out.write(')');
                 out.writeReturnType(stmt.returnType, stmt.yields);
                 out.writeIndentedBlock(stmt.body);
@@ -372,19 +402,7 @@ var CodeGen;
                     out.write('}');
                 }],
             'expr.letin': [18 /* Precedence.MAX */, (out, expr) => {
-                    const { decls } = expr;
-                    out.write('(');
-                    out.writeList(i => {
-                        if (i < decls.length) {
-                            const { name, initialiser } = decls[i];
-                            out.write(`${name} = `);
-                            out.writeExpr(initialiser);
-                        }
-                        else {
-                            out.writeExpr(expr.child);
-                        }
-                    }, decls.length + 1, 1);
-                    out.write(')');
+                    throw new Error();
                 }],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
@@ -421,7 +439,8 @@ var CodeGen;
                     out.write(')');
                 }],
             'expr.op.call.local': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    out.write(`${expr.name}(`);
+                    out.writeExpr(expr.name);
+                    out.write('(');
                     out.writeExprList(expr.args);
                     out.write(')');
                 }],
@@ -443,7 +462,7 @@ var CodeGen;
                 return CodeGen.binaryOp(5 /* Precedence.BITWISE_OR */, '(', p, ` ${op} `, p + 1, ') | 0');
             }
             function _func(name) {
-                return CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 1 /* Precedence.MIN */, ', ', 1 /* Precedence.MIN */, ')');
+                return CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 0 /* Precedence.MIN */, ', ', 0 /* Precedence.MIN */, ')');
             }
             const PLUS = CodeGen.infixOp(11 /* Precedence.PLUS_MINUS */, '+', 3 /* Associativity.BOTH */), MINUS = CodeGen.infixOp(11 /* Precedence.PLUS_MINUS */, '-'), EQ = CodeGen.infixOp(8 /* Precedence.EQ */, '==='), NE = CodeGen.infixOp(8 /* Precedence.EQ */, '!=='), LT = CodeGen.infixOp(9 /* Precedence.CMP */, '<'), LE = CodeGen.infixOp(9 /* Precedence.CMP */, '<='), GT = CodeGen.infixOp(9 /* Precedence.CMP */, '>'), GE = CodeGen.infixOp(9 /* Precedence.CMP */, '>=');
             return {
@@ -504,7 +523,7 @@ var CodeGen;
                 return CodeGen.unaryOp(5 /* Precedence.BITWISE_OR */, `(${op}`, p, ') | 0');
             }
             function _func(name) {
-                return CodeGen.unaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 1 /* Precedence.MIN */, ')');
+                return CodeGen.unaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 0 /* Precedence.MIN */, ')');
             }
             const TO_STR = CodeGen.unaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, '', 17 /* Precedence.ATTR_ACCESS_CALL */, '.toString()');
             return {
@@ -527,6 +546,11 @@ var CodeGen;
                 int_to_str: TO_STR,
             };
         })();
+        writeAssignExpr(left, right) {
+            this.writeExpr(left);
+            this.write(' = ');
+            this.writeExpr(right, 2 /* Precedence.ASSIGN */);
+        }
         writeSwitch(stmt) {
             this.write('switch(');
             this.writeExpr(stmt.expr);
@@ -547,7 +571,7 @@ var CodeGen;
             this.write(name);
         }
         writeVarDecl(decl) {
-            this.write(decl.name);
+            this.writeExpr(decl.name);
             if (decl.initialiser !== undefined) {
                 this.write(' = ');
                 this.writeExpr(decl.initialiser);
@@ -568,7 +592,7 @@ var CodeGen;
         }
         writeVarDecl(decl) {
             const noInit = decl.initialiser === undefined;
-            this.write(decl.name);
+            this.writeExpr(decl.name);
             if (noInit) {
                 this.write(noInit ? '!: ' : ': ');
                 this.writeType(decl.type);
@@ -672,8 +696,10 @@ var CodeGen;
             'stmt.decl.func': (out, stmt) => {
                 const { params, paramTypes } = stmt;
                 out.beginLine();
-                out.write(`def ${stmt.name}(`);
-                out.writeList(i => out.writeParamDecl(params[i], paramTypes[i]), params.length);
+                out.write('def ');
+                out.writeExpr(stmt.name);
+                out.write('(');
+                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
                 out.write(')');
                 out.writeReturnType(stmt.returnType);
                 out.writeIndentedBlock(stmt.body);
@@ -836,19 +862,7 @@ var CodeGen;
                     out.write('}');
                 }],
             'expr.letin': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    const { decls } = expr;
-                    out.write('(');
-                    out.writeList(i => {
-                        if (i < decls.length) {
-                            const { name, initialiser } = decls[i];
-                            out.write(`${name} := `);
-                            out.writeExpr(initialiser);
-                        }
-                        else {
-                            out.writeExpr(expr.child);
-                        }
-                    }, decls.length + 1, 1);
-                    out.write(')[-1]');
+                    throw new Error();
                 }],
             'expr.literal.bool': [18 /* Precedence.MAX */, (out, expr) => {
                     out.write(expr.value ? 'True' : 'False');
@@ -887,7 +901,8 @@ var CodeGen;
                     js.write(')');
                 }],
             'expr.op.call.local': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    out.write(`${expr.name}(`);
+                    out.writeExpr(expr.name);
+                    out.write('(');
                     out.writeExprList(expr.args);
                     out.write(')');
                 }],
@@ -914,7 +929,7 @@ var CodeGen;
                 return CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, 'int32(', p, ` ${op} `, p + 1, ')');
             }
             function _func(name) {
-                return CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 1 /* Precedence.MIN */, ', ', 1 /* Precedence.MIN */, ')');
+                return CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 0 /* Precedence.MIN */, ', ', 0 /* Precedence.MIN */, ')');
             }
             // PLUS and MULT are not strictly right-associative for floats
             const PLUS = CodeGen.infixOp(12 /* Precedence.PLUS_MINUS */, '+'), MINUS = CodeGen.infixOp(12 /* Precedence.PLUS_MINUS */, '-'), MULT = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '*'), DIV = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '/'), FLOORDIV = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '//'), MOD = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '%'), EQ = _cmpOp('=='), NE = _cmpOp('!='), LT = _cmpOp('<'), LE = _cmpOp('<='), GT = _cmpOp('>'), GE = _cmpOp('>=');
@@ -976,7 +991,7 @@ var CodeGen;
                 return CodeGen.unaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `int32(${op}`, p, ')');
             }
             function _func(name) {
-                return CodeGen.unaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 1 /* Precedence.MIN */, ')');
+                return CodeGen.unaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 0 /* Precedence.MIN */, ')');
             }
             const UMINUS = CodeGen.prefixOp(14 /* Precedence.UPLUS_UMINUS */, '-'), TO_STR = _func('str');
             // 'checkzero' ops are NOOPs in Python; all of the relevant operations already raise errors for divzero
@@ -998,6 +1013,11 @@ var CodeGen;
                 int_to_str: TO_STR,
             };
         })();
+        writeAssignExpr(left, right) {
+            this.writeExpr(left);
+            this.write(' := ');
+            this.writeExpr(right, 2 /* Precedence.ASSIGN */);
+        }
         writeParamDecl(name, type) {
             this.write(name);
             if (type.kind === 'nullable') {
@@ -1009,7 +1029,7 @@ var CodeGen;
                 return;
             }
             this.beginLine();
-            this.write(decl.name);
+            this.writeExpr(decl.name);
             this.write(' = ');
             this.writeExpr(decl.initialiser);
         }
@@ -1027,7 +1047,7 @@ var CodeGen;
         }
         writeVarDecl(decl) {
             this.beginLine();
-            this.write(decl.name);
+            this.writeExpr(decl.name);
             this.write(': ');
             this.writeType(decl.type);
             if (decl.initialiser !== undefined) {
@@ -1814,7 +1834,7 @@ var Compiler;
         'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
     ];
     // names
-    const WIDTH = IR.name('width'), HEIGHT = IR.name('height'), RNG = IR.name('rng'), STATE = IR.name('state'), AT = IR.name('at'), AT_X = IR.name('atX'), AT_Y = IR.name('atY'), AT_CONV = IR.name('atConv'), MATCHES = 'matches', MATCH_COUNT = 'count', MATCH = IR.name('m'), ANY = IR.name('any'), G = IR.name('g'), I = IR.name('i'), J = IR.name('j'), N = IR.name('n'), P = IR.name('p'), START_X = IR.name('startX'), START_Y = IR.name('startY'), END_X = IR.name('endX'), END_Y = IR.name('endY'), EFFECTIVE_WIDTH = IR.name('w'), EFFECTIVE_HEIGHT = IR.name('h'), X = IR.name('x'), Y = IR.name('y'), S = IR.name('s'), OLD_S = IR.name('oldS'), MASK = 'mask', MASK_CLEAR = 'mask_clear', MASK_SET = 'mask_set', MASK_HASNT = 'mask_hasnt';
+    const WIDTH = IR.name('width'), HEIGHT = IR.name('height'), PARAMS = IR.name('params'), RNG = IR.name('rng'), STATE = IR.name('state'), AT = IR.name('at'), AT_X = IR.name('atX'), AT_Y = IR.name('atY'), AT_CONV = IR.name('atConv'), MATCHES = 'matches', MATCH_COUNT = 'count', MATCH = IR.name('m'), ANY = IR.name('any'), G = IR.name('g'), I = IR.name('i'), J = IR.name('j'), N = IR.name('n'), P = IR.name('p'), START_X = IR.name('startX'), START_Y = IR.name('startY'), END_X = IR.name('endX'), END_Y = IR.name('endY'), EFFECTIVE_WIDTH = IR.name('w'), EFFECTIVE_HEIGHT = IR.name('h'), X = IR.name('x'), Y = IR.name('y'), S = IR.name('s'), OLD_S = IR.name('oldS'), MASK = 'mask', MASK_CLEAR = IR.name('mask_clear'), MASK_SET = IR.name('mask_set'), MASK_HASNT = IR.name('mask_hasnt');
     // helpers
     const OP = IR.OP;
     class CGrid {
@@ -1902,18 +1922,18 @@ var Compiler;
             const consts = [];
             const vars = [];
             if (width !== WIDTH) {
-                consts.push({ name: width.name, type: IR.INT_TYPE, initialiser: OP.multConstant(WIDTH, grid.scaleX) });
+                consts.push({ name: width, type: IR.INT_TYPE, initialiser: OP.multConstant(WIDTH, grid.scaleX) });
             }
             if (height !== HEIGHT) {
-                consts.push({ name: height.name, type: IR.INT_TYPE, initialiser: OP.multConstant(HEIGHT, grid.scaleY) });
+                consts.push({ name: height, type: IR.INT_TYPE, initialiser: OP.multConstant(HEIGHT, grid.scaleY) });
             }
-            consts.push({ name: n.name, type: IR.INT_TYPE, initialiser: OP.mult(width, height) }, { name: data.name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(n) });
+            consts.push({ name: n, type: IR.INT_TYPE, initialiser: OP.mult(width, height) }, { name: data, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(n) });
             if (obj !== undefined) {
                 const initialiser = IR.libConstructorCall('Grid', [width, height, data, IR.str(alphabetKey)]);
-                consts.push({ name: obj.name, type: IR.GRID_TYPE, initialiser });
+                consts.push({ name: obj, type: IR.GRID_TYPE, initialiser });
             }
             if (origin !== undefined) {
-                consts.push({ name: origin.name, type: IR.INT_TYPE, initialiser: OP.add(originX, OP.mult(originY, width)) });
+                consts.push({ name: origin, type: IR.INT_TYPE, initialiser: OP.add(originX, OP.mult(originY, width)) });
             }
             for (const buffer of this.convBuffers.values()) {
                 consts.push(...buffer.declare());
@@ -1922,7 +1942,7 @@ var Compiler;
                 consts.push(sampler.declare());
             }
             vars.push(...Array.from(this.counters.values(), counter => ({
-                name: counter.name,
+                name: counter,
                 type: IR.INT_TYPE,
                 initialiser: IR.ZERO,
             })));
@@ -1983,7 +2003,7 @@ var Compiler;
         constructor(g) {
             this.g = g;
             // TODO: multiple matchers per grid? could depend on CFG
-            this.updateFuncName = `grid${g.grid.id}_update`;
+            this.updateFuncName = IR.name(`grid${g.grid.id}_update`);
         }
         addMatchHandler(handler) {
             this.matchHandlers.push(handler);
@@ -2030,26 +2050,26 @@ var Compiler;
             const rowDFAType = IR.constArrayType(_rowDFA.size()), rowAcceptSetsType = IR.constArrayType(_rowDFA.acceptSetMap.size()), colDFAType = IR.constArrayType(_colDFA.size()), colAcceptSetsType = IR.constArrayType(_colDFA.acceptSetMap.size()), rowStatesType = IR.mutableArrayType(rowDFAType.domainSize), colStatesType = IR.mutableArrayType(colDFAType.domainSize);
             return [
                 IR.declVars([
-                    { name: rowDFA.name, type: rowDFAType, initialiser: IR.constArray(_rowDFA.toFlatArray(), rowDFAType.domainSize, _rowDFA.alphabetSize) },
-                    { name: rowAcceptSets.name, type: rowAcceptSetsType, initialiser: IR.constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsType.domainSize) },
-                    { name: colDFA.name, type: colDFAType, initialiser: IR.constArray(_colDFA.toFlatArray(), colDFAType.domainSize, _colDFA.alphabetSize) },
-                    { name: colAcceptSets.name, type: colAcceptSetsType, initialiser: IR.constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsType.domainSize) },
-                    { name: rowStates.name, type: rowStatesType, initialiser: IR.newArray(g.n, rowDFAType.domainSize) },
-                    { name: colStates.name, type: colStatesType, initialiser: IR.newArray(g.n, colDFAType.domainSize) },
+                    { name: rowDFA, type: rowDFAType, initialiser: IR.constArray(_rowDFA.toFlatArray(), rowDFAType.domainSize, _rowDFA.alphabetSize) },
+                    { name: rowAcceptSets, type: rowAcceptSetsType, initialiser: IR.constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsType.domainSize) },
+                    { name: colDFA, type: colDFAType, initialiser: IR.constArray(_colDFA.toFlatArray(), colDFAType.domainSize, _colDFA.alphabetSize) },
+                    { name: colAcceptSets, type: colAcceptSetsType, initialiser: IR.constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsType.domainSize) },
+                    { name: rowStates, type: rowStatesType, initialiser: IR.newArray(g.n, rowDFAType.domainSize) },
+                    { name: colStates, type: colStatesType, initialiser: IR.newArray(g.n, colDFAType.domainSize) },
                 ]),
-                IR.declFunc(updateFuncName, undefined, [START_X.name, START_Y.name, EFFECTIVE_WIDTH.name, EFFECTIVE_HEIGHT.name], [IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE], IR.VOID_TYPE, IR.block([
+                IR.declFunc(updateFuncName, undefined, [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT], [IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE], IR.VOID_TYPE, IR.block([
                     IR.declVars([
-                        { name: END_X.name, type: IR.INT_TYPE, initialiser: OP.add(START_X, EFFECTIVE_WIDTH) },
-                        { name: END_Y.name, type: IR.INT_TYPE, initialiser: OP.add(START_Y, EFFECTIVE_HEIGHT) },
+                        { name: END_X, type: IR.INT_TYPE, initialiser: OP.add(START_X, EFFECTIVE_WIDTH) },
+                        { name: END_Y, type: IR.INT_TYPE, initialiser: OP.add(START_Y, EFFECTIVE_HEIGHT) },
                     ]),
                     IR.BLANK_LINE,
                     IR.comment('recompute row states'),
                     IR.forRange(Y, START_Y, END_Y, IR.block([
-                        IR.declVar(S.name, IR.INT_TYPE, IR.ternary(OP.lt(END_X, g.width), IR.access(rowStates, g.index(END_X, Y)), IR.ZERO), true),
+                        IR.declVar(S, IR.INT_TYPE, IR.ternary(OP.lt(END_X, g.width), IR.access(rowStates, g.index(END_X, Y)), IR.ZERO), true),
                         IR.forRangeReverse(X, IR.ZERO, END_X, IR.block([
                             IR.declVars([
-                                { name: I.name, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
-                                { name: OLD_S.name, type: IR.INT_TYPE, initialiser: IR.access(rowStates, I) },
+                                { name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
+                                { name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(rowStates, I) },
                             ]),
                             IR.assign(S, '=', IR.access(rowDFA, OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(I)))),
                             IR.if_(OP.ne(S, OLD_S), IR.block([
@@ -2061,11 +2081,11 @@ var Compiler;
                     IR.BLANK_LINE,
                     IR.comment('recompute col states'),
                     IR.forRange(X, START_X, END_X, IR.block([
-                        IR.declVar(S.name, IR.INT_TYPE, IR.ternary(OP.lt(END_Y, g.height), IR.access(colStates, g.index(X, END_Y)), IR.ZERO), true),
+                        IR.declVar(S, IR.INT_TYPE, IR.ternary(OP.lt(END_Y, g.height), IR.access(colStates, g.index(X, END_Y)), IR.ZERO), true),
                         IR.forRangeReverse(Y, IR.ZERO, END_Y, IR.block([
                             IR.declVars([
-                                { name: I.name, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
-                                { name: OLD_S.name, type: IR.INT_TYPE, initialiser: IR.access(colStates, I) },
+                                { name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
+                                { name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(colStates, I) },
                             ]),
                             IR.assign(S, '=', IR.access(colDFA, OP.multAddConstant(S, _colDFA.alphabetSize, IR.access(rowAcceptSets, IR.access(rowStates, I))))),
                             IR.if_(OP.ne(S, OLD_S), IR.block([
@@ -2099,7 +2119,7 @@ var Compiler;
         declare() {
             const initialiser = this.numFlags === 1 ? IR.FALSE : IR.ZERO;
             return IR.declVars(this.vars.map(v => ({
-                name: v.name,
+                name: v,
                 type: IR.INT_TYPE,
                 initialiser,
             })), true);
@@ -2137,7 +2157,7 @@ var Compiler;
         declare(c) {
             const { vars } = this;
             return IR.declVars(this.limits.map((limit, i) => ({
-                name: vars[i].name,
+                name: vars[i],
                 type: IR.INT_TYPE,
                 initialiser: limit.canReset ? undefined : c.expr(limit.initialiser),
             })), true);
@@ -2172,16 +2192,16 @@ var Compiler;
             const arrayComponent = IR.access(this.name, OP.divConstant(I, 32));
             const bit = OP.lshift(IR.ONE, OP.modConstant(I, 32));
             return [
-                IR.declVar(this.name.name, IR.INT32_ARRAY_TYPE, IR.newInt32Array(this.maskN(OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale)))),
-                IR.declFunc(MASK_CLEAR, undefined, [N.name], [IR.INT_TYPE], IR.VOID_TYPE, IR.block([
+                IR.declVar(this.name, IR.INT32_ARRAY_TYPE, IR.newInt32Array(this.maskN(OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale)))),
+                IR.declFunc(MASK_CLEAR, undefined, [N], [IR.INT_TYPE], IR.VOID_TYPE, IR.block([
                     IR.assign(N, '=', this.maskN(N)),
                     IR.forRange(I, IR.ZERO, N, IR.assign(IR.access(this.name, I), '=', IR.ZERO)),
                 ])),
-                IR.declFunc(MASK_SET, undefined, [G.name, I.name, S.name], [IR.GRID_DATA_ARRAY_TYPE, IR.INT_TYPE, IR.BYTE_TYPE], IR.VOID_TYPE, IR.block([
+                IR.declFunc(MASK_SET, undefined, [G, I, S], [IR.GRID_DATA_ARRAY_TYPE, IR.INT_TYPE, IR.BYTE_TYPE], IR.VOID_TYPE, IR.block([
                     IR.assign(IR.access(G, I), '=', S),
                     IR.assign(arrayComponent, '|=', bit),
                 ])),
-                IR.declFunc(MASK_HASNT, undefined, [I.name], [IR.INT_TYPE], IR.BOOL_TYPE, IR.return_(OP.eq(OP.bitwiseAnd(arrayComponent, bit), IR.ZERO))),
+                IR.declFunc(MASK_HASNT, undefined, [I], [IR.INT_TYPE], IR.BOOL_TYPE, IR.return_(OP.eq(OP.bitwiseAnd(arrayComponent, bit), IR.ZERO))),
                 IR.BLANK_LINE,
             ];
         }
@@ -2217,10 +2237,10 @@ var Compiler;
                 return IR.PASS;
             }
             const n = OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale);
-            return IR.declVar(this.array.name, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n));
+            return IR.declVar(this.array, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n));
         }
         declareCount(initial, mutable) {
-            return IR.declVar(this.count.name, IR.INT_TYPE, initial, mutable);
+            return IR.declVar(this.count, IR.INT_TYPE, initial, mutable);
         }
         copyFrom(sampler, shuffle) {
             return shuffle
@@ -2232,7 +2252,7 @@ var Compiler;
         }
         add(match, shuffle) {
             return IR.block(shuffle ? [
-                IR.declVar(J.name, IR.INT_TYPE, IR.libMethodCall('PRNG', 'nextInt', RNG, [OP.add(this.count, IR.ONE)])),
+                IR.declVar(J, IR.INT_TYPE, IR.libMethodCall('PRNG', 'nextInt', RNG, [OP.add(this.count, IR.ONE)])),
                 IR.assign(this.getAtCount, '=', this.get(J)),
                 IR.assign(this.get(J), '=', match),
                 this.incrementCount,
@@ -2243,7 +2263,7 @@ var Compiler;
         }
         forEach(indexVar, then) {
             return IR.forRange(indexVar, IR.ZERO, this.count, IR.block([
-                IR.declVar(MATCH.name, IR.INT_TYPE, this.get(indexVar)),
+                IR.declVar(MATCH, IR.INT_TYPE, this.get(indexVar)),
                 ...then,
             ]));
         }
@@ -2265,7 +2285,7 @@ var Compiler;
         }
         declare() {
             return {
-                name: this.name.name,
+                name: this.name,
                 type: IR.SAMPLER_TYPE,
                 initialiser: IR.libConstructorCall('Sampler', [OP.multConstant(this.inGrid.n, this.numPatterns)]),
             };
@@ -2328,8 +2348,8 @@ var Compiler;
         declare() {
             const { n, name, k, width, height } = this;
             return [
-                { name: n.name, type: IR.INT_TYPE, initialiser: OP.mult(width, height) },
-                { name: name.name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(OP.multConstant(n, k)) },
+                { name: n, type: IR.INT_TYPE, initialiser: OP.mult(width, height) },
+                { name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(OP.multConstant(n, k)) },
             ];
         }
         get(chars) {
@@ -2371,7 +2391,7 @@ var Compiler;
             // this also filters out compile-time constants, since the resolver folds them instead of referencing them
             return this.variables
                 .filter(v => v.references > 0)
-                .map(v => IR.declVar(names[v.id].name, c.type(v.type), v.initialiser && c.expr(v.initialiser), v.initialiser === undefined));
+                .map(v => IR.declVar(names[v.id], c.type(v.type), v.initialiser && c.expr(v.initialiser), v.initialiser === undefined));
         }
         name(variableID) {
             return this.names[variableID];
@@ -2443,21 +2463,21 @@ var Compiler;
                 gridDecls.push(...g.declareVars());
                 gridUpdateDecls.push(...g.matcher.declareUpdateFunc());
             }
-            const mainParams = [WIDTH.name, HEIGHT.name];
+            const mainParams = [WIDTH, HEIGHT];
             const mainParamTypes = [IR.INT_TYPE, IR.INT_TYPE];
             if (params.size > 0) {
-                mainParams.push('params');
+                mainParams.push(PARAMS);
                 mainParamTypes.push(IR.nullableType({
                     kind: 'dict',
                     keys: Array.from(params.keys()),
                     values: Array.from(params.values(), t => IR.nullableType(this.type(t))),
                 }));
             }
-            mainParams.push(RNG.name);
+            mainParams.push(RNG);
             mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
             // need to compile everything before preamble, so that `this.opsUsed` is complete
-            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({ name: `constant${i}`, type: s.type, initialiser: s.expr }))), varDecls = this.variables.declare(this), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this);
-            return IR.declFunc(this.config.entryPointName, this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({ name: IR.name(`constant${i}`), type: s.type, initialiser: s.expr }))), varDecls = this.variables.declare(this), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this);
+            return IR.declFunc(IR.name(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${Compiler_1.COMPILER_VERSION} on ${date}`),
                 // TODO: compute and pass max width/height, to ensure no overflow of "loose" integer operations
                 this.config.emitChecks ? IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_("Grid dimensions must be positive")) : IR.PASS,
@@ -2603,7 +2623,7 @@ var Compiler;
             else {
                 const nextState = IR.int(cur.kind === 'stop' ? -1 : this.stateIDs.getOrCreateID(toNodeID));
                 if (initial) {
-                    out.push(IR.declVar(STATE.name, IR.INT_TYPE, nextState, true));
+                    out.push(IR.declVar(STATE, IR.INT_TYPE, nextState, true));
                 }
                 else if (fromNodeID !== toNodeID) {
                     out.push(IR.assign(STATE, '=', nextState));
@@ -2654,7 +2674,7 @@ var Compiler;
                 const { variable, rhs } = expr.decl;
                 if (variable.references > 0) {
                     decls.push({
-                        name: c.variables.name(variable.id).name,
+                        name: c.variables.name(variable.id),
                         // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
                         type: c.variables.type(variable.id, c),
                         initialiser: c.expr(rhs),
@@ -2723,7 +2743,7 @@ var Compiler;
             return IR.block([
                 // TODO: check bounds, given size of pattern
                 _declareAt(g, c.expr(stmt.at)),
-                pattern.kind !== 'expr.constant' ? IR.declVar(P.name, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
+                pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
                 IR.if_(_writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition), _doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
             ]);
         },
@@ -2751,9 +2771,9 @@ var Compiler;
     }
     function _declareAt(g, at) {
         return IR.declVars([
-            { name: AT.name, type: IR.INT_TYPE, initialiser: at },
-            { name: AT_X.name, type: IR.INT_TYPE, initialiser: OP.mod(AT, g.width) },
-            { name: AT_Y.name, type: IR.INT_TYPE, initialiser: OP.floordiv(AT, g.width) },
+            { name: AT, type: IR.INT_TYPE, initialiser: at },
+            { name: AT_X, type: IR.INT_TYPE, initialiser: OP.mod(AT, g.width) },
+            { name: AT_Y, type: IR.INT_TYPE, initialiser: OP.floordiv(AT, g.width) },
         ]);
     }
     function _doWrite(c, outGrid, from, to, useMask, flagVar, doUpdate, doYield) {
@@ -2832,11 +2852,11 @@ var Compiler;
         const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
-        const randomMatch = IR.declVar(MATCH.name, IR.INT_TYPE, sampler.sample(allUnconditionalAndEffective));
+        const randomMatch = IR.declVar(MATCH, IR.INT_TYPE, sampler.sample(allUnconditionalAndEffective));
         const switchWrites = IR.block([
             _declareAt(g, OP.divConstant(MATCH, k)),
             IR.switch_(OP.modConstant(MATCH, k), rewrites.map((rule, i) => IR.block([
-                rule.to.kind !== 'expr.constant' ? IR.declVar(P.name, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
+                rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
                 IR.if_(writeConditions[i], _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
             ]))),
         ]);
@@ -2844,7 +2864,7 @@ var Compiler;
             ? IR.if_(sampler.isNotEmpty, IR.block([randomMatch, switchWrites, ifChanged]), then)
             : IR.block([
                 c.matches.declareCount(sampler.count, true),
-                IR.declVar(ANY.name, IR.BOOL_TYPE, IR.FALSE, true),
+                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), IR.block([randomMatch, switchWrites, c.matches.decrementCount])),
                 IR.if_(ANY, ifChanged, then),
             ]);
@@ -2882,7 +2902,7 @@ var Compiler;
         }
         const shuffle = useMask || !stmt.commutative;
         out.push(IR.declVars(rewrites.flatMap((rule, i) => !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
-            ? [{ name: `p${i}`, type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to) }]
+            ? [{ name: IR.name(`p${i}`), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to) }]
             : [])));
         const firstPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? rule.to : undefined, IR.name(`p${i}`), outPatternIsSameEverywhere[i] ? rule.toUncertainties : undefined, rule.condition));
         const secondPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, outPatternIsSameEverywhere[i] ? undefined : rule.toUncertainties, undefined));
@@ -2911,7 +2931,7 @@ var Compiler;
             }
         }
         const doWrites = rewrites.map((rule, i) => IR.block([
-            outPatternIsConstant[i] ? IR.PASS : IR.declVar(P.name, IR.PATTERN_TYPE, 
+            outPatternIsConstant[i] ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, 
             // TODO: `c.expr(rule.to)` is only correct when `rule.to` is grid-independent (see above)
             outPatternIsSameEverywhere[i] ? IR.name(`p${i}`) : c.expr(rule.to)),
             IR.if_(OP.and(secondPassConditions[i], useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE), _doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false)),
@@ -2919,7 +2939,7 @@ var Compiler;
         if (c.config.animate) {
             ifChanged = IR.block([g.yield_(), ifChanged]);
         }
-        out.push(useFlag ? IR.declVar(ANY.name, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
+        out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
             useMask ? c.mask.clear(g) : IR.PASS,
             c.matches.forEach(I, [
                 _declareAt(g, OP.divConstant(MATCH, k)),
@@ -2945,11 +2965,11 @@ var Compiler;
         const bufferWidth = OP.add(g.width, IR.int(kernel.width - 1)), atConvInitialiser = OP.add(OP.add(AT_X, IR.int(kernel.centreX)), OP.mult(OP.add(AT_Y, IR.int(kernel.centreY)), bufferWidth));
         // TODO: different strategy if rules don't cover the whole alphabet?
         return IR.block([
-            IR.declVar(ANY.name, IR.BOOL_TYPE, IR.FALSE, true),
+            IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
             IR.forRange(AT_Y, IR.ZERO, g.height, IR.forRange(AT_X, IR.ZERO, g.width, IR.block([
                 IR.declVars([
-                    { name: AT.name, type: IR.INT_TYPE, initialiser: g.index(AT_X, AT_Y) },
-                    { name: AT_CONV.name, type: IR.INT_TYPE, initialiser: atConvInitialiser },
+                    { name: AT, type: IR.INT_TYPE, initialiser: g.index(AT_X, AT_Y) },
+                    { name: AT_CONV, type: IR.INT_TYPE, initialiser: atConvInitialiser },
                 ]),
                 IR.switch_(g.access(AT), cases),
             ]))),

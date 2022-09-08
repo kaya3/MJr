@@ -21,7 +21,7 @@ namespace CodeGen {
         BOOL_OR = 4,
         TERNARY = 3,
         ASSIGN = 2,
-        MIN = 1,
+        MIN = 0,
     }
     
     export class Python extends Base {
@@ -53,8 +53,10 @@ namespace CodeGen {
             'stmt.decl.func': (out, stmt) => {
                 const {params, paramTypes} = stmt;
                 out.beginLine();
-                out.write(`def ${stmt.name}(`);
-                out.writeList(i => out.writeParamDecl(params[i], paramTypes[i]), params.length);
+                out.write('def ');
+                out.writeExpr(stmt.name);
+                out.write('(');
+                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
                 out.write(')');
                 out.writeReturnType(stmt.returnType);
                 out.writeIndentedBlock(stmt.body);
@@ -215,18 +217,7 @@ namespace CodeGen {
                 out.write('}');
             }],
             'expr.letin': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                const {decls} = expr;
-                out.write('(');
-                out.writeList(i => {
-                    if(i < decls.length) {
-                        const {name, initialiser} = decls[i];
-                        out.write(`${name} := `);
-                        out.writeExpr(initialiser);
-                    } else {
-                        out.writeExpr(expr.child);
-                    }
-                }, decls.length + 1, 1);
-                out.write(')[-1]');
+                throw new Error();
             }],
             'expr.literal.bool': [Precedence.MAX, (out, expr) => {
                 out.write(expr.value ? 'True' : 'False');
@@ -265,7 +256,8 @@ namespace CodeGen {
                 js.write(')');
             }],
             'expr.op.call.local': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                out.write(`${expr.name}(`);
+                out.writeExpr(expr.name);
+                out.write('(');
                 out.writeExprList(expr.args);
                 out.write(')');
             }],
@@ -404,6 +396,12 @@ namespace CodeGen {
             };
         })();
         
+        writeAssignExpr(left: IR.NameExpr, right: IR.Expr): void {
+            this.writeExpr(left);
+            this.write(' := ');
+            this.writeExpr(right, Precedence.ASSIGN);
+        }
+        
         writeParamDecl(name: string, type: IR.IRType): void {
             this.write(name);
             if(type.kind === 'nullable') { this.write('=None'); }
@@ -411,7 +409,7 @@ namespace CodeGen {
         writeVarDecl(decl: IR.VarDecl): void {
             if(decl.initialiser === undefined) { return; }
             this.beginLine();
-            this.write(decl.name);
+            this.writeExpr(decl.name);
             this.write(' = ');
             this.writeExpr(decl.initialiser);
         }
@@ -427,7 +425,7 @@ namespace CodeGen {
         }
         writeVarDecl(decl: IR.VarDecl): void {
             this.beginLine();
-            this.write(decl.name);
+            this.writeExpr(decl.name);
             this.write(': ');
             this.writeType(decl.type);
             if(decl.initialiser !== undefined) {

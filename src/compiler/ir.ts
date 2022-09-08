@@ -48,7 +48,7 @@ namespace IR {
     type LibFunction = Exclude<KeysMatching<typeof MJr, Function>, LibClass | 'fraction'>
     
     export interface Case extends Readonly<{values: readonly number[], then: Stmt}> {}
-    export interface VarDecl extends Readonly<{name: string, type: IRType, initialiser?: Expr}> {}
+    export interface VarDecl extends Readonly<{name: NameExpr, type: IRType, initialiser?: Expr}> {}
     export interface VarDeclWithInitialiser extends VarDecl {readonly initialiser: Expr}
     
     type _StmtNode<K extends string, T> = Readonly<{kind: `stmt.${K}`} & T> & {[JSON_KEY]?: string}
@@ -57,7 +57,7 @@ namespace IR {
     export interface BlockStmt extends _StmtNode<'block', {children: readonly Stmt[]}> {}
     export interface BreakStmt extends _StmtNode<'break', {}> {}
     export interface CommentStmt extends _StmtNode<'comment', {comment: string}> {}
-    export interface DeclFuncStmt extends _StmtNode<'decl.func', {name: string, yields: IRType | undefined, params: readonly string[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt}> {}
+    export interface DeclFuncStmt extends _StmtNode<'decl.func', {name: NameExpr, yields: IRType | undefined, params: readonly NameExpr[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt}> {}
     export interface DeclVarsStmt extends _StmtNode<'decl.vars', {decls: readonly VarDecl[], mutable: boolean}> {}
     export interface ExprStmt extends _StmtNode<'expr', {expr: CallLibExpr | CallLocalExpr}> {}
     export interface ForRangeStmt extends _StmtNode<'for.range', {index: NameExpr, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
@@ -92,7 +92,7 @@ namespace IR {
     export type OpExpr = ArrayAccessExpr | BinaryOpExpr | CallLibExpr | CallLocalExpr | TernaryExpr | UnaryOpExpr
     export interface ArrayAccessExpr extends _ExprNode<'op.access', {left: Expr, right: Expr}> {}
     export interface BinaryOpExpr extends _ExprNode<'op.binary', {op: BinaryOp, left: Expr, right: Expr}> {}
-    export interface CallLocalExpr extends _ExprNode<'op.call.local', {name: string, args: readonly Expr[]}> {}
+    export interface CallLocalExpr extends _ExprNode<'op.call.local', {name: NameExpr, args: readonly Expr[]}> {}
     export interface TernaryExpr extends _ExprNode<'op.ternary', {condition: Expr, then: Expr, otherwise: Expr}> {}
     export interface UnaryOpExpr extends _ExprNode<'op.unary', {op: UnaryOp, child: Expr}> {}
     
@@ -222,7 +222,7 @@ namespace IR {
     export function libMethodCall<K extends LibClass | 'PRNG'>(className: K, name: LibMethod<K>, obj: Expr, args: readonly Expr[]): CallLibMethodExpr {
         return {kind: 'expr.op.call.lib.method', className, name, obj, args};
     }
-    export function localCall(name: string, args: readonly Expr[]): CallLocalExpr {
+    export function localCall(name: NameExpr, args: readonly Expr[]): CallLocalExpr {
         return {kind: 'expr.op.call.local', name, args};
     }
     export function ternary(condition: Expr, then: Expr, otherwise: Expr): TernaryExpr {
@@ -267,10 +267,10 @@ namespace IR {
     export function comment(comment: string): CommentStmt {
         return {kind: 'stmt.comment', comment};
     }
-    export function declFunc(name: string, yields: IRType | undefined, params: readonly string[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt): DeclFuncStmt {
+    export function declFunc(name: NameExpr, yields: IRType | undefined, params: readonly NameExpr[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt): DeclFuncStmt {
         return {kind: 'stmt.decl.func', name, yields, params, paramTypes, returnType, body};
     }
-    export function declVar(name: string, type: IRType, initialiser?: Expr, mutable: boolean = false): Stmt {
+    export function declVar(name: NameExpr, type: IRType, initialiser?: Expr, mutable: boolean = false): Stmt {
         return declVars([{name, type, initialiser}], mutable);
     }
     export function declVars(decls: readonly VarDecl[], mutable: boolean = false): Stmt {
@@ -303,7 +303,7 @@ namespace IR {
     export function libMethodCallStmt<K extends LibClass>(className: K, name: LibMethod<K>, obj: Expr, args: readonly Expr[]): ExprStmt {
         return {kind: 'stmt.expr', expr: libMethodCall(className, name, obj, args)};
     }
-    export function localCallStmt(f: string, args: readonly Expr[]): ExprStmt {
+    export function localCallStmt(f: NameExpr, args: readonly Expr[]): ExprStmt {
         return {kind: 'stmt.expr', expr: localCall(f, args)};
     }
     export function log(expr: Expr): LogStmt {

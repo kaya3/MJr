@@ -388,8 +388,8 @@ namespace Parser {
         
         /**
          * ```none
-         * PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr | PatternExpr | '(' Expression ')'
-         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | StringLiteralExpr
+         * PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr | '(' Expression ')'
+         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StringLiteralExpr
          * ```
          */
         private parsePrimaryExpression(): AST.Expression | undefined {
@@ -595,7 +595,7 @@ namespace Parser {
         
         /**
          * ```none
-         * UnionDecl = 'union' PatternExpr '=' Expression
+         * UnionDecl = 'union' PatternLiteralExpr '=' Expression
          * ```
          */
         private parseUnionDecl(): AST.UnionDecl | undefined {
@@ -968,7 +968,7 @@ namespace Parser {
         
         /**
          * ```none
-         * GridExpr = 'grid' Args PatternExpr
+         * GridExpr = 'grid' Args PatternLiteralExpr
          * ```
          */
         private parseGridExpr(): AST.GridExpr | undefined {

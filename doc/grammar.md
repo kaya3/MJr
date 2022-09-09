@@ -37,7 +37,7 @@ Declaration = LegendDecl | LetDecl | SymmetryDecl | UnionDecl
 LegendDecl   = 'legend' Expression
 LetDecl      = 'let' 'param'? SimpleNameExpr '=' Expression
 SymmetryDecl = 'symmetry' Expression
-UnionDecl    = 'union' PatternExpr '=' Expression
+UnionDecl    = 'union' PatternLiteralExpr '=' Expression
 ```
 
 ### Expressions
@@ -65,7 +65,7 @@ FuncOp  = 'count' | 'load' | 'randint' | 'sum'
 
 PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr
 DictExpr    = NameValuePairs
-GridExpr    = 'grid' Args PatternExpr
+GridExpr    = 'grid' Args PatternLiteralExpr
 
 LiteralExpr        = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StringLiteralExpr
 BoolLiteralExpr    = 'false' | 'true'

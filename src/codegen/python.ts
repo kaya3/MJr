@@ -78,7 +78,7 @@ namespace CodeGen {
                     out.writeExpr(IR.OP.minusOne(low));
                     out.write(`, -1)`);
                 } else {
-                    if(low.kind !== 'expr.literal.int' || low.value !== 0) {
+                    if(low !== IR.ZERO) {
                         out.writeExpr(low);
                         out.write(`, `);
                     }

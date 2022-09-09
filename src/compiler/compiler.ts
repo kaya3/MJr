@@ -639,7 +639,7 @@ namespace Compiler {
         
         // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
         // but no flag needed if this statement isn't branching anyway
-        const useFlag = (ifChanged.kind !== 'stmt.pass' || then.kind !== 'stmt.pass') && outPatternIsSameEverywhere.includes(false)
+        const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false)
         
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if(firstPassConditions.every(c => c === IR.TRUE)) {

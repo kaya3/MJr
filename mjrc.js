@@ -723,7 +723,7 @@ var CodeGen;
                     out.write(`, -1)`);
                 }
                 else {
-                    if (low.kind !== 'expr.literal.int' || low.value !== 0) {
+                    if (low !== IR.ZERO) {
                         out.writeExpr(low);
                         out.write(`, `);
                     }
@@ -1349,6 +1349,7 @@ var IR;
         return { kind: 'expr.op.ternary', condition, then, otherwise };
     }
     IR.ternary = ternary;
+    // singletons
     IR.BLANK_LINE = { kind: 'stmt.blankline' };
     IR.BREAK = { kind: 'stmt.break' };
     IR.PASS = { kind: 'stmt.pass' };
@@ -1358,7 +1359,7 @@ var IR;
     IR.assign = assign;
     function block(children) {
         children = children.flatMap(c => c.kind === 'stmt.block' ? c.children
-            : c.kind === 'stmt.pass' ? []
+            : c === IR.PASS ? []
                 : [c]);
         return children.length === 0 ? IR.PASS
             : children.length === 1 ? children[0]
@@ -1390,7 +1391,7 @@ var IR;
     }
     IR.forRangeReverse = forRangeReverse;
     function if_(condition, then, otherwise) {
-        if (otherwise !== undefined && otherwise.kind === 'stmt.pass') {
+        if (otherwise === IR.PASS) {
             otherwise = undefined;
         }
         if (condition === IR.TRUE) {
@@ -1402,7 +1403,7 @@ var IR;
         else if (equals(then, otherwise)) {
             return then;
         }
-        else if (then.kind === 'stmt.pass') {
+        else if (then === IR.PASS) {
             return otherwise === undefined ? IR.PASS : if_(IR.unaryOp('bool_not', condition), otherwise);
         }
         else if (then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && equals(then.left, otherwise.left) && then.op === otherwise.op) {
@@ -1448,7 +1449,7 @@ var IR;
         let exhaustive = true;
         for (let i = 0; i < casesByIndex.length; ++i) {
             const c = casesByIndex[i];
-            if (c.kind === 'stmt.pass') {
+            if (c === IR.PASS) {
                 exhaustive = false;
                 continue;
             }
@@ -2418,7 +2419,7 @@ var Compiler;
         const secondPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, outPatternIsSameEverywhere[i] ? undefined : rule.toUncertainties, undefined));
         // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
         // but no flag needed if this statement isn't branching anyway
-        const useFlag = (ifChanged.kind !== 'stmt.pass' || then.kind !== 'stmt.pass') && outPatternIsSameEverywhere.includes(false);
+        const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if (firstPassConditions.every(c => c === IR.TRUE)) {
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));

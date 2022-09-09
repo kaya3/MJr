@@ -179,6 +179,7 @@ namespace IR {
         return {kind: 'expr.op.ternary', condition, then, otherwise};
     }
     
+    // singletons
     export const BLANK_LINE: BlankLineStmt = {kind: 'stmt.blankline'};
     export const BREAK: BreakStmt = {kind: 'stmt.break'};
     export const PASS: PassStmt = {kind: 'stmt.pass'};
@@ -189,7 +190,7 @@ namespace IR {
     export function block(children: readonly Stmt[]): Stmt {
         children = children.flatMap(c =>
             c.kind === 'stmt.block' ? c.children
-            : c.kind === 'stmt.pass' ? []
+            : c === PASS ? []
             : [c]
         );
         return children.length === 0 ? PASS
@@ -215,7 +216,7 @@ namespace IR {
         return {kind: 'stmt.for.range', index, low, high, reverse: true, body};
     }
     export function if_(condition: Expr, then: Stmt, otherwise?: Stmt): Stmt {
-        if(otherwise !== undefined && otherwise.kind === 'stmt.pass') { otherwise = undefined; }
+        if(otherwise === PASS) { otherwise = undefined; }
         
         if(condition === TRUE) {
             return then;
@@ -223,7 +224,7 @@ namespace IR {
             return otherwise ?? PASS;
         } else if(equals(then, otherwise)) {
             return then;
-        } else if(then.kind === 'stmt.pass') {
+        } else if(then === PASS) {
             return otherwise === undefined ? PASS : if_(unaryOp('bool_not', condition), otherwise);
         } else if(then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && equals(then.left, otherwise.left) && then.op === otherwise.op) {
             return assign(then.left, then.op, ternary(condition, then.right, otherwise.right));
@@ -265,7 +266,7 @@ namespace IR {
         let exhaustive = true;
         for(let i = 0; i < casesByIndex.length; ++i) {
             const c = casesByIndex[i];
-            if(c.kind === 'stmt.pass') { exhaustive = false; continue; }
+            if(c === PASS) { exhaustive = false; continue; }
             
             const k = key(c);
             let aggregated = map.get(k);

@@ -27,11 +27,15 @@ namespace IR {
         public get(index: Expr): Expr {
             return access(this.arr, index);
         }
-        public sample(withReplacement: boolean): Expr {
-            return withReplacement
-                ? this.get(libMethodCall('PRNG', 'nextInt', NAMES.RNG, [this.count]))
-                : libMethodCall('Sampler', 'sample', this.name, [this.count, NAMES.RNG]);
+        
+        public sampleWithReplacement(): Expr {
+            return this.get(libMethodCall('PRNG', 'nextInt', NAMES.RNG, [this.count]));
         }
+        
+        public sampleWithoutReplacement(count: Expr): Expr {
+            return libMethodCall('Sampler', 'sample', this.name, [this.count, NAMES.RNG]);
+        }
+        
         public forEach(indexVar: NameExpr, then: readonly Stmt[]): Stmt {
             return forRange(indexVar, ZERO, this.count, block(then));
         }

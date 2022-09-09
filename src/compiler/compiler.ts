@@ -533,7 +533,6 @@ namespace Compiler {
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
         
-        const randomMatch = IR.declVar(MATCH, IR.INT_TYPE, sampler.sample(allUnconditionalAndEffective));
         const switchWrites = IR.block([
             _declareAt(g, OP.divConstant(MATCH, k)),
             IR.switch_(
@@ -551,7 +550,11 @@ namespace Compiler {
         return allUnconditionalAndEffective
             ? IR.if_(
                 sampler.isNotEmpty,
-                IR.block([randomMatch, switchWrites, ifChanged]),
+                IR.block([
+                    IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithReplacement()),
+                    switchWrites,
+                    ifChanged,
+                ]),
                 then,
             )
             : IR.block([
@@ -559,10 +562,18 @@ namespace Compiler {
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(
                     OP.and(c.matches.isNotEmpty, OP.not(ANY)),
-                    IR.block([randomMatch, switchWrites, c.matches.decrementCount]),
+                    IR.block([
+                        IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithoutReplacement(c.matches.count)),
+                        switchWrites,
+                        c.matches.decrementCount,
+                    ]),
                 ),
                 IR.if_(ANY, ifChanged, then),
             ]);
+    }
+    
+    function _exprIs(expr: ASG.Expression, flags: ExprFlags): boolean {
+        return (expr.flags & flags) === flags;
     }
     
     function _basicAllPrl(c: Compiler, stmt: ASG.BasicRulesStmt, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
@@ -572,15 +583,15 @@ namespace Compiler {
         const out: IR.Stmt[] = [];
         
         const conditionIsSameEverywhere = rewrites.map(rule =>
-            (rule.condition.flags & ExprFlags.SAME_EVERYWHERE) === ExprFlags.SAME_EVERYWHERE
+            _exprIs(rule.condition, ExprFlags.SAME_EVERYWHERE)
             && rule.to.kind === 'expr.constant'
             && rule.toUncertainties === undefined
         );
         const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-        const outPatternIsSameEverywhere = rewrites.map(rule => (rule.to.flags & ExprFlags.SAME_EVERYWHERE) === ExprFlags.SAME_EVERYWHERE);
+        const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, ExprFlags.SAME_EVERYWHERE));
         
         // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-        const patternIsGridDependent = rewrites.map(rule => (rule.to.flags & ExprFlags.GRID_INDEPENDENT) === 0);
+        const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, ExprFlags.GRID_INDEPENDENT));
         rewrites.forEach((rule, i) => {
             if(patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
                 c.notSupported('output pattern dependent on both grid state and match position', rule.pos);

@@ -381,9 +381,12 @@ namespace Compiler {
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            return max.kind === 'expr.literal.int' && max.value > 0
-                ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
-                : IR.libFunctionCall('nextIntChecked', [RNG, max]);
+            if(max.kind === 'expr.literal.int') {
+                if(max.value <= 0) { throw new Error(); }
+                return IR.libMethodCall('PRNG', 'nextInt', RNG, [max]);
+            } else {
+                return IR.libFunctionCall('nextIntChecked', [RNG, max]);
+            }
         },
         'expr.sum': (c, expr) => {
             const g = c.grids[expr.inGrid];

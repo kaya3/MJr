@@ -32,7 +32,7 @@ namespace CodeGen {
             'stmt.assign': (out, stmt) => {
                 const {left, op, right} = stmt;
                 out.beginLine();
-                if((op === '+=' || op === '-=') && right.kind === 'expr.literal.int' && right.value === 1) {
+                if((op === '+=' || op === '-=') && right === IR.ONE) {
                     out.write(op === '+=' ? '++' : '--');
                     out.writeExpr(left);
                 } else {

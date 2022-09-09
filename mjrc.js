@@ -198,7 +198,7 @@ var CodeGen;
             'stmt.assign': (out, stmt) => {
                 const { left, op, right } = stmt;
                 out.beginLine();
-                if ((op === '+=' || op === '-=') && right.kind === 'expr.literal.int' && right.value === 1) {
+                if ((op === '+=' || op === '-=') && right === IR.ONE) {
                     out.write(op === '+=' ? '++' : '--');
                     out.writeExpr(left);
                 }
@@ -1249,22 +1249,33 @@ var IR;
     }
     IR.equals = equals;
     function float(value) {
-        return { kind: 'expr.literal.float', value };
+        return value === 0 ? IR.FLOAT_ZERO
+            : value === 1 ? IR.FLOAT_ONE
+                : value === -1 ? IR.FLOAT_MINUS_ONE
+                    : { kind: 'expr.literal.float', value };
     }
     IR.float = float;
     function int(value) {
-        return { kind: 'expr.literal.int', value };
+        return value === 0 ? IR.ZERO
+            : value === 1 ? IR.ONE
+                : value === -1 ? IR.MINUS_ONE
+                    : { kind: 'expr.literal.int', value };
     }
     IR.int = int;
     function str(value) {
         return { kind: 'expr.literal.str', value };
     }
     IR.str = str;
-    IR.ZERO = int(0);
-    IR.ONE = int(1);
+    // singleton objects for common values
     IR.TRUE = { kind: 'expr.literal.bool', value: true };
     IR.FALSE = { kind: 'expr.literal.bool', value: false };
     IR.NULL = { kind: 'expr.literal.null' };
+    IR.ZERO = { kind: 'expr.literal.int', value: 0 };
+    IR.ONE = { kind: 'expr.literal.int', value: 1 };
+    IR.MINUS_ONE = { kind: 'expr.literal.int', value: -1 };
+    IR.FLOAT_ZERO = { kind: 'expr.literal.float', value: 0 };
+    IR.FLOAT_ONE = { kind: 'expr.literal.float', value: 1 };
+    IR.FLOAT_MINUS_ONE = { kind: 'expr.literal.float', value: -1 };
     function attr(left, attr) {
         return { kind: 'expr.attr', left, attr };
     }
@@ -1323,7 +1334,13 @@ var IR;
     }
     IR.localCall = localCall;
     function ternary(condition, then, otherwise) {
-        if (condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
+        if (condition === IR.TRUE) {
+            return then;
+        }
+        else if (condition === IR.FALSE) {
+            return otherwise;
+        }
+        else if (condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
             condition = condition.child;
             const tmp = then;
             then = otherwise;
@@ -1376,8 +1393,11 @@ var IR;
         if (otherwise !== undefined && otherwise.kind === 'stmt.pass') {
             otherwise = undefined;
         }
-        if (condition.kind === 'expr.literal.bool') {
-            return condition.value ? then : (otherwise ?? IR.PASS);
+        if (condition === IR.TRUE) {
+            return then;
+        }
+        else if (condition === IR.FALSE) {
+            return otherwise ?? IR.PASS;
         }
         else if (equals(then, otherwise)) {
             return then;
@@ -1533,13 +1553,13 @@ var IR;
     function binaryOp(op, left, right) {
         switch (op) {
             case 'int_plus':
-                if (left.kind === 'expr.literal.int' && left.value === 0) {
+                if (left === IR.ZERO) {
                     return right;
                 }
                 if (left.kind === 'expr.op.unary' && left.op === 'int_uminus') {
                     return binaryOp('int_minus', right, left.child);
                 }
-                if (right.kind === 'expr.literal.int' && right.value === 0) {
+                if (right === IR.ZERO) {
                     return left;
                 }
                 if (right.kind === 'expr.op.unary' && right.op === 'int_uminus') {
@@ -1547,10 +1567,10 @@ var IR;
                 }
                 break;
             case 'int_minus':
-                if (left.kind === 'expr.literal.int' && left.value === 0) {
+                if (left === IR.ZERO) {
                     return unaryOp('int_uminus', right);
                 }
-                if (right.kind === 'expr.literal.int' && right.value === 0) {
+                if (right === IR.ZERO) {
                     return left;
                 }
                 if (right.kind === 'expr.op.unary' && right.op === 'int_uminus') {
@@ -1558,13 +1578,13 @@ var IR;
                 }
                 break;
             case 'float_plus':
-                if (left.kind === 'expr.literal.float' && left.value === 0) {
+                if (left === IR.FLOAT_ZERO) {
                     return right;
                 }
                 if (left.kind === 'expr.op.unary' && left.op === 'float_uminus') {
                     return binaryOp('float_minus', right, left.child);
                 }
-                if (right.kind === 'expr.literal.float' && right.value === 0) {
+                if (right === IR.FLOAT_ZERO) {
                     return left;
                 }
                 if (right.kind === 'expr.op.unary' && right.op === 'float_uminus') {
@@ -1572,10 +1592,10 @@ var IR;
                 }
                 break;
             case 'float_minus':
-                if (left.kind === 'expr.literal.float' && left.value === 0) {
+                if (left === IR.FLOAT_ZERO) {
                     return unaryOp('float_uminus', right);
                 }
-                if (right.kind === 'expr.literal.float' && right.value === 0) {
+                if (right === IR.FLOAT_ZERO) {
                     return left;
                 }
                 if (right.kind === 'expr.op.unary' && right.op === 'float_uminus') {
@@ -1583,63 +1603,57 @@ var IR;
                 }
                 break;
             case 'int_mult':
-                if (left.kind === 'expr.literal.int') {
-                    if (left.value === -1) {
-                        return unaryOp('int_uminus', right);
-                    }
-                    if (left.value === 0) {
-                        return IR.ZERO;
-                    }
-                    if (left.value === 1) {
-                        return right;
-                    }
+                if (left === IR.ZERO || right === IR.ZERO) {
+                    return IR.ZERO;
                 }
-                if (right.kind === 'expr.literal.int') {
-                    if (right.value === -1) {
-                        return unaryOp('int_uminus', left);
-                    }
-                    if (right.value === 0) {
-                        return IR.ZERO;
-                    }
-                    if (right.value === 1) {
-                        return left;
-                    }
+                if (left === IR.ONE) {
+                    return right;
+                }
+                if (right === IR.ONE) {
+                    return left;
+                }
+                if (left === IR.MINUS_ONE) {
+                    return unaryOp('int_uminus', right);
+                }
+                if (right === IR.MINUS_ONE) {
+                    return unaryOp('int_uminus', left);
                 }
                 break;
             case 'int_truediv':
-                if (right.kind === 'expr.literal.int' && right.value === 1) {
+                if (right === IR.ONE) {
                     return _unOp('int_to_fraction', left);
                 }
                 break;
             case 'int_floordiv':
-                if (right.kind === 'expr.literal.int') {
-                    if (right.value === -1) {
-                        return unaryOp('int_uminus', left);
-                    }
-                    if (right.value === 1) {
-                        return left;
-                    }
+                if (right === IR.ONE) {
+                    return left;
+                }
+                if (right === IR.MINUS_ONE) {
+                    return unaryOp('int_uminus', left);
                 }
                 break;
             case 'float_mult':
-                if (left.kind === 'expr.literal.float') {
-                    if (left.value === -1) {
-                        return unaryOp('float_uminus', right);
-                    }
-                    // `0 * x === 0` is not strictly correct, due to infinity and NaN
-                    //if(left.value === 0) { return ZERO; }
-                    if (left.value === 1) {
-                        return right;
-                    }
+                // `0 * x === 0` is not strictly correct, due to infinity and NaN
+                if (left === IR.FLOAT_ONE) {
+                    return right;
                 }
-                if (right.kind === 'expr.literal.float') {
-                    if (right.value === -1) {
-                        return unaryOp('float_uminus', left);
-                    }
-                    //if(right.value === 0) { return ZERO; }
-                    if (right.value === 1) {
-                        return left;
-                    }
+                if (right === IR.FLOAT_ONE) {
+                    return left;
+                }
+                if (left === IR.FLOAT_MINUS_ONE) {
+                    return unaryOp('float_uminus', right);
+                }
+                if (right === IR.FLOAT_MINUS_ONE) {
+                    return unaryOp('float_uminus', left);
+                }
+                break;
+            case 'float_truediv':
+                // `0 / y === 0` is not strictly correct, due to NaN
+                if (right === IR.FLOAT_ONE) {
+                    return left;
+                }
+                if (right === IR.FLOAT_MINUS_ONE) {
+                    return unaryOp('float_uminus', left);
                 }
                 break;
         }
@@ -1708,13 +1722,13 @@ var IR;
      */
     IR.OP = {
         and(left, right) {
-            return left.kind === 'expr.literal.bool' ? (left.value ? right : IR.FALSE)
-                : right.kind === 'expr.literal.bool' ? (right.value ? left : IR.FALSE)
+            return left === IR.TRUE || right === IR.FALSE ? right
+                : left === IR.FALSE || right === IR.TRUE ? left
                     : _binOp('bool_and', left, right);
         },
         or(left, right) {
-            return left.kind === 'expr.literal.bool' ? (left.value ? IR.TRUE : right)
-                : right.kind === 'expr.literal.bool' ? (right.value ? IR.TRUE : left)
+            return left === IR.FALSE || right === IR.TRUE ? right
+                : left === IR.TRUE || right === IR.FALSE ? left
                     : _binOp('bool_or', left, right);
         },
         not(expr) {
@@ -1734,8 +1748,8 @@ var IR;
             return _unOp('bool_not', expr);
         },
         add(left, right) {
-            return left.kind === 'expr.literal.int' && left.value === 0 ? right
-                : right.kind === 'expr.literal.int' && right.value === 0 ? left
+            return left === IR.ZERO ? right
+                : right === IR.ZERO ? left
                     : _binOp('loose_int_plus', left, right);
         },
         minusOne(expr) {
@@ -1747,7 +1761,7 @@ var IR;
                     : _binOp('loose_int_mult', left, right);
         },
         fraction(left, right) {
-            return right.kind === 'expr.literal.int' && right.value === 1 ? _unOp('int_to_fraction', left)
+            return right === IR.ONE ? _unOp('int_to_fraction', left)
                 : _binOp('int_truediv', left, right);
         },
         floordiv(left, right) {
@@ -1798,23 +1812,20 @@ var IR;
                     : _binOp('loose_int_mod', left, IR.int(right));
         },
         lshift(left, right) {
-            return left.kind === 'expr.literal.int' && left.value === 0 ? IR.ZERO
-                : right.kind === 'expr.literal.int' && right.value === 0 ? left
-                    : _binOp('int_lshift', left, right);
+            return left === IR.ZERO || right === IR.ZERO ? left
+                : _binOp('int_lshift', left, right);
         },
         rshift(left, right) {
-            return left.kind === 'expr.literal.int' && left.value === 0 ? IR.ZERO
-                : right.kind === 'expr.literal.int' && right.value === 0 ? left
-                    : _binOp('int_rshift', left, right);
+            return left === IR.ZERO || right === IR.ZERO ? left
+                : _binOp('int_rshift', left, right);
         },
         bitwiseAnd(left, right) {
-            return left.kind === 'expr.literal.int' && left.value === 0 ? IR.ZERO
-                : right.kind === 'expr.literal.int' && right.value === 0 ? IR.ZERO
-                    : _binOp('int_and', left, right);
+            return left === IR.ZERO || right === IR.ZERO ? IR.ZERO
+                : _binOp('int_and', left, right);
         },
         bitwiseOr(left, right) {
-            return left.kind === 'expr.literal.int' && left.value === 0 ? right
-                : right.kind === 'expr.literal.int' && right.value === 0 ? left
+            return left === IR.ZERO ? right
+                : right === IR.ZERO ? left
                     : _binOp('int_or', left, right);
         },
         bitwiseNot(expr) {
@@ -2205,9 +2216,15 @@ var Compiler;
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            return max.kind === 'expr.literal.int' && max.value > 0
-                ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
-                : IR.libFunctionCall('nextIntChecked', [RNG, max]);
+            if (max.kind === 'expr.literal.int') {
+                if (max.value <= 0) {
+                    throw new Error();
+                }
+                return IR.libMethodCall('PRNG', 'nextInt', RNG, [max]);
+            }
+            else {
+                return IR.libFunctionCall('nextIntChecked', [RNG, max]);
+            }
         },
         'expr.sum': (c, expr) => {
             const g = c.grids[expr.inGrid];
@@ -2335,7 +2352,6 @@ var Compiler;
         const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
-        const randomMatch = IR.declVar(MATCH, IR.INT_TYPE, sampler.sample(allUnconditionalAndEffective));
         const switchWrites = IR.block([
             _declareAt(g, OP.divConstant(MATCH, k)),
             IR.switch_(OP.modConstant(MATCH, k), rewrites.map((rule, i) => IR.block([
@@ -2344,26 +2360,37 @@ var Compiler;
             ]))),
         ]);
         return allUnconditionalAndEffective
-            ? IR.if_(sampler.isNotEmpty, IR.block([randomMatch, switchWrites, ifChanged]), then)
+            ? IR.if_(sampler.isNotEmpty, IR.block([
+                IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithReplacement()),
+                switchWrites,
+                ifChanged,
+            ]), then)
             : IR.block([
                 c.matches.declareCount(sampler.count, true),
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), IR.block([randomMatch, switchWrites, c.matches.decrementCount])),
+                IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), IR.block([
+                    IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithoutReplacement(c.matches.count)),
+                    switchWrites,
+                    c.matches.decrementCount,
+                ])),
                 IR.if_(ANY, ifChanged, then),
             ]);
+    }
+    function _exprIs(expr, flags) {
+        return (expr.flags & flags) === flags;
     }
     function _basicAllPrl(c, stmt, ifChanged, then) {
         const { rewrites } = stmt;
         const g = c.grids[stmt.inGrid];
         const k = rewrites.length;
         const out = [];
-        const conditionIsSameEverywhere = rewrites.map(rule => (rule.condition.flags & 12 /* ExprFlags.SAME_EVERYWHERE */) === 12 /* ExprFlags.SAME_EVERYWHERE */
+        const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ExprFlags.SAME_EVERYWHERE */)
             && rule.to.kind === 'expr.constant'
             && rule.toUncertainties === undefined);
         const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-        const outPatternIsSameEverywhere = rewrites.map(rule => (rule.to.flags & 12 /* ExprFlags.SAME_EVERYWHERE */) === 12 /* ExprFlags.SAME_EVERYWHERE */);
+        const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ExprFlags.SAME_EVERYWHERE */));
         // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-        const patternIsGridDependent = rewrites.map(rule => (rule.to.flags & 16 /* ExprFlags.GRID_INDEPENDENT */) === 0);
+        const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, 16 /* ExprFlags.GRID_INDEPENDENT */));
         rewrites.forEach((rule, i) => {
             if (patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
                 c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
@@ -3189,8 +3216,8 @@ var Parser;
         }
         /**
          * ```none
-         * PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr | PatternExpr | '(' Expression ')'
-         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | StringLiteralExpr
+         * PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr | '(' Expression ')'
+         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StringLiteralExpr
          * ```
          */
         parsePrimaryExpression() {
@@ -3389,7 +3416,7 @@ var Parser;
         }
         /**
          * ```none
-         * UnionDecl = 'union' PatternExpr '=' Expression
+         * UnionDecl = 'union' PatternLiteralExpr '=' Expression
          * ```
          */
         parseUnionDecl() {
@@ -3747,7 +3774,7 @@ var Parser;
         }
         /**
          * ```none
-         * GridExpr = 'grid' Args PatternExpr
+         * GridExpr = 'grid' Args PatternLiteralExpr
          * ```
          */
         parseGridExpr() {
@@ -6160,10 +6187,11 @@ var IR;
         get(index) {
             return IR.access(this.arr, index);
         }
-        sample(withReplacement) {
-            return withReplacement
-                ? this.get(IR.libMethodCall('PRNG', 'nextInt', IR.NAMES.RNG, [this.count]))
-                : IR.libMethodCall('Sampler', 'sample', this.name, [this.count, IR.NAMES.RNG]);
+        sampleWithReplacement() {
+            return this.get(IR.libMethodCall('PRNG', 'nextInt', IR.NAMES.RNG, [this.count]));
+        }
+        sampleWithoutReplacement(count) {
+            return IR.libMethodCall('Sampler', 'sample', this.name, [this.count, IR.NAMES.RNG]);
         }
         forEach(indexVar, then) {
             return IR.forRange(indexVar, IR.ZERO, this.count, IR.block(then));

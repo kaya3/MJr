@@ -96,19 +96,31 @@ namespace IR {
     export interface CallLibMethodExpr extends _ExprNode<'op.call.lib.method', {className: LibClass | 'PRNG', name: string, obj: Expr, args: readonly Expr[]}> {}
     
     export function float(value: number): FloatLiteralExpr {
-        return {kind: 'expr.literal.float', value};
+        return value === 0 ? FLOAT_ZERO
+            : value === 1 ? FLOAT_ONE
+            : value === -1 ? FLOAT_MINUS_ONE
+            : {kind: 'expr.literal.float', value};
     }
     export function int(value: number): IntLiteralExpr {
-        return {kind: 'expr.literal.int', value};
+        return value === 0 ? ZERO
+            : value === 1 ? ONE
+            : value === -1 ? MINUS_ONE
+            : {kind: 'expr.literal.int', value};
     }
     export function str(value: string): StrLiteralExpr {
         return {kind: 'expr.literal.str', value};
     }
-    export const ZERO = int(0);
-    export const ONE = int(1);
+    
+    // singleton objects for common values
     export const TRUE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: true};
     export const FALSE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: false};
     export const NULL: NullLiteralExpr = {kind: 'expr.literal.null'};
+    export const ZERO: IntLiteralExpr = {kind: 'expr.literal.int', value: 0};
+    export const ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: 1};
+    export const MINUS_ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: -1};
+    export const FLOAT_ZERO: FloatLiteralExpr = {kind: 'expr.literal.float', value: 0};
+    export const FLOAT_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: 1};
+    export const FLOAT_MINUS_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: -1};
     
     export function attr(left: Expr, attr: string): AttrExpr {
         return {kind: 'expr.attr', left, attr};
@@ -155,8 +167,12 @@ namespace IR {
     export function localCall(name: NameExpr, args: readonly Expr[]): CallLocalExpr {
         return {kind: 'expr.op.call.local', name, args};
     }
-    export function ternary(condition: Expr, then: Expr, otherwise: Expr): TernaryExpr {
-        if(condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
+    export function ternary(condition: Expr, then: Expr, otherwise: Expr): Expr {
+        if(condition === TRUE) {
+            return then;
+        } else if(condition === FALSE) {
+            return otherwise;
+        } else if(condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
             condition = condition.child;
             const tmp = then; then = otherwise; otherwise = tmp;
         }
@@ -201,8 +217,10 @@ namespace IR {
     export function if_(condition: Expr, then: Stmt, otherwise?: Stmt): Stmt {
         if(otherwise !== undefined && otherwise.kind === 'stmt.pass') { otherwise = undefined; }
         
-        if(condition.kind === 'expr.literal.bool') {
-            return condition.value ? then : (otherwise ?? PASS);
+        if(condition === TRUE) {
+            return then;
+        } else if(condition === FALSE) {
+            return otherwise ?? PASS;
         } else if(equals(then, otherwise)) {
             return then;
         } else if(then.kind === 'stmt.pass') {

@@ -1,4 +1,6 @@
-///<reference path="ir.ts"/>
+///<reference path="../ir/ir.ts"/>
+///<reference path="../ir/names.ts"/>
+///<reference path="../ir/ops.ts"/>
 
 /**
  * Compiles MJr source code to a specified target language.
@@ -22,735 +24,22 @@ namespace Compiler {
         'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
     ];
     
-    // names
-    const WIDTH = IR.name('width'),
-        HEIGHT = IR.name('height'),
-        PARAMS = IR.name('params'),
-        RNG = IR.name('rng'),
-        STATE = IR.name('state'),
-        AT = IR.name('at'),
-        AT_X = IR.name('atX'),
-        AT_Y = IR.name('atY'),
-        AT_CONV = IR.name('atConv'),
-        MATCHES = 'matches',
-        MATCH_COUNT = 'count',
-        MATCH = IR.name('m'),
-        ANY = IR.name('any'),
-        G = IR.name('g'),
-        I = IR.name('i'),
-        J = IR.name('j'),
-        N = IR.name('n'),
-        P = IR.name('p'),
-        START_X = IR.name('startX'),
-        START_Y = IR.name('startY'),
-        END_X = IR.name('endX'),
-        END_Y = IR.name('endY'),
-        EFFECTIVE_WIDTH = IR.name('w'),
-        EFFECTIVE_HEIGHT = IR.name('h'),
-        X = IR.name('x'),
-        Y = IR.name('y'),
-        S = IR.name('s'),
-        OLD_S = IR.name('oldS'),
-        MASK = 'mask',
-        MASK_CLEAR = IR.name('mask_clear'),
-        MASK_SET = IR.name('mask_set'),
-        MASK_HASNT = IR.name('mask_hasnt');
-    
     // helpers
-    const OP = IR.OP;
-    
-    class CGrid {
-        readonly width: IR.NameExpr;
-        readonly height: IR.NameExpr;
-        readonly n: IR.NameExpr;
-        readonly data: IR.NameExpr;
-        private obj: IR.NameExpr | undefined = undefined;
-        private origin: IR.NameExpr | undefined = undefined;
-        readonly originX: IR.Expr;
-        readonly originY: IR.Expr;
-        
-        readonly counters = new Map<string, IR.NameExpr>();
-        readonly samplers = new Map<string, CSampler>();
-        readonly convBuffers = new Map<string, CConvBuffer>();
-        readonly matcher: CMatcher;
-        
-        constructor(readonly grid: ASG.FormalGrid) {
-            const {id, scaleX, scaleY} = grid;
-            
-            this.width = scaleX === 1 ? WIDTH : IR.name(`grid${id}_width`);
-            this.height = scaleY === 1 ? HEIGHT : IR.name(`grid${id}_height`);
-            this.n = IR.name(`grid${id}_n`);
-            this.data = IR.name(`grid${id}_data`);
-            
-            this.originX = scaleX % 2 === 0 ? OP.multConstant(WIDTH, scaleX >> 1) : OP.divConstant(this.width, 2);
-            this.originY = scaleY % 2 === 0 ? OP.multConstant(HEIGHT, scaleY >> 1) : OP.divConstant(this.height, 2);
-            
-            this.matcher = new CMatcher(this);
-        }
-        
-        makeCounter(patterns: readonly Pattern[]): IR.Expr {
-            const {counters, samplers, matcher} = this;
-            
-            const key = patterns.map(Pattern.key).join('\n');
-            
-            // TODO: this is order-dependent, a matching sampler might be declared later
-            const sampler = samplers.get(key);
-            if(sampler !== undefined) { return sampler.count; }
-            
-            let counter = counters.get(key);
-            if(counter !== undefined) { return counter; }
-            
-            counters.set(key, counter = IR.name(`grid${this.grid.id}_counter${counters.size}`));
-            for(const pattern of patterns) {
-                matcher.addMatchHandler({kind: 'counter', pattern, counter});
-            }
-            return counter;
-        }
-        
-        makeSampler(patterns: readonly Pattern[]): CSampler {
-            const {samplers, matcher} = this;
-            
-            const key = patterns.map(Pattern.key).join('\n');
-            let sampler = samplers.get(key);
-            if(sampler !== undefined) { return sampler; }
-            
-            samplers.set(key, sampler = new CSampler(samplers.size, this, patterns.length));
-            
-            for(let i = 0; i < patterns.length; ++i) {
-                const pattern = patterns[i];
-                matcher.addMatchHandler({kind: 'sampler', pattern, sampler, i});
-            }
-            return sampler;
-        }
-        
-        makeConvBuffer(p: ASG.ConvPattern): CConvBuffer {
-            const {convBuffers} = this;
-            const key = Convolution.Kernel.key(p.kernel);
-            let buffer = convBuffers.get(key);
-            if(buffer !== undefined) { return buffer; }
-            
-            const charsets: ISet[] = [];
-            this.grid.convPatterns.forEach(q => {
-                if(p.kernel.equals(q.kernel)) { charsets.push(q.chars); }
-            });
-            
-            convBuffers.set(key, buffer = new CConvBuffer(convBuffers.size, this, charsets, p.kernel));
-            return buffer;
-        }
-        
-        useOrigin(): IR.NameExpr {
-            return this.origin ??= IR.name(`grid${this.grid.id}_origin`);
-        }
-        useObj(): IR.NameExpr {
-            return this.obj ??= IR.name(`grid${this.grid.id}_obj`);
-        }
-        declareVars(): IR.Stmt[] {
-            const {width, height, n, data, obj, origin, originX, originY, grid} = this;
-            const alphabetKey = grid.alphabet.key;
-            const consts: IR.VarDeclWithInitialiser[] = [];
-            const vars: IR.VarDeclWithInitialiser[] = [];
-            
-            if(width !== WIDTH) {
-                consts.push({name: width, type: IR.INT_TYPE, initialiser: OP.multConstant(WIDTH, grid.scaleX)});
-            }
-            if(height !== HEIGHT) {
-                consts.push({name: height, type: IR.INT_TYPE, initialiser: OP.multConstant(HEIGHT, grid.scaleY)});
-            }
-            consts.push(
-                {name: n, type: IR.INT_TYPE, initialiser: OP.mult(width, height)},
-                {name: data, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(n)},
-            );
-            if(obj !== undefined) {
-                const initialiser = IR.libConstructorCall('Grid', [width, height, data, IR.str(alphabetKey)]);
-                consts.push({name: obj, type: IR.GRID_TYPE, initialiser});
-            }
-            if(origin !== undefined) {
-                consts.push({name: origin, type: IR.INT_TYPE, initialiser: OP.add(originX, OP.mult(originY, width))});
-            }
-            
-            for(const buffer of this.convBuffers.values()) {
-                consts.push(...buffer.declare());
-            }
-            for(const sampler of this.samplers.values()) {
-                consts.push(sampler.declare());
-            }
-            
-            vars.push(...Array.from(this.counters.values(), counter => ({
-                name: counter,
-                type: IR.INT_TYPE,
-                initialiser: IR.ZERO,
-            })));
-            
-            return [
-                IR.declVars(consts),
-                IR.declVars(vars, true),
-            ];
-        }
-        
-        /**
-         * Used internally for indices which are known to be in-bounds.
-         * `x` and `y` must be non-negative.
-         */
-        index(x: IR.Expr, y: IR.Expr): IR.Expr {
-            return OP.add(x, OP.mult(y, this.width));
-        }
-        
-        /**
-         * Used internally for relative indices which are known to be in-bounds.
-         * The variables `AT`, `AT_X` and `AT_Y` must be declared in the IR,
-         * and `dx` and `dy` must be non-negative.
-         */
-        relativeIndex(dx: number, dy: number): IR.Expr {
-            if(this.grid.periodic) {
-                const x = OP.mod(OP.add(AT_X, IR.int(dx)), this.width);
-                const y = OP.mod(OP.add(AT_Y, IR.int(dy)), this.height);
-                return OP.add(x, OP.mult(y, this.width));
-            } else {
-                return OP.add(OP.add(AT, IR.int(dx)), OP.multConstant(this.width, dy));
-            }
-        }
-        
-        checkedIndex(x: IR.Expr, y: IR.Expr): IR.Expr {
-            return IR.libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.useObj(), [x, y]);
-        }
-        
-        access(index: IR.Expr): IR.ArrayAccessExpr {
-            return IR.access(this.data, index);
-        }
-        write(index: IR.Expr, colour: number, mask?: CMask): IR.Stmt {
-            return mask !== undefined ? mask.set(this, index, colour)
-                : IR.assign(this.access(index), '=', IR.int(colour));
-        }
-        update(x: IR.Expr, y: IR.Expr, w: IR.Expr, h: IR.Expr, doYield: boolean): IR.Stmt[] {
-            return [
-                IR.localCallStmt(this.matcher.updateFuncName, [x, y, w, h]),
-                doYield ? this.yieldRewriteInfo(x, y, w, h) : IR.PASS,
-            ];
-        }
-        yield_(): IR.YieldStmt {
-            return this.yieldRewriteInfo(IR.ZERO, IR.ZERO, this.width, this.height);
-        }
-        private yieldRewriteInfo(x: IR.Expr, y: IR.Expr, w: IR.Expr, h: IR.Expr): IR.YieldStmt {
-            return IR.yield_(IR.libConstructorCall('RewriteInfo', [this.useObj(), x, y, w, h]));
-        }
-    }
-    
-    // TODO: more kinds of match handler (e.g. conditional on another pattern not being
-    // present, conditional on a boolean expression)
-    type MatchHandler = Readonly<
-        | {kind: 'sampler', pattern: Pattern, sampler: CSampler, i: number}
-        | {kind: 'counter', pattern: Pattern, counter: IR.NameExpr}
-        | {kind: 'convolution', pattern: Pattern, buffer: CConvBuffer, i: number}
-    >
-    
-    class CMatcher {
-        private readonly matchHandlers: MatchHandler[] = [];
-        
-        readonly updateFuncName: IR.NameExpr;
-        
-        constructor(readonly g: CGrid) {
-            // TODO: multiple matchers per grid? could depend on CFG
-            this.updateFuncName = IR.name(`grid${g.grid.id}_update`);
-        }
-        
-        addMatchHandler(handler: MatchHandler): void {
-            this.matchHandlers.push(handler);
-        }
-        
-        private makeMatchHandler(h: MatchHandler, f: 'add' | 'del'): IR.Stmt {
-            switch(h.kind) {
-                case 'sampler':
-                    const match = OP.multAddConstant(I, h.sampler.numPatterns, IR.int(h.i));
-                    return IR.libMethodCallStmt('Sampler', f, h.sampler.name, [match]);
-                
-                case 'counter':
-                    return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.ONE);
-                
-                case 'convolution':
-                    return h.buffer.update(h.i, X, Y, f === 'add' ? '+=' : '-=');
-            }
-        }
-        
-        declareUpdateFunc(): IR.Stmt[] {
-            const {g, updateFuncName} = this;
-            const {id, alphabet} = g.grid;
-            
-            const rowDFA = IR.name(`grid${id}_rowDFA`);
-            const colDFA = IR.name(`grid${id}_colDFA`);
-            const rowAcceptSets = IR.name(`grid${id}_rowAcceptSets`);
-            const colAcceptSets = IR.name(`grid${id}_colAcceptSets`);
-            const rowStates = IR.name(`grid${id}_rowStates`);
-            const colStates = IR.name(`grid${id}_colStates`);
-            
-            const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), Pattern.key);
-            const [_rowDFA, _colDFA] = makePatternMatcherDFAs(alphabet.key.length, patternMap);
-            
-            const handlersByPattern = makeArray<MatchHandler[]>(patternMap.size(), () => []);
-            for(const handler of this.matchHandlers) {
-                const patternID = patternMap.getID(handler.pattern);
-                handlersByPattern[patternID].push(handler);
-            }
-            
-            // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            const makeStateChangeHandlers = (f: 'add' | 'del'): IR.Stmt[] => {
-                return _colDFA.acceptSetMap.map(patternIDs => {
-                    const out: IR.Stmt[] = [];
-                    for(const patternID of patternIDs) {
-                        for(const h of handlersByPattern[patternID]) {
-                            out.push(this.makeMatchHandler(h, f));
-                        }
-                    }
-                    return IR.block(out);
-                });
-            };
-            
-            const rowDFAType = IR.constArrayType(_rowDFA.size()),
-                rowAcceptSetsType = IR.constArrayType(_rowDFA.acceptSetMap.size()),
-                colDFAType = IR.constArrayType(_colDFA.size()),
-                colAcceptSetsType = IR.constArrayType(_colDFA.acceptSetMap.size()),
-                rowStatesType = IR.mutableArrayType(rowDFAType.domainSize),
-                colStatesType = IR.mutableArrayType(colDFAType.domainSize);
-            
-            return [
-                IR.declVars([
-                    {name: rowDFA, type: rowDFAType, initialiser: IR.constArray(_rowDFA.toFlatArray(), rowDFAType.domainSize, _rowDFA.alphabetSize)},
-                    {name: rowAcceptSets, type: rowAcceptSetsType, initialiser: IR.constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsType.domainSize)},
-                    {name: colDFA, type: colDFAType, initialiser: IR.constArray(_colDFA.toFlatArray(), colDFAType.domainSize, _colDFA.alphabetSize)},
-                    {name: colAcceptSets, type: colAcceptSetsType, initialiser: IR.constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsType.domainSize)},
-                    {name: rowStates, type: rowStatesType, initialiser: IR.newArray(g.n, rowDFAType.domainSize)},
-                    {name: colStates, type: colStatesType, initialiser: IR.newArray(g.n, colDFAType.domainSize)},
-                ]),
-                IR.declFunc(
-                    updateFuncName,
-                    undefined,
-                    [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT],
-                    [IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE],
-                    IR.VOID_TYPE,
-                    IR.block([
-                        IR.declVars([
-                            {name: END_X, type: IR.INT_TYPE, initialiser: OP.add(START_X, EFFECTIVE_WIDTH)},
-                            {name: END_Y, type: IR.INT_TYPE, initialiser: OP.add(START_Y, EFFECTIVE_HEIGHT)},
-                        ]),
-                        IR.BLANK_LINE,
-                        
-                        IR.comment('recompute row states'),
-                        IR.forRange(Y, START_Y, END_Y, IR.block([
-                            IR.declVar(S, IR.INT_TYPE, IR.ternary(
-                                OP.lt(END_X, g.width),
-                                IR.access(rowStates, g.index(END_X, Y)),
-                                IR.ZERO,
-                            ), true),
-                            IR.forRangeReverse(X, IR.ZERO, END_X, IR.block([
-                                IR.declVars([
-                                    {name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y)},
-                                    {name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(rowStates, I)},
-                                ]),
-                                IR.assign(S, '=', IR.access(
-                                    rowDFA,
-                                    OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(I))
-                                )),
-                                IR.if_(
-                                    OP.ne(S, OLD_S),
-                                    IR.block([
-                                        IR.assign(IR.access(rowStates, I), '=', S),
-                                        IR.if_(OP.lt(X, START_X), IR.assign(START_X, '=', X)),
-                                    ]),
-                                    IR.if_(OP.lt(X, START_X), IR.BREAK),
-                                ),
-                            ])),
-                        ])),
-                        IR.BLANK_LINE,
-                        
-                        IR.comment('recompute col states'),
-                        IR.forRange(X, START_X, END_X, IR.block([
-                            IR.declVar(S, IR.INT_TYPE, IR.ternary(
-                                OP.lt(END_Y, g.height),
-                                IR.access(colStates, g.index(X, END_Y)),
-                                IR.ZERO,
-                            ), true),
-                            IR.forRangeReverse(Y, IR.ZERO, END_Y, IR.block([
-                                IR.declVars([
-                                    {name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y)},
-                                    {name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(colStates, I)},
-                                ]),
-                                IR.assign(S, '=', IR.access(
-                                    colDFA,
-                                    OP.multAddConstant(S, _colDFA.alphabetSize, IR.access(rowAcceptSets, IR.access(rowStates, I))),
-                                )),
-                                IR.if_(
-                                    OP.ne(S, OLD_S),
-                                    IR.block([
-                                        IR.assign(IR.access(colStates, I), '=', S),
-                                        
-                                        // update samplers
-                                        IR.switch_(IR.access(colAcceptSets, OLD_S), makeStateChangeHandlers('del')),
-                                        IR.switch_(IR.access(colAcceptSets, S), makeStateChangeHandlers('add')),
-                                    ]),
-                                    IR.if_(OP.lt(Y, START_Y), IR.BREAK),
-                                ),
-                            ])),
-                        ])),
-                    ]),
-                ),
-                IR.localCallStmt(updateFuncName, [IR.ZERO, IR.ZERO, g.width, g.height]),
-                IR.BLANK_LINE,
-            ];
-        }
-    }
-    
-    class CFlags {
-        private vars: readonly IR.NameExpr[];
-        constructor(private readonly numFlags: number) {
-            const numVars = (numFlags + 31) >> 5;
-            this.vars = makeArray(numVars, i => IR.name(`f${i}`));
-        }
-        
-        private _var(i: number): IR.NameExpr {
-            return this.vars[i >> 5];
-        }
-        private _bit(i: number): IR.Expr {
-            return OP.lshift(IR.ONE, IR.int(i & 31));
-        }
-        declare(): IR.Stmt {
-            const initialiser = this.numFlags === 1 ? IR.FALSE : IR.ZERO;
-            return IR.declVars(this.vars.map(v => ({
-                name: v,
-                type: IR.INT_TYPE,
-                initialiser,
-            })), true);
-        }
-        set(i: number): IR.Stmt {
-            const v = this._var(i);
-            return this.numFlags === 1
-                ? IR.assign(v, '=', IR.TRUE)
-                : IR.assign(v, '|=', this._bit(i));
-        }
-        clear(i: number): IR.Stmt {
-            const v =  this._var(i);
-            return this.numFlags === 1
-                ? IR.assign(v, '=', IR.FALSE)
-                : IR.assign(v, '&=', OP.bitwiseNot(this._bit(i)));
-        }
-        check(i: number): IR.Expr {
-            const v = this._var(i);
-            return this.numFlags === 1
-                ? v
-                : OP.ne(OP.bitwiseAnd(this._var(i), this._bit(i)), IR.ZERO);
-        }
-    }
-    
-    class CLimits {
-        private readonly vars: readonly IR.NameExpr[];
-        private readonly checks: readonly IR.Expr[];
-        private readonly decrements: readonly IR.Stmt[];
-        
-        constructor(private readonly limits: readonly ASG.FormalLimit[]) {
-            const vars = this.vars = makeArray(limits.length, i => IR.name(`limit${i}`));
-            this.checks = vars.map(v => OP.gt(v, IR.ZERO));
-            this.decrements = vars.map(v => IR.assign(v, '-=', IR.ONE));
-        }
-        
-        declare(c: {expr(e: ASG.Expression): IR.Expr}): IR.Stmt {
-            const {vars} = this;
-            return IR.declVars(this.limits.map((limit, i) => ({
-                name: vars[i],
-                type: IR.INT_TYPE,
-                initialiser: limit.canReset ? undefined : c.expr(limit.initialiser),
-            })), true);
-        }
-        reset(limitID: number, c: {expr(e: ASG.Expression): IR.Expr}): IR.Stmt {
-            const limit = this.limits[limitID];
-            if(!limit.canReset) { throw new Error(); }
-            return IR.assign(this.vars[limitID], '=', c.expr(limit.initialiser));
-        }
-        check(limitID: number): IR.Expr {
-            return this.checks[limitID];
-        }
-        decrement(limitID: number): IR.Stmt {
-            return this.decrements[limitID];
-        }
-    }
-    
-    class CMask {
-        private scale: number = 0;
-        
-        readonly name = IR.name(MASK);
-        
-        private maskN(length: IR.Expr): IR.Expr {
-            return OP.divConstant(OP.add(length, IR.int(31)), 32);
-        }
-        use(g: CGrid) {
-            this.scale = Math.max(this.scale, g.grid.scaleX * g.grid.scaleY);
-        }
-        declare(): IR.Stmt[] {
-            if(this.scale === 0) { return []; }
-            
-            const arrayComponent = IR.access(this.name, OP.divConstant(I, 32));
-            const bit = OP.lshift(IR.ONE, OP.modConstant(I, 32));
-            return [
-                IR.declVar(
-                    this.name,
-                    IR.INT32_ARRAY_TYPE,
-                    IR.newInt32Array(this.maskN(OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale))),
-                ),
-                IR.declFunc(
-                    MASK_CLEAR,
-                    undefined,
-                    [N],
-                    [IR.INT_TYPE],
-                    IR.VOID_TYPE,
-                    IR.block([
-                        IR.assign(N, '=', this.maskN(N)),
-                        IR.forRange(I, IR.ZERO, N, IR.assign(IR.access(this.name, I), '=', IR.ZERO)),
-                    ]),
-                ),
-                IR.declFunc(
-                    MASK_SET,
-                    undefined,
-                    [G, I, S],
-                    [IR.GRID_DATA_ARRAY_TYPE, IR.INT_TYPE, IR.BYTE_TYPE],
-                    IR.VOID_TYPE,
-                    IR.block([
-                        IR.assign(IR.access(G, I), '=', S),
-                        IR.assign(arrayComponent, '|=', bit),
-                    ]),
-                ),
-                IR.declFunc(
-                    MASK_HASNT,
-                    undefined,
-                    [I],
-                    [IR.INT_TYPE],
-                    IR.BOOL_TYPE,
-                    IR.return_(OP.eq(OP.bitwiseAnd(arrayComponent, bit), IR.ZERO)),
-                ),
-                IR.BLANK_LINE,
-            ];
-        }
-        clear(g: CGrid): IR.Stmt {
-            return IR.localCallStmt(MASK_CLEAR, [g.n]);
-        }
-        set(g: CGrid, index: IR.Expr, colour: number): IR.Stmt {
-            return IR.localCallStmt(MASK_SET, [g.data, index, IR.int(colour)]);
-        }
-        hasnt(index: IR.Expr): IR.Expr {
-            return IR.localCall(MASK_HASNT, [index]);
-        }
-        patternFits(g: CGrid, patternExpr: ASG.Prop<'pattern.out'>): IR.Expr {
-            return patternExpr.kind === 'expr.constant'
-                ? patternExpr.constant.value.map((dx, dy) => this.hasnt(g.relativeIndex(dx, dy))).reduce(OP.and)
-                : IR.libMethodCall('Pattern', 'fitsMask', P, [g.useObj(), this.name, AT_X, AT_Y]);
-        }
-    }
-    
-    class CMatches {
-        private scale: number = 0;
-        
-        readonly array = IR.name(MATCHES);
-        readonly count = IR.name(MATCH_COUNT);
-        readonly getAtCount = this.get(this.count);
-        readonly isNotEmpty = OP.gt(this.count, IR.ZERO);
-        readonly incrementCount = IR.assign(this.count, '+=', IR.ONE);
-        readonly decrementCount = IR.assign(this.count, '-=', IR.ONE);
-        
-        use(g: CGrid, k: number): void {
-            // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
-            this.scale = Math.max(this.scale, g.grid.scaleX * g.grid.scaleY * k);
-        }
-        declare(): IR.Stmt {
-            if(this.scale === 0) { return IR.PASS; }
-            
-            const n = OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale);
-            return IR.declVar(this.array, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n));
-        }
-        declareCount(initial: IR.Expr, mutable: boolean): IR.Stmt {
-            return IR.declVar(this.count, IR.INT_TYPE, initial, mutable);
-        }
-        copyFrom(sampler: IR.NameExpr, shuffle: boolean): IR.Stmt {
-            return shuffle
-                ? IR.libMethodCallStmt('Sampler', 'shuffleInto', sampler, [this.array, RNG])
-                : IR.libMethodCallStmt('Sampler', 'copyInto', sampler, [this.array]);
-        }
-        get(index: IR.Expr): IR.ArrayAccessExpr {
-            return IR.access(this.array, index);
-        }
-        add(match: IR.Expr, shuffle: boolean): IR.Stmt {
-            return IR.block(shuffle ? [
-                IR.declVar(J, IR.INT_TYPE, IR.libMethodCall('PRNG', 'nextInt', RNG, [OP.add(this.count, IR.ONE)])),
-                IR.assign(this.getAtCount, '=', this.get(J)),
-                IR.assign(this.get(J), '=', match),
-                this.incrementCount,
-            ] : [
-                IR.assign(this.getAtCount, '=', match),
-                this.incrementCount,
-            ]);
-        }
-        forEach(indexVar: IR.NameExpr, then: readonly IR.Stmt[]): IR.Stmt {
-            return IR.forRange(indexVar, IR.ZERO, this.count, IR.block([
-                IR.declVar(MATCH, IR.INT_TYPE, this.get(indexVar)),
-                ...then,
-            ]));
-        }
-    }
-    
-    class CSampler {
-        readonly name: IR.NameExpr;
-        readonly count: IR.Expr;
-        readonly arr: IR.Expr;
-        readonly isNotEmpty: IR.Expr;
-        
-        constructor(
-            id: number,
-            readonly inGrid: CGrid,
-            readonly numPatterns: number,
-        ) {
-            this.name = IR.name(`grid${inGrid.grid.id}_sampler${id}`);
-            this.count = IR.attr(this.name, 'count');
-            this.arr = IR.attr(this.name, 'arr');
-            this.isNotEmpty = OP.gt(this.count, IR.ZERO);
-        }
-        
-        declare(): IR.VarDeclWithInitialiser {
-            return {
-                name: this.name,
-                type: IR.SAMPLER_TYPE,
-                initialiser: IR.libConstructorCall('Sampler', [OP.multConstant(this.inGrid.n, this.numPatterns)]),
-            };
-        }
-        
-        get(index: IR.Expr): IR.Expr {
-            return IR.access(this.arr, index);
-        }
-        sample(withReplacement: boolean): IR.Expr {
-            return withReplacement
-                ? this.get(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
-                : IR.libMethodCall('Sampler', 'sample', this.name, [this.count, RNG]);
-        }
-        forEach(indexVar: IR.NameExpr, then: readonly IR.Stmt[]): IR.Stmt {
-            return IR.forRange(indexVar, IR.ZERO, this.count, IR.block(then));
-        }
-    }
-    
-    class CConvBuffer {
-        private readonly name: IR.NameExpr;
-        readonly width: IR.Expr;
-        readonly height: IR.Expr;
-        readonly n: IR.NameExpr;
-        private readonly k: number;
-        readonly values: ReadonlyMap<bigint, IR.Expr>;
-        
-        constructor(
-            id: number,
-            g: CGrid,
-            charsets: readonly ISet[],
-            private readonly kernel: Convolution.Kernel,
-        ) {
-            this.width = OP.add(g.width, IR.int(kernel.width - 1));
-            this.height = OP.add(g.height, IR.int(kernel.height - 1));
-            const n = this.n = IR.name(`grid${g.grid.id}_conv${id}_n`);
-            const name = this.name = IR.name(`grid${g.grid.id}_conv${id}`);
-            
-            // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
-            const alphabetSize = g.grid.alphabet.key.length;
-            const alphabetPartition = new Partition(alphabetSize);
-            charsets.forEach(set => alphabetPartition.refine(set));
-            
-            const repMap = IDMap.withKey<number>(i => alphabetPartition.getRepresentative(i));
-            const mappedBuffers: readonly ReadonlySet<number>[] = charsets.map(chars => {
-                const out = new Set<number>();
-                ISet.forEach(chars, i => out.add(repMap.getOrCreateID(i)));
-                return out;
-            });
-            repMap.forEach((rep, i) => {
-                const chars = alphabetPartition.getSet(rep);
-                const pattern = new Pattern(1, 1, [-1], [chars], true);
-                g.matcher.addMatchHandler({kind: 'convolution', buffer: this, pattern, i});
-            });
-            this.k = repMap.size();
-            
-            const values = this.values = new Map<bigint, IR.Expr>();
-            charsets.forEach((chars, i) => {
-                const exprs: IR.Expr[] = Array.from(mappedBuffers[i], j => {
-                    const index = OP.add(OP.multConstant(n, j), AT_CONV);
-                    return IR.access(name, index);
-                });
-                // sanity check
-                if(exprs.length === 0) { throw new Error(); }
-                values.set(ISet.toBigInt(chars), exprs.reduce(OP.add));
-            });
-        }
-        
-        declare(): IR.VarDeclWithInitialiser[] {
-            const {n, name, k, width, height} = this;
-            return [
-                {name: n, type: IR.INT_TYPE, initialiser: OP.mult(width, height)},
-                {name, type: IR.GRID_DATA_ARRAY_TYPE, initialiser: IR.newGridDataArray(OP.multConstant(n, k))},
-            ];
-        }
-        
-        get(chars: ISet): IR.Expr {
-            const expr = this.values.get(ISet.toBigInt(chars));
-            if(expr === undefined) { throw new Error(); }
-            return expr;
-        }
-        
-        update(i: number, xVar: IR.NameExpr, yVar: IR.NameExpr, op: '+=' | '-='): IR.Stmt {
-            const {name, width, n, kernel} = this;
-            const out: IR.Stmt[] = [];
-            for(let dy = 0; dy < kernel.height; ++dy) {
-                for(let dx = 0; dx < kernel.width; ++dx) {
-                    const delta = kernel.data[dx + kernel.width * dy];
-                    if(delta !== 0) {
-                        const index = OP.add(
-                            OP.multConstant(n, i),
-                            OP.add(
-                                OP.add(xVar, IR.int(dx)),
-                                OP.mult(OP.add(yVar, IR.int(dy)), width),
-                            ),
-                        );
-                        out.push(IR.assign(IR.access(name, index), op, IR.int(delta)));
-                    }
-                }
-            }
-            return IR.block(out);
-        }
-    }
-    
-    class CVariables {
-        private readonly names: readonly IR.NameExpr[];
-        
-        constructor(private readonly variables: readonly ASG.FormalVariable[]) {
-            const counts = new Map<string, number>();
-            this.names = variables.map(v => {
-                const count = counts.get(v.name) ?? 0;
-                counts.set(v.name, count + 1);
-                return IR.name(count > 0 ? `_${v.name}_${count}` : `_${v.name}`);
-            });
-        }
-        
-        declare(c: {type(t: Type.Type): IR.IRType, expr(e: ASG.Expression): IR.Expr}): readonly IR.Stmt[] {
-            const {names} = this;
-            // this also filters out compile-time constants, since the resolver folds them instead of referencing them
-            return this.variables
-                .filter(v => v.references > 0)
-                .map(v => IR.declVar(
-                    names[v.id],
-                    c.type(v.type),
-                    v.initialiser && c.expr(v.initialiser),
-                    v.initialiser === undefined,
-                ));
-        }
-        name(variableID: number): IR.NameExpr {
-            return this.names[variableID];
-        }
-        type(variableID: number, c: {type(t: Type.Type): IR.IRType}): IR.IRType {
-            return c.type(this.variables[variableID].type);
-        }
-    }
+    const {
+        OP,
+        NAMES: {
+            WIDTH, HEIGHT, PARAMS, RNG,
+            STATE,
+            AT, AT_X, AT_Y, AT_CONV,
+            I, P,
+            ANY, MATCH,
+        },
+    } = IR;
     
     /**
      * Compiles MJr source code to a high-level intermediate representation.
      */
-    class Compiler {
+    class Compiler implements IR.IRCompiler {
         readonly diagnostics = new Diagnostics();
         
         private readonly cfg: CFG.CFG;
@@ -758,27 +47,27 @@ namespace Compiler {
         readonly opsUsed = new Set(ALWAYS_USED_OPS);
         private readonly internedLiterals = IDMap.withKey<{expr: IR.Expr, type: IR.IRType}>(entry => IR.key(entry.expr));
         
-        readonly grids: readonly CGrid[];
-        readonly mask = new CMask();
-        private readonly flags: CFlags;
-        private readonly limits: CLimits;
-        readonly matches = new CMatches();
-        readonly variables: CVariables;
+        readonly grids: readonly IR.Grid[];
+        readonly mask = new IR.Mask();
+        private readonly flags: IR.Flags;
+        private readonly limits: IR.Limits;
+        readonly matches = new IR.MatchesArray();
+        readonly variables: IR.Variables;
         
         constructor(
             readonly asg: ASG.ASG,
             readonly config: Readonly<Config>,
         ) {
             this.cfg = CFG.build(asg.root, config.animate);
-            this.grids = asg.grids.map(g => new CGrid(g));
-            this.flags = new CFlags(this.cfg.numFlags);
-            this.limits = new CLimits(asg.limits);
-            this.variables = new CVariables(asg.variables);
+            this.grids = asg.grids.map(g => new IR.Grid(g));
+            this.flags = new IR.Flags(this.cfg.numFlags);
+            this.limits = new IR.Limits(asg.limits);
+            this.variables = new IR.Variables(asg.variables);
         }
         
         private internLiteral(expr: IR.Expr, type: IR.IRType): IR.Expr {
             const id = this.internedLiterals.getOrCreateID({expr, type});
-            return IR.name(`constant${id}`);
+            return IR.NAMES.constant(id);
         }
         
         notSupported(s: string, pos: SourcePosition): void {
@@ -835,12 +124,12 @@ namespace Compiler {
             // need to compile everything before preamble, so that `this.opsUsed` is complete
             const matchesDecl = this.matches.declare(),
                 maskDecl = this.mask.declare(),
-                constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({name: IR.name(`constant${i}`), type: s.type, initialiser: s.expr}))),
+                constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({name: IR.NAMES.constant(i), type: s.type, initialiser: s.expr}))),
                 varDecls = this.variables.declare(this),
                 flagDecls = this.flags.declare(),
                 limitDecls = this.limits.declare(this);
             
-            return IR.declFunc(IR.name(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+            return IR.declFunc(IR.nameExpr(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${COMPILER_VERSION} on ${date}`),
                 // TODO: compute and pass max width/height, to ensure no overflow of "loose" integer operations
                 this.config.emitChecks ? IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_("Grid dimensions must be positive")) : IR.PASS,
@@ -1148,7 +437,7 @@ namespace Compiler {
         return IR.PASS;
     }
     
-    function _declareAt(g: CGrid, at: IR.Expr): IR.Stmt {
+    function _declareAt(g: IR.Grid, at: IR.Expr): IR.Stmt {
         return IR.declVars([
             {name: AT, type: IR.INT_TYPE, initialiser: at},
             {name: AT_X, type: IR.INT_TYPE, initialiser: OP.mod(AT, g.width)},
@@ -1156,7 +445,7 @@ namespace Compiler {
         ]);
     }
     
-    function _doWrite(c: Compiler, outGrid: CGrid, from: Pattern | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
+    function _doWrite(c: Compiler, outGrid: IR.Grid, from: Pattern | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
         const out: IR.Stmt[] = [];
         let mX: IR.Expr, mY: IR.Expr, eW: IR.Expr, eH: IR.Expr;
         
@@ -1211,7 +500,7 @@ namespace Compiler {
         return IR.block(out);
     }
     
-    function _writeCondition(c: Compiler, g: CGrid, patternExpr: ASG.Prop<'pattern.out'> | undefined, patternVar: IR.NameExpr | undefined, uncertainties: readonly number[] | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
+    function _writeCondition(c: Compiler, g: IR.Grid, patternExpr: ASG.Prop<'pattern.out'> | undefined, patternVar: IR.NameExpr | undefined, uncertainties: readonly number[] | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
         let out: IR.Expr[] = [];
         if(patternExpr !== undefined) {
             if(patternExpr.kind !== 'expr.constant') {
@@ -1313,7 +602,7 @@ namespace Compiler {
         
         out.push(IR.declVars(rewrites.flatMap((rule, i) =>
             !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
-            ? [{name: IR.name(`p${i}`), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to)}]
+            ? [{name: IR.NAMES.tmpPattern(i), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to)}]
             : []
         )));
         
@@ -1321,7 +610,7 @@ namespace Compiler {
             c,
             g,
             outPatternIsSameEverywhere[i] ? rule.to : undefined,
-            IR.name(`p${i}`),
+            IR.NAMES.tmpPattern(i),
             outPatternIsSameEverywhere[i] ? rule.toUncertainties : undefined,
             rule.condition,
         ));
@@ -1369,7 +658,7 @@ namespace Compiler {
                 P,
                 IR.PATTERN_TYPE,
                 // TODO: `c.expr(rule.to)` is only correct when `rule.to` is grid-independent (see above)
-                outPatternIsSameEverywhere[i] ? IR.name(`p${i}`) : c.expr(rule.to),
+                outPatternIsSameEverywhere[i] ? IR.NAMES.tmpPattern(i) : c.expr(rule.to),
             ),
             IR.if_(
                 OP.and(
@@ -1447,7 +736,7 @@ namespace Compiler {
         ]);
     }
     
-    type CodeGenClass = new (config: Config) => CodeGen.Base
+    type CodeGenClass = new (config: Config) => {diagnostics: Diagnostics, writeStmt(stmt: IR.Stmt): void, render(): string}
     export type CodeGenName = KeysMatching<typeof CodeGen, CodeGenClass>
     
     export function compile(src: string, targetLanguage: CodeGenName, config?: Partial<Config>): string {

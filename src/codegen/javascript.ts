@@ -447,11 +447,9 @@ namespace CodeGen {
             this.writeType(type);
         }
         writeVarDecl(decl: IR.VarDecl): void {
-            const noInit = decl.initialiser === undefined;
-            
             this.writeExpr(decl.name);
-            if(noInit) {
-                this.write(noInit ? '!: ' : ': ');
+            if(decl.initialiser === undefined) {
+                this.write('!: ');
                 this.writeType(decl.type);
             } else {
                 // otherwise, type should be inferred from initialiser

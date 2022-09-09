@@ -635,7 +635,7 @@ namespace Parser {
             
             this.expectPollS('->');
             let via = this.expr(Precedence.OR);
-            if(!via) { return undefined; }
+            if(via === undefined) { return undefined; }
             
             let to: AST.Expression | undefined;
             if(this.q.pollIfS('->')) {
@@ -647,8 +647,7 @@ namespace Parser {
             }
             
             let condition: AST.Expression | undefined;
-            return to
-                && (this.q.pollIfS('if') ? condition = this.expr(Precedence.OR) : true)
+            return (this.q.pollIfS('if') ? condition = this.expr(Precedence.OR) : true)
                 && this.expectPoll('NEWLINE')
                 && {kind: 'rule.observe', from, via, to, condition, pos};
         }

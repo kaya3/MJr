@@ -396,7 +396,7 @@ namespace CodeGen {
             };
         })();
         
-        writeAssignExpr(left: IR.NameExpr, right: IR.Expr): void {
+        public writeAssignExpr(left: IR.NameExpr, right: IR.Expr): void {
             this.writeExpr(left);
             this.write(' := ');
             this.writeExpr(right, Precedence.ASSIGN);

@@ -18,14 +18,17 @@ namespace IR {
                 initialiser: limit.canReset ? undefined : c.expr(limit.initialiser),
             })), true);
         }
+        
         public reset(limitID: number, c: IRCompiler): Stmt {
             const limit = this.limits[limitID];
             if(!limit.canReset) { throw new Error(); }
             return assign(this.vars[limitID], '=', c.expr(limit.initialiser));
         }
+        
         public check(limitID: number): Expr {
             return this.checks[limitID];
         }
+        
         public decrement(limitID: number): Stmt {
             return this.decrements[limitID];
         }

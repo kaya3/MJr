@@ -16,9 +16,9 @@ namespace IR {
         public readonly originX: Expr;
         public readonly originY: Expr;
         
-        public readonly counters = new Map<string, NameExpr>();
-        public readonly samplers = new Map<string, Sampler>();
-        public readonly convBuffers = new Map<string, ConvBuffer>();
+        private readonly counters = new Map<string, NameExpr>();
+        private readonly samplers = new Map<string, Sampler>();
+        private readonly convBuffers = new Map<string, ConvBuffer>();
         public readonly matcher: Matcher;
         
         public constructor(public readonly grid: ASG.FormalGrid) {
@@ -89,9 +89,11 @@ namespace IR {
         public useOrigin(): NameExpr {
             return this.origin ??= NAMES.gridVar(this, 'origin');
         }
+        
         public useObj(): NameExpr {
             return this.obj ??= NAMES.gridVar(this, 'obj');
         }
+        
         public declareVars(): Stmt[] {
             const {width, height, n, data, obj, origin, originX, originY, grid} = this;
             const alphabetKey = grid.alphabet.key;
@@ -165,19 +167,23 @@ namespace IR {
         public access(index: Expr): ArrayAccessExpr {
             return access(this.data, index);
         }
+        
         public write(index: Expr, colour: number, mask?: Mask): Stmt {
             return mask !== undefined ? mask.set(this, index, colour)
                 : assign(this.access(index), '=', int(colour));
         }
+        
         public update(x: Expr, y: Expr, w: Expr, h: Expr, doYield: boolean): Stmt[] {
             return [
                 localCallStmt(this.matcher.updateFuncName, [x, y, w, h]),
                 doYield ? this.yieldRewriteInfo(x, y, w, h) : PASS,
             ];
         }
+        
         public yield_(): YieldStmt {
             return this.yieldRewriteInfo(ZERO, ZERO, this.width, this.height);
         }
+        
         private yieldRewriteInfo(x: Expr, y: Expr, w: Expr, h: Expr): YieldStmt {
             return yield_(libConstructorCall('RewriteInfo', [this.useObj(), x, y, w, h]));
         }

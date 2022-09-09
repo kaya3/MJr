@@ -19,7 +19,10 @@ namespace IR {
         
         public readonly updateFuncName: NameExpr;
         
-        public constructor(public readonly g: Grid, private readonly id: number) {
+        public constructor(
+            public readonly g: Grid,
+            private readonly id: number,
+        ) {
             this.updateFuncName = NAMES.matcherVar(g, id, 'update');
         }
         

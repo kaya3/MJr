@@ -10,7 +10,6 @@ namespace IR {
     export interface MutableArrayType extends Readonly<{kind: 'array.mutable', domainSize: number}> {}
     export interface DictType extends Readonly<{kind: 'dict', keys: readonly string[], values: readonly IRType[]}> {}
     
-    
     export const BOOL_TYPE: IRType = {kind: 'bool'};
     export const BYTE_TYPE: IRType = {kind: 'byte'};
     export const FLOAT_TYPE: IRType = {kind: 'float'};
@@ -30,6 +29,7 @@ namespace IR {
     export function mutableArrayType(domainSize: number): MutableArrayType {
         return {kind: 'array.mutable', domainSize};
     }
+    
     export function constArrayType(domainSize: number): ConstArrayType {
         return {kind: 'array.const', domainSize};
     }

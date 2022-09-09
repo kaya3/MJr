@@ -1,11 +1,11 @@
 namespace IR {
     export class ConvBuffer {
         private readonly name: NameExpr;
-        public readonly width: Expr;
-        public readonly height: Expr;
-        public readonly n: NameExpr;
+        private readonly width: Expr;
+        private readonly height: Expr;
+        private readonly n: NameExpr;
         private readonly k: number;
-        public readonly values: ReadonlyMap<bigint, Expr>;
+        private readonly values: ReadonlyMap<bigint, Expr>;
         
         public constructor(
             id: number,

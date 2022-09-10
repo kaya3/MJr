@@ -153,7 +153,7 @@ namespace IR {
             return [
                 declVar(matches.count, INT_TYPE, ZERO, true),
                 this.is1x1
-                    ? forRange(I, ZERO, this.count, matches.add(I, shuffle))
+                    ? forRange(AT, ZERO, this.count, matches.add(AT, shuffle))
                     : forRange(AT_Y, ZERO, this.height, [
                         forRange(AT_X, ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
                     ]),
@@ -162,8 +162,8 @@ namespace IR {
         
         public forEach(then: readonly Stmt[]): Stmt {
             return this.is1x1
-                ? forRange(I, ZERO, this.count, [
-                    this.g.declareAtIndex(I),
+                ? forRange(AT, ZERO, this.count, [
+                    this.g.declareAtIndex(AT),
                     ...then,
                 ])
                 : forRange(AT_Y, ZERO, this.height, [

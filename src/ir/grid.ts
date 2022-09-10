@@ -145,7 +145,7 @@ namespace IR {
             for(const buffer of this.convBuffers.values()) {
                 consts.push(...buffer.declare());
             }
-           
+            
             vars.push(...Array.from(this.counters.values(), counter => ({
                 name: counter,
                 type: INT_TYPE,

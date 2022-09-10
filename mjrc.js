@@ -2355,7 +2355,6 @@ var Compiler;
     function _basicOne(c, stmt, ifChanged, then) {
         const { rewrites } = stmt;
         const g = c.grids[stmt.inGrid];
-        const k = rewrites.length;
         const sampler = g.makeSampler(rewrites.map(rule => rule.from));
         const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));
         // optimisation for common case: all rewrites are unconditional and definitely effective
@@ -6339,7 +6338,7 @@ var IR;
             return [
                 IR.declVar(matches.count, IR.INT_TYPE, IR.ZERO, true),
                 this.is1x1
-                    ? IR.forRange(I, IR.ZERO, this.count, matches.add(I, shuffle))
+                    ? IR.forRange(AT, IR.ZERO, this.count, matches.add(AT, shuffle))
                     : IR.forRange(AT_Y, IR.ZERO, this.height, [
                         IR.forRange(AT_X, IR.ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
                     ]),
@@ -6347,8 +6346,8 @@ var IR;
         }
         forEach(then) {
             return this.is1x1
-                ? IR.forRange(I, IR.ZERO, this.count, [
-                    this.g.declareAtIndex(I),
+                ? IR.forRange(AT, IR.ZERO, this.count, [
+                    this.g.declareAtIndex(AT),
                     ...then,
                 ])
                 : IR.forRange(AT_Y, IR.ZERO, this.height, [

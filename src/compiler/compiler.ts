@@ -535,7 +535,6 @@ namespace Compiler {
     function _basicOne(c: Compiler, stmt: ASG.BasicRulesStmt, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
         const {rewrites} = stmt;
         const g = c.grids[stmt.inGrid];
-        const k = rewrites.length;
         const sampler = g.makeSampler(rewrites.map(rule => rule.from));
         
         const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));

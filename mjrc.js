@@ -1508,8 +1508,6 @@ var IR;
         END_Y: IR.nameExpr('endY'),
         EFFECTIVE_WIDTH: IR.nameExpr('w'),
         EFFECTIVE_HEIGHT: IR.nameExpr('h'),
-        X: IR.nameExpr('x'),
-        Y: IR.nameExpr('y'),
         S: IR.nameExpr('s'),
         OLD_S: IR.nameExpr('oldS'),
         MASK: IR.nameExpr('mask'),
@@ -1755,9 +1753,13 @@ var IR;
                 : right === IR.ZERO ? left
                     : _binOp('loose_int_plus', left, right);
         },
+        minus(left, right) {
+            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? IR.int(left.value - right.value)
+                : right === IR.ZERO ? left
+                    : _binOp('loose_int_minus', left, right);
+        },
         minusOne(expr) {
-            return expr.kind === 'expr.literal.int' ? IR.int(expr.value - 1)
-                : _binOp('loose_int_minus', expr, IR.ONE);
+            return IR.OP.minus(expr, IR.ONE);
         },
         mult(left, right) {
             return left.kind === 'expr.literal.int' ? IR.OP.multConstant(right, left.value)
@@ -2354,26 +2356,21 @@ var Compiler;
         const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
-        const switchWrites = IR.block([
-            g.declareAtIndex(OP.divConstant(MATCH, k)),
-            IR.switch_(OP.modConstant(MATCH, k), rewrites.map((rule, i) => IR.block([
-                rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
-                IR.if_(writeConditions[i], _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
-            ]))),
-        ]);
+        const cases = rewrites.map((rule, i) => IR.block([
+            rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
+            IR.if_(writeConditions[i], _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
+        ]));
         return allUnconditionalAndEffective
             ? IR.if_(OP.gt(sampler.count, IR.ZERO), IR.block([
-                IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithReplacement()),
-                switchWrites,
+                sampler.sampleWithReplacement(cases),
                 ifChanged,
             ]), then)
             : IR.block([
-                sampler.beginSamplingWithoutReplacement(MATCH),
+                sampler.beginSamplingWithoutReplacement(),
                 c.matches.declareCount(sampler.count, true),
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), IR.block([
-                    sampler.sampleWithoutReplacement(MATCH, c.matches.count),
-                    switchWrites,
+                    sampler.sampleWithoutReplacement(cases, c.matches.count),
                     c.matches.decrementCount,
                 ])),
                 IR.if_(ANY, ifChanged, then),
@@ -2425,22 +2422,21 @@ var Compiler;
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if (firstPassConditions.every(c => c === IR.TRUE)) {
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            out.push(...sampler.copyInto(I, c.matches, shuffle));
+            out.push(...sampler.copyInto(c.matches, shuffle));
         }
         else {
             out.push(c.matches.declareCount(IR.ZERO, true));
             for (let i = 0; i < k; ++i) {
                 const rule = rewrites[i];
                 const sampler = g.makeSampler([rule.from]);
-                const declareAt = sampler.declareAt(I);
                 const condition = firstPassConditions[i];
                 const addMatch = c.matches.add(OP.multAddConstant(AT, k, IR.int(i)), shuffle);
                 out.push(
                 // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                 conditionIsSameEverywhere[i]
-                    ? IR.if_(condition, IR.forRange(I, IR.ZERO, sampler.count, [declareAt, ...addMatch]))
+                    ? IR.if_(condition, sampler.forEach(addMatch))
                     // otherwise, need to check the condition separately for each match
-                    : IR.forRange(I, IR.ZERO, sampler.count, [declareAt, IR.if_(condition, IR.block(addMatch))]));
+                    : sampler.forEach([IR.if_(condition, IR.block(addMatch))]));
             }
         }
         const doWrites = rewrites.map((rule, i) => IR.block([
@@ -5838,8 +5834,9 @@ var IR;
             if (cached !== undefined) {
                 return cached;
             }
-            if (patterns.length === 1 && patterns[0].width === 1 && patterns[0].height === 1 && ISet.size(patterns[0].masks[0]) === this.grid.alphabet.key.length) {
-                const sampler = new IR.TrivialSampler(this);
+            if (patterns.length === 1 && patterns[0].masks.every(mask => ISet.size(mask) === this.grid.alphabet.key.length)) {
+                const { width, height } = patterns[0];
+                const sampler = new IR.TrivialSampler(this, width, height);
                 samplers.set(key, sampler);
                 return sampler;
             }
@@ -5901,9 +5898,6 @@ var IR;
             for (const buffer of this.convBuffers.values()) {
                 consts.push(...buffer.declare());
             }
-            for (const sampler of this.samplers.values()) {
-                consts.push(...sampler.declare());
-            }
             vars.push(...Array.from(this.counters.values(), counter => ({
                 name: counter,
                 type: IR.INT_TYPE,
@@ -5912,6 +5906,7 @@ var IR;
             return [
                 IR.declVars(consts),
                 IR.declVars(vars, true),
+                ...Array.from(this.samplers.values(), sampler => sampler.declare()),
             ];
         }
         /**
@@ -6070,7 +6065,7 @@ var IR;
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
-    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, I, S, OLD_S, X, Y, } = IR.NAMES;
+    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, S, OLD_S, AT, AT_X, AT_Y, } = IR.NAMES;
     class Matcher {
         g;
         id;
@@ -6087,12 +6082,11 @@ var IR;
         makeMatchHandler(h, f) {
             switch (h.kind) {
                 case 'sampler':
-                    const match = IR.OP.multAddConstant(I, h.sampler.numPatterns, IR.int(h.i));
-                    return IR.libMethodCallStmt('Sampler', f, h.sampler.name, [match]);
+                    return h.sampler.handleMatch(f, h.i);
                 case 'counter':
                     return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.ONE);
                 case 'convolution':
-                    return h.buffer.update(h.i, X, Y, f === 'add' ? '+=' : '-=');
+                    return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');
             }
         }
         declareUpdateFunc() {
@@ -6140,36 +6134,32 @@ var IR;
                     ]),
                     IR.BLANK_LINE,
                     IR.comment('recompute row states'),
-                    IR.forRange(Y, START_Y, END_Y, [
-                        IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_X, g.width), IR.access(rowStates, g.index(END_X, Y)), IR.ZERO), true),
-                        IR.forRangeReverse(X, IR.ZERO, END_X, [
-                            IR.declVars([
-                                { name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
-                                { name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(rowStates, I) },
-                            ]),
-                            IR.assign(S, '=', IR.access(rowDFA, IR.OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(I)))),
+                    IR.forRange(AT_Y, START_Y, END_Y, [
+                        IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_X, g.width), IR.access(rowStates, g.index(END_X, AT_Y)), IR.ZERO), true),
+                        IR.forRangeReverse(AT_X, IR.ZERO, END_X, [
+                            g.declareAtXY(AT_X, AT_Y),
+                            IR.declVar(OLD_S, IR.INT_TYPE, IR.access(rowStates, AT)),
+                            IR.assign(S, '=', IR.access(rowDFA, IR.OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(AT)))),
                             IR.if_(IR.OP.ne(S, OLD_S), IR.block([
-                                IR.assign(IR.access(rowStates, I), '=', S),
-                                IR.if_(IR.OP.lt(X, START_X), IR.assign(START_X, '=', X)),
-                            ]), IR.if_(IR.OP.lt(X, START_X), IR.BREAK)),
+                                IR.assign(IR.access(rowStates, AT), '=', S),
+                                IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)),
+                            ]), IR.if_(IR.OP.lt(AT_X, START_X), IR.BREAK)),
                         ]),
                     ]),
                     IR.BLANK_LINE,
                     IR.comment('recompute col states'),
-                    IR.forRange(X, START_X, END_X, [
-                        IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_Y, g.height), IR.access(colStates, g.index(X, END_Y)), IR.ZERO), true),
-                        IR.forRangeReverse(Y, IR.ZERO, END_Y, [
-                            IR.declVars([
-                                { name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
-                                { name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(colStates, I) },
-                            ]),
-                            IR.assign(S, '=', IR.access(colDFA, IR.OP.multAddConstant(S, _colDFA.alphabetSize, IR.access(rowAcceptSets, IR.access(rowStates, I))))),
+                    IR.forRange(AT_X, START_X, END_X, [
+                        IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_Y, g.height), IR.access(colStates, g.index(AT_X, END_Y)), IR.ZERO), true),
+                        IR.forRangeReverse(AT_Y, IR.ZERO, END_Y, [
+                            g.declareAtXY(AT_X, AT_Y),
+                            IR.declVar(OLD_S, IR.INT_TYPE, IR.access(colStates, AT)),
+                            IR.assign(S, '=', IR.access(colDFA, IR.OP.multAddConstant(S, _colDFA.alphabetSize, IR.access(rowAcceptSets, IR.access(rowStates, AT))))),
                             IR.if_(IR.OP.ne(S, OLD_S), IR.block([
-                                IR.assign(IR.access(colStates, I), '=', S),
+                                IR.assign(IR.access(colStates, AT), '=', S),
                                 // update samplers
                                 IR.switch_(IR.access(colAcceptSets, OLD_S), makeStateChangeHandlers('del')),
                                 IR.switch_(IR.access(colAcceptSets, S), makeStateChangeHandlers('add')),
-                            ]), IR.if_(IR.OP.lt(Y, START_Y), IR.BREAK)),
+                            ]), IR.if_(IR.OP.lt(AT_Y, START_Y), IR.BREAK)),
                         ]),
                     ]),
                 ])),
@@ -6226,82 +6216,138 @@ var IR;
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
-    const { RNG, S } = IR.NAMES;
+    const { RNG, I, S, MATCH, AT, AT_X, AT_Y } = IR.NAMES;
     class Sampler {
         g;
         numPatterns;
         name;
         count;
         arr;
+        capacity;
+        declareMatchAt;
+        matchPatternIndex;
         constructor(id, g, numPatterns) {
             this.g = g;
             this.numPatterns = numPatterns;
             this.name = IR.NAMES.sampler(g, id);
             this.count = IR.attr(this.name, 'count');
             this.arr = IR.attr(this.name, 'arr');
+            this.capacity = IR.OP.multConstant(g.n, numPatterns);
+            this.declareMatchAt = this.g.declareAtIndex(IR.OP.divConstant(MATCH, this.numPatterns));
+            this.matchPatternIndex = IR.OP.modConstant(MATCH, this.numPatterns);
         }
         declare() {
-            return [{
-                    name: this.name,
-                    type: IR.SAMPLER_TYPE,
-                    initialiser: IR.libConstructorCall('Sampler', [IR.OP.multConstant(this.g.n, this.numPatterns)]),
-                }];
+            return IR.declVar(this.name, IR.SAMPLER_TYPE, IR.libConstructorCall('Sampler', [this.capacity]));
         }
-        declareAt(i) {
-            return this.g.declareAtIndex(IR.access(this.arr, i));
+        handleMatch(f, patternIndex) {
+            const match = IR.OP.multAddConstant(AT, this.numPatterns, IR.int(patternIndex));
+            return IR.libMethodCallStmt('Sampler', f, this.name, [match]);
         }
-        sampleWithReplacement() {
-            return IR.access(this.arr, IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]));
+        sampleWithReplacement(cases) {
+            return IR.block([
+                IR.declVar(MATCH, IR.INT_TYPE, IR.access(this.arr, IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]))),
+                this.declareMatchAt,
+                IR.switch_(this.matchPatternIndex, cases),
+            ]);
         }
         beginSamplingWithoutReplacement() {
             return IR.PASS;
         }
-        sampleWithoutReplacement(matchVar, count) {
-            return IR.declVar(matchVar, IR.INT_TYPE, IR.libMethodCall('Sampler', 'sample', this.name, [count, RNG]));
+        sampleWithoutReplacement(cases, count) {
+            return IR.block([
+                IR.declVar(MATCH, IR.INT_TYPE, IR.libMethodCall('Sampler', 'sample', this.name, [count, RNG])),
+                this.declareMatchAt,
+                IR.switch_(this.matchPatternIndex, cases),
+            ]);
         }
-        copyInto(indexVar, matches, shuffle) {
+        copyInto(matches, shuffle) {
             return [
                 shuffle ? IR.libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matches.array, RNG])
                     : IR.libMethodCallStmt('Sampler', 'copyInto', this.name, [matches.array]),
                 IR.declVar(matches.count, IR.INT_TYPE, this.count),
             ];
         }
+        forEach(then) {
+            if (this.numPatterns > 1) {
+                throw new Error();
+            }
+            return IR.forRange(I, IR.ZERO, this.count, [
+                this.g.declareAtIndex(IR.access(this.arr, I)),
+                ...then,
+            ]);
+        }
     }
     IR.Sampler = Sampler;
+    // TODO: larger trivial patterns than 1x1
     class TrivialSampler {
         g;
         count;
-        constructor(g) {
+        width;
+        height;
+        is1x1;
+        constructor(g, patternWidth, patternHeight) {
             this.g = g;
-            this.count = g.n;
+            this.width = IR.OP.minus(g.width, IR.int(patternWidth - 1));
+            this.height = IR.OP.minus(g.height, IR.int(patternHeight - 1));
+            this.is1x1 = patternWidth === 1 && patternHeight === 1;
+            this.count = this.is1x1 ? g.n : IR.OP.mult(this.width, this.height);
         }
         declare() {
-            return [];
+            return IR.PASS;
         }
-        declareAt(i) {
-            return this.g.declareAtIndex(i);
+        handleMatch(f, patternIndex) {
+            throw new Error();
         }
-        sampleWithReplacement() {
-            return IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]);
+        sampleWithReplacement(cases) {
+            if (cases.length > 1) {
+                throw new Error();
+            }
+            const declAt = this.is1x1
+                ? this.g.declareAtIndex(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
+                : this.g.declareAtXY(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.width]), IR.libMethodCall('PRNG', 'nextInt', RNG, [this.height]));
+            return IR.block([declAt, cases[0]]);
         }
-        beginSamplingWithoutReplacement(matchVar) {
-            return IR.declVar(S, IR.INT_TYPE, IR.OP.add(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.g.n]), IR.ONE), true);
+        beginSamplingWithoutReplacement() {
+            return IR.declVar(S, IR.INT_TYPE, IR.OP.add(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]), IR.ONE), true);
         }
-        sampleWithoutReplacement(matchVar, count) {
-            const { g } = this;
+        sampleWithoutReplacement(cases, count) {
+            if (cases.length > 1) {
+                throw new Error();
+            }
+            const declAt = this.is1x1
+                ? this.g.declareAtIndex(IR.OP.minusOne(S))
+                : this.g.declareAtXY(IR.OP.mod(S, this.width), IR.OP.floordiv(IR.OP.minusOne(S), this.width));
             return IR.block([
                 IR.while_(IR.TRUE, IR.block([
-                    IR.assign(S, '=', IR.ternary(IR.OP.ne(IR.OP.bitwiseAnd(S, IR.ONE), IR.ZERO), IR.OP.bitwiseXor(IR.OP.rshift(S, IR.ONE), g.useLsfrFeedbackTerm()), IR.OP.rshift(S, IR.ONE))),
-                    IR.if_(IR.OP.le(S, g.n), IR.BREAK),
+                    IR.assign(S, '=', IR.ternary(IR.OP.ne(IR.OP.bitwiseAnd(S, IR.ONE), IR.ZERO), IR.OP.bitwiseXor(IR.OP.rshift(S, IR.ONE), this.g.useLsfrFeedbackTerm()), IR.OP.rshift(S, IR.ONE))),
+                    IR.if_(IR.OP.le(S, this.count), IR.BREAK),
                 ])),
-                IR.declVar(matchVar, IR.INT_TYPE, IR.OP.minusOne(S)),
+                declAt,
+                cases[0],
             ]);
         }
-        copyInto(indexVar, matches, shuffle) {
+        copyInto(matches, shuffle) {
             return [
                 IR.declVar(matches.count, IR.INT_TYPE, IR.ZERO, true),
-                IR.forRange(indexVar, IR.ZERO, this.count, matches.add(indexVar, shuffle)),
+                this.is1x1
+                    ? IR.forRange(I, IR.ZERO, this.count, matches.add(I, shuffle))
+                    : IR.forRange(AT_Y, IR.ZERO, this.height, [
+                        IR.forRange(AT_X, IR.ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
+                    ]),
             ];
+        }
+        forEach(then) {
+            return this.is1x1
+                ? IR.forRange(I, IR.ZERO, this.count, [
+                    this.g.declareAtIndex(I),
+                    ...then,
+                ])
+                : IR.forRange(AT_Y, IR.ZERO, this.height, [
+                    IR.forRange(AT_X, IR.ZERO, this.width, [
+                        this.g.declareAtXY(AT_X, AT_Y),
+                        ...then,
+                    ])
+                ]);
         }
     }
     IR.TrivialSampler = TrivialSampler;

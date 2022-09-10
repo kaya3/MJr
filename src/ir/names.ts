@@ -24,8 +24,6 @@ namespace IR {
         END_Y: nameExpr('endY'),
         EFFECTIVE_WIDTH: nameExpr('w'),
         EFFECTIVE_HEIGHT: nameExpr('h'),
-        X: nameExpr('x'),
-        Y: nameExpr('y'),
         S: nameExpr('s'),
         OLD_S: nameExpr('oldS'),
         MASK: nameExpr('mask'),

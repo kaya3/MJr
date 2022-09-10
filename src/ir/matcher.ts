@@ -4,14 +4,14 @@ namespace IR {
     // TODO: more kinds of match handler (e.g. conditional on another pattern not being
     // present, conditional on a boolean expression)
     export type MatchHandler = Readonly<
-        | {kind: 'sampler', pattern: Pattern, sampler: Sampler, i: number}
+        | {kind: 'sampler', pattern: Pattern, sampler: AbstractSampler, i: number}
         | {kind: 'counter', pattern: Pattern, counter: NameExpr}
         | {kind: 'convolution', pattern: Pattern, buffer: ConvBuffer, i: number}
     >
     
     const {
         START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT,
-        I, S, OLD_S, X, Y,
+        S, OLD_S, AT, AT_X, AT_Y,
     } = NAMES;
     
     export class Matcher {
@@ -33,14 +33,13 @@ namespace IR {
         private makeMatchHandler(h: MatchHandler, f: 'add' | 'del'): Stmt {
             switch(h.kind) {
                 case 'sampler':
-                    const match = OP.multAddConstant(I, h.sampler.numPatterns, int(h.i));
-                    return libMethodCallStmt('Sampler', f, h.sampler.name, [match]);
+                    return h.sampler.handleMatch(f, h.i);
                 
                 case 'counter':
                     return assign(h.counter, f === 'add' ? '+=' : '-=', ONE);
                 
                 case 'convolution':
-                    return h.buffer.update(h.i, X, Y, f === 'add' ? '+=' : '-=');
+                    return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');
             }
         }
         
@@ -107,59 +106,55 @@ namespace IR {
                         BLANK_LINE,
                         
                         comment('recompute row states'),
-                        forRange(Y, START_Y, END_Y, [
+                        forRange(AT_Y, START_Y, END_Y, [
                             declVar(S, INT_TYPE, ternary(
                                 OP.lt(END_X, g.width),
-                                access(rowStates, g.index(END_X, Y)),
+                                access(rowStates, g.index(END_X, AT_Y)),
                                 ZERO,
                             ), true),
-                            forRangeReverse(X, ZERO, END_X, [
-                                declVars([
-                                    {name: I, type: INT_TYPE, initialiser: g.index(X, Y)},
-                                    {name: OLD_S, type: INT_TYPE, initialiser: access(rowStates, I)},
-                                ]),
+                            forRangeReverse(AT_X, ZERO, END_X, [
+                                g.declareAtXY(AT_X, AT_Y),
+                                declVar(OLD_S, INT_TYPE, access(rowStates, AT)),
                                 assign(S, '=', access(
                                     rowDFA,
-                                    OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(I))
+                                    OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(AT))
                                 )),
                                 if_(
                                     OP.ne(S, OLD_S),
                                     block([
-                                        assign(access(rowStates, I), '=', S),
-                                        if_(OP.lt(X, START_X), assign(START_X, '=', X)),
+                                        assign(access(rowStates, AT), '=', S),
+                                        if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
                                     ]),
-                                    if_(OP.lt(X, START_X), BREAK),
+                                    if_(OP.lt(AT_X, START_X), BREAK),
                                 ),
                             ]),
                         ]),
                         BLANK_LINE,
                         
                         comment('recompute col states'),
-                        forRange(X, START_X, END_X, [
+                        forRange(AT_X, START_X, END_X, [
                             declVar(S, INT_TYPE, ternary(
                                 OP.lt(END_Y, g.height),
-                                access(colStates, g.index(X, END_Y)),
+                                access(colStates, g.index(AT_X, END_Y)),
                                 ZERO,
                             ), true),
-                            forRangeReverse(Y, ZERO, END_Y, [
-                                declVars([
-                                    {name: I, type: INT_TYPE, initialiser: g.index(X, Y)},
-                                    {name: OLD_S, type: INT_TYPE, initialiser: access(colStates, I)},
-                                ]),
+                            forRangeReverse(AT_Y, ZERO, END_Y, [
+                                g.declareAtXY(AT_X, AT_Y),
+                                declVar(OLD_S, INT_TYPE, access(colStates, AT)),
                                 assign(S, '=', access(
                                     colDFA,
-                                    OP.multAddConstant(S, _colDFA.alphabetSize, access(rowAcceptSets, access(rowStates, I))),
+                                    OP.multAddConstant(S, _colDFA.alphabetSize, access(rowAcceptSets, access(rowStates, AT))),
                                 )),
                                 if_(
                                     OP.ne(S, OLD_S),
                                     block([
-                                        assign(access(colStates, I), '=', S),
+                                        assign(access(colStates, AT), '=', S),
                                         
                                         // update samplers
                                         switch_(access(colAcceptSets, OLD_S), makeStateChangeHandlers('del')),
                                         switch_(access(colAcceptSets, S), makeStateChangeHandlers('add')),
                                     ]),
-                                    if_(OP.lt(Y, START_Y), BREAK),
+                                    if_(OP.lt(AT_Y, START_Y), BREAK),
                                 ),
                             ]),
                         ]),

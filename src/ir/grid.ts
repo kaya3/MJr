@@ -63,8 +63,9 @@ namespace IR {
             const cached = samplers.get(key);
             if(cached !== undefined) { return cached; }
             
-            if(patterns.length === 1 && patterns[0].width === 1 && patterns[0].height === 1 && ISet.size(patterns[0].masks[0]) === this.grid.alphabet.key.length) {
-                const sampler = new TrivialSampler(this);
+            if(patterns.length === 1 && patterns[0].masks.every(mask => ISet.size(mask) === this.grid.alphabet.key.length)) {
+                const {width, height} = patterns[0];
+                const sampler = new TrivialSampler(this, width, height);
                 samplers.set(key, sampler);
                 return sampler;
             }
@@ -136,10 +137,7 @@ namespace IR {
             for(const buffer of this.convBuffers.values()) {
                 consts.push(...buffer.declare());
             }
-            for(const sampler of this.samplers.values()) {
-                consts.push(...sampler.declare());
-            }
-            
+           
             vars.push(...Array.from(this.counters.values(), counter => ({
                 name: counter,
                 type: INT_TYPE,
@@ -149,6 +147,7 @@ namespace IR {
             return [
                 declVars(consts),
                 declVars(vars, true),
+                ...Array.from(this.samplers.values(), sampler => sampler.declare()),
             ];
         }
         

@@ -159,9 +159,13 @@ namespace IR {
                 : right === ZERO ? left
                 : _binOp('loose_int_plus', left, right);
         },
+        minus(left: Expr, right: Expr): Expr {
+            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? int(left.value - right.value)
+                : right === ZERO ? left
+                : _binOp('loose_int_minus', left, right);
+        },
         minusOne(expr: Expr): Expr {
-            return expr.kind === 'expr.literal.int' ? int(expr.value - 1)
-                : _binOp('loose_int_minus', expr, ONE)
+            return OP.minus(expr, ONE);
         },
         mult(left: Expr, right: Expr): Expr {
             return left.kind === 'expr.literal.int' ? OP.multConstant(right, left.value)

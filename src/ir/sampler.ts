@@ -3,20 +3,24 @@
 namespace IR {
     export interface AbstractSampler {
         readonly count: Expr;
-        declare(): VarDeclWithInitialiser[],
-        declareAt(i: Expr): Stmt;
-        sampleWithReplacement(): Expr;
-        beginSamplingWithoutReplacement(matchVar: NameExpr): Stmt;
-        sampleWithoutReplacement(matchVar: NameExpr, count: Expr): Stmt;
-        copyInto(indexVar: NameExpr, matches: MatchesArray, shuffle: boolean): Stmt[];
+        declare(): Stmt,
+        handleMatch(f: 'add' | 'del', patternIndex: number): Stmt;
+        sampleWithReplacement(cases: readonly Stmt[]): Stmt;
+        beginSamplingWithoutReplacement(): Stmt;
+        sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt;
+        copyInto(matches: MatchesArray, shuffle: boolean): Stmt[];
+        forEach(then: readonly Stmt[]): Stmt;
     }
     
-    const {RNG, S} = NAMES;
+    const {RNG, I, S, MATCH, AT, AT_X, AT_Y} = NAMES;
     
     export class Sampler implements AbstractSampler {
-        public readonly name: NameExpr;
+        private readonly name: NameExpr;
         public readonly count: Expr;
-        public readonly arr: Expr;
+        private readonly arr: Expr;
+        private readonly capacity: Expr;
+        private readonly declareMatchAt: Stmt;
+        private readonly matchPatternIndex: Expr;
         
         public constructor(
             id: number,
@@ -26,87 +30,149 @@ namespace IR {
             this.name = NAMES.sampler(g, id);
             this.count = attr(this.name, 'count');
             this.arr = attr(this.name, 'arr');
+            this.capacity = OP.multConstant(g.n, numPatterns);
+            
+            this.declareMatchAt = this.g.declareAtIndex(OP.divConstant(MATCH, this.numPatterns));
+            this.matchPatternIndex = OP.modConstant(MATCH, this.numPatterns);
         }
         
-        public declare(): VarDeclWithInitialiser[] {
-            return [{
-                name: this.name,
-                type: SAMPLER_TYPE,
-                initialiser: libConstructorCall('Sampler', [OP.multConstant(this.g.n, this.numPatterns)]),
-            }];
+        public declare(): Stmt {
+            return declVar(this.name, SAMPLER_TYPE, libConstructorCall('Sampler', [this.capacity]));
         }
         
-        public declareAt(i: Expr): Stmt {
-            return this.g.declareAtIndex(access(this.arr, i));
+        public handleMatch(f: 'add' | 'del', patternIndex: number): Stmt {
+            const match = OP.multAddConstant(AT, this.numPatterns, int(patternIndex));
+            return libMethodCallStmt('Sampler', f, this.name, [match]);
         }
         
-        public sampleWithReplacement(): Expr {
-            return access(this.arr, libMethodCall('PRNG', 'nextInt', RNG, [this.count]));
+        public sampleWithReplacement(cases: readonly Stmt[]): Stmt {
+            return block([
+                IR.declVar(
+                    MATCH,
+                    IR.INT_TYPE,
+                    access(this.arr, libMethodCall('PRNG', 'nextInt', RNG, [this.count])),
+                ),
+                this.declareMatchAt,
+                switch_(this.matchPatternIndex, cases),
+            ]);
         }
         
         public beginSamplingWithoutReplacement(): Stmt {
             return PASS;
         }
         
-        public sampleWithoutReplacement(matchVar: NameExpr, count: Expr): Stmt {
-            return declVar(
-                matchVar,
-                INT_TYPE,
-                libMethodCall('Sampler', 'sample', this.name, [count, RNG]),
-            );
+        public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {
+            return block([
+                declVar(
+                    MATCH,
+                    INT_TYPE,
+                    libMethodCall('Sampler', 'sample', this.name, [count, RNG]),
+                ),
+                this.declareMatchAt,
+                switch_(this.matchPatternIndex, cases),
+            ]);
         }
         
-        public copyInto(indexVar: NameExpr, matches: MatchesArray, shuffle: boolean): Stmt[] {
+        public copyInto(matches: MatchesArray, shuffle: boolean): Stmt[] {
             return [
                 shuffle ? libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matches.array, RNG])
                     : libMethodCallStmt('Sampler', 'copyInto', this.name, [matches.array]),
                 declVar(matches.count, INT_TYPE, this.count),
             ];
         }
+        
+        public forEach(then: readonly Stmt[]): Stmt {
+            if(this.numPatterns > 1) { throw new Error(); }
+            return forRange(I, ZERO, this.count, [
+                this.g.declareAtIndex(access(this.arr, I)),
+                ...then,
+            ]);
+        }
     }
     
+    // TODO: larger trivial patterns than 1x1
     export class TrivialSampler implements AbstractSampler {
         public readonly count: Expr;
+        private readonly width: Expr;
+        private readonly height: Expr;
+        private readonly is1x1: boolean;
         
-        public constructor(private readonly g: Grid) {
-            this.count = g.n;
+        public constructor(
+            private readonly g: Grid,
+            patternWidth: number,
+            patternHeight: number,
+        ) {
+            this.width = OP.minus(g.width, int(patternWidth - 1));
+            this.height = OP.minus(g.height, int(patternHeight - 1));
+            this.is1x1 = patternWidth === 1 && patternHeight === 1;
+            this.count = this.is1x1 ? g.n : OP.mult(this.width, this.height);
         }
         
-        public declare(): VarDeclWithInitialiser[] {
-            return [];
+        public declare(): Stmt {
+            return PASS;
         }
         
-        public declareAt(i: Expr): Stmt {
-            return this.g.declareAtIndex(i);
+        public handleMatch(f: "add" | "del", patternIndex: number): Stmt {
+            throw new Error();
         }
         
-        public sampleWithReplacement(): Expr {
-            return libMethodCall('PRNG', 'nextInt', RNG, [this.count]);
+        public sampleWithReplacement(cases: readonly Stmt[]): Stmt {
+            if(cases.length > 1) { throw new Error(); }
+            const declAt = this.is1x1
+                ? this.g.declareAtIndex(libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
+                : this.g.declareAtXY(libMethodCall('PRNG', 'nextInt', RNG, [this.width]), libMethodCall('PRNG', 'nextInt', RNG, [this.height]));
+            return block([declAt, cases[0]]);
         }
         
-        public beginSamplingWithoutReplacement(matchVar: NameExpr): Stmt {
-            return IR.declVar(S, INT_TYPE, OP.add(libMethodCall('PRNG', 'nextInt', RNG, [this.g.n]), ONE), true);
+        public beginSamplingWithoutReplacement(): Stmt {
+            return IR.declVar(S, INT_TYPE, OP.add(libMethodCall('PRNG', 'nextInt', RNG, [this.count]), ONE), true);
         }
         
-        public sampleWithoutReplacement(matchVar: NameExpr, count: Expr): Stmt {
-            const {g} = this;
+        public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {
+            if(cases.length > 1) { throw new Error(); }
+            const declAt = this.is1x1
+                ? this.g.declareAtIndex(OP.minusOne(S))
+                : this.g.declareAtXY(OP.mod(S, this.width), OP.floordiv(OP.minusOne(S), this.width));
             return IR.block([
                 IR.while_(
                     TRUE,
                     IR.block([
-                        assign(S, '=', ternary(OP.ne(OP.bitwiseAnd(S, ONE), ZERO), OP.bitwiseXor(OP.rshift(S, ONE), g.useLsfrFeedbackTerm()), OP.rshift(S, ONE))),
-                        if_(OP.le(S, g.n), BREAK),
+                        assign(S, '=', ternary(
+                            OP.ne(OP.bitwiseAnd(S, ONE), ZERO),
+                            OP.bitwiseXor(OP.rshift(S, ONE), this.g.useLsfrFeedbackTerm()),
+                            OP.rshift(S, ONE),
+                        )),
+                        if_(OP.le(S, this.count), BREAK),
                     ]),
                 ),
-                IR.declVar(matchVar, INT_TYPE, OP.minusOne(S)),
+                declAt,
+                cases[0],
             ]);
         }
         
-        public copyInto(indexVar: NameExpr, matches: MatchesArray, shuffle: boolean): Stmt[] {
+        public copyInto(matches: MatchesArray, shuffle: boolean): Stmt[] {
             return [
                 declVar(matches.count, INT_TYPE, ZERO, true),
-                forRange(indexVar, ZERO, this.count, matches.add(indexVar, shuffle)),
+                this.is1x1
+                    ? forRange(I, ZERO, this.count, matches.add(I, shuffle))
+                    : forRange(AT_Y, ZERO, this.height, [
+                        forRange(AT_X, ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
+                    ]),
             ];
+        }
+        
+        public forEach(then: readonly Stmt[]): Stmt {
+            return this.is1x1
+                ? forRange(I, ZERO, this.count, [
+                    this.g.declareAtIndex(I),
+                    ...then,
+                ])
+                : forRange(AT_Y, ZERO, this.height, [
+                    forRange(AT_X, ZERO, this.width, [
+                        this.g.declareAtXY(AT_X, AT_Y),
+                        ...then,
+                    ])
+                ]);
         }
     }
 }

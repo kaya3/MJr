@@ -528,39 +528,31 @@ namespace Compiler {
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
         
-        const switchWrites = IR.block([
-            g.declareAtIndex(OP.divConstant(MATCH, k)),
-            IR.switch_(
-                OP.modConstant(MATCH, k),
-                rewrites.map((rule, i) => IR.block([
-                    rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
-                    IR.if_(
-                        writeConditions[i],
-                        _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate),
-                    ),
-                ])),
+        const cases = rewrites.map((rule, i) => IR.block([
+            rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
+            IR.if_(
+                writeConditions[i],
+                _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate),
             ),
-        ]);
+        ]));
         
         return allUnconditionalAndEffective
             ? IR.if_(
                 OP.gt(sampler.count, IR.ZERO),
                 IR.block([
-                    IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithReplacement()),
-                    switchWrites,
+                    sampler.sampleWithReplacement(cases),
                     ifChanged,
                 ]),
                 then,
             )
             : IR.block([
-                sampler.beginSamplingWithoutReplacement(MATCH),
+                sampler.beginSamplingWithoutReplacement(),
                 c.matches.declareCount(sampler.count, true),
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(
                     OP.and(c.matches.isNotEmpty, OP.not(ANY)),
                     IR.block([
-                        sampler.sampleWithoutReplacement(MATCH, c.matches.count),
-                        switchWrites,
+                        sampler.sampleWithoutReplacement(cases, c.matches.count),
                         c.matches.decrementCount,
                     ]),
                 ),
@@ -637,22 +629,21 @@ namespace Compiler {
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if(firstPassConditions.every(c => c === IR.TRUE)) {
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            out.push(...sampler.copyInto(I, c.matches, shuffle));
+            out.push(...sampler.copyInto(c.matches, shuffle));
         } else {
             out.push(c.matches.declareCount(IR.ZERO, true));
             for(let i = 0; i < k; ++i) {
                 const rule = rewrites[i];
                 const sampler = g.makeSampler([rule.from]);
-                const declareAt = sampler.declareAt(I);
                 const condition = firstPassConditions[i];
                 const addMatch = c.matches.add(OP.multAddConstant(AT, k, IR.int(i)), shuffle);
                 
                 out.push(
                     // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                     conditionIsSameEverywhere[i]
-                    ? IR.if_(condition, IR.forRange(I, IR.ZERO, sampler.count, [declareAt, ...addMatch]))
+                    ? IR.if_(condition, sampler.forEach(addMatch))
                     // otherwise, need to check the condition separately for each match
-                    : IR.forRange(I, IR.ZERO, sampler.count, [declareAt, IR.if_(condition, IR.block(addMatch))])
+                    : sampler.forEach([IR.if_(condition, IR.block(addMatch))])
                 );
             }
         }

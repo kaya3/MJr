@@ -2,7 +2,7 @@
 
 namespace IR {
     const {
-        MATCH, MATCHES, MATCH_COUNT,
+        MATCHES, MATCH_COUNT,
         WIDTH, HEIGHT, RNG,
         J,
     } = NAMES;
@@ -12,7 +12,7 @@ namespace IR {
         
         public readonly array = MATCHES;
         public readonly count = MATCH_COUNT;
-        public readonly getAtCount = this.get(this.count);
+        private readonly getAtCount = this.get(this.count);
         public readonly isNotEmpty = OP.gt(this.count, ZERO);
         public readonly incrementCount = assign(this.count, '+=', ONE);
         public readonly decrementCount = assign(this.count, '-=', ONE);
@@ -33,18 +33,12 @@ namespace IR {
             return declVar(this.count, INT_TYPE, initial, mutable);
         }
         
-        public copyFrom(sampler: NameExpr, shuffle: boolean): Stmt {
-            return shuffle
-                ? libMethodCallStmt('Sampler', 'shuffleInto', sampler, [this.array, RNG])
-                : libMethodCallStmt('Sampler', 'copyInto', sampler, [this.array]);
-        }
-        
         public get(index: Expr): ArrayAccessExpr {
             return access(this.array, index);
         }
         
-        public add(match: Expr, shuffle: boolean): Stmt {
-            return block(shuffle ? [
+        public add(match: Expr, shuffle: boolean): Stmt[] {
+            return shuffle ? [
                 declVar(J, INT_TYPE, libMethodCall('PRNG', 'nextInt', RNG, [OP.add(this.count, ONE)])),
                 assign(this.getAtCount, '=', this.get(J)),
                 assign(this.get(J), '=', match),
@@ -52,14 +46,7 @@ namespace IR {
             ] : [
                 assign(this.getAtCount, '=', match),
                 this.incrementCount,
-            ]);
-        }
-        
-        public forEach(indexVar: NameExpr, then: readonly Stmt[]): Stmt {
-            return forRange(indexVar, ZERO, this.count, block([
-                declVar(MATCH, INT_TYPE, this.get(indexVar)),
-                ...then,
-            ]));
+            ];
         }
     }
 }

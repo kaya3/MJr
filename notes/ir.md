@@ -85,7 +85,7 @@ The `animate` flag is currently implemented by emitting `stmt.yield` statements;
 
 ### Bitwise operators
 
-The IR supports the bitwise operators `int_and`, `int_or`, `int_not`, `int_lshift` and `int_rshift`. These are mostly self-explanatory, but have a few subtleties:
+The IR supports the bitwise operators `int_and`, `int_or`, `int_xor`, `int_not`, `int_lshift` and `int_rshift`. These are mostly self-explanatory, but have a few subtleties:
 
 - `int_lshift` and `int_rshift` are only used with a second operand in the range 0 (inclusive) to 32 (exclusive). This is because the shift amount is taken modulo 32 in some languages (e.g. JavaScript) but not others (e.g. Python).
 - `int_lshift` is "[loose](#loose-integer-operators)" in the sense that it does not need to ensure that the result fits in the signed 32-bit integer range; this will be ensured by the compiler when it matters.

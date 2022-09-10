@@ -62,7 +62,7 @@ namespace IR {
             return nameExpr(n > 0 ? `_${v}_${n}` : `_${v}`);
         },
         
-        gridVar(g: Grid, v: 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin'): NameExpr {
+        gridVar(g: Grid, v: 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'lfsrFeedbackTerm'): NameExpr {
             return nameExpr(`grid${g.grid.id}_${v}`);
         },
         matcherVar(g: Grid, id: number, v: 'update' | 'rowDFA' | 'colDFA' | 'rowStates' | 'colStates' | 'rowAcceptSets' | 'colAcceptSets'): NameExpr {

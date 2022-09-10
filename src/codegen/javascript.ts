@@ -350,6 +350,7 @@ namespace CodeGen {
                 int_ge: GE,
                 int_and: infixOp(Precedence.BITWISE_AND, '&', Associativity.BOTH),
                 int_or: infixOp(Precedence.BITWISE_OR, '|', Associativity.BOTH),
+                int_xor: infixOp(Precedence.BITWISE_XOR, '^', Associativity.BOTH),
                 int_lshift: infixOp(Precedence.BITWISE_SHIFT, '<<'),
                 int_rshift: infixOp(Precedence.BITWISE_SHIFT, '>>'),
                 

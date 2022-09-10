@@ -40,7 +40,7 @@ namespace IR {
                     VOID_TYPE,
                     block([
                         assign(N, '=', this.maskN(N)),
-                        forRange(I, ZERO, N, assign(access(this.name, I), '=', ZERO)),
+                        forRange(I, ZERO, N, [assign(access(this.name, I), '=', ZERO)]),
                     ]),
                 ),
                 declFunc(

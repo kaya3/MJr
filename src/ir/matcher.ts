@@ -107,13 +107,13 @@ namespace IR {
                         BLANK_LINE,
                         
                         comment('recompute row states'),
-                        forRange(Y, START_Y, END_Y, block([
+                        forRange(Y, START_Y, END_Y, [
                             declVar(S, INT_TYPE, ternary(
                                 OP.lt(END_X, g.width),
                                 access(rowStates, g.index(END_X, Y)),
                                 ZERO,
                             ), true),
-                            forRangeReverse(X, ZERO, END_X, block([
+                            forRangeReverse(X, ZERO, END_X, [
                                 declVars([
                                     {name: I, type: INT_TYPE, initialiser: g.index(X, Y)},
                                     {name: OLD_S, type: INT_TYPE, initialiser: access(rowStates, I)},
@@ -130,18 +130,18 @@ namespace IR {
                                     ]),
                                     if_(OP.lt(X, START_X), BREAK),
                                 ),
-                            ])),
-                        ])),
+                            ]),
+                        ]),
                         BLANK_LINE,
                         
                         comment('recompute col states'),
-                        forRange(X, START_X, END_X, block([
+                        forRange(X, START_X, END_X, [
                             declVar(S, INT_TYPE, ternary(
                                 OP.lt(END_Y, g.height),
                                 access(colStates, g.index(X, END_Y)),
                                 ZERO,
                             ), true),
-                            forRangeReverse(Y, ZERO, END_Y, block([
+                            forRangeReverse(Y, ZERO, END_Y, [
                                 declVars([
                                     {name: I, type: INT_TYPE, initialiser: g.index(X, Y)},
                                     {name: OLD_S, type: INT_TYPE, initialiser: access(colStates, I)},
@@ -161,8 +161,8 @@ namespace IR {
                                     ]),
                                     if_(OP.lt(Y, START_Y), BREAK),
                                 ),
-                            ])),
-                        ])),
+                            ]),
+                        ]),
                     ]),
                 ),
                 localCallStmt(updateFuncName, [ZERO, ZERO, g.width, g.height]),

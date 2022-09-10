@@ -160,7 +160,8 @@ namespace IR {
                 : _binOp('loose_int_plus', left, right);
         },
         minusOne(expr: Expr): Expr {
-            return expr.kind === 'expr.literal.int' ? int(expr.value - 1) : _binOp('loose_int_minus', expr, ONE)
+            return expr.kind === 'expr.literal.int' ? int(expr.value - 1)
+                : _binOp('loose_int_minus', expr, ONE)
         },
         mult(left: Expr, right: Expr): Expr {
             return left.kind === 'expr.literal.int' ? OP.multConstant(right, left.value)
@@ -194,7 +195,7 @@ namespace IR {
         multAddConstant(x: Expr, scale: number, y: Expr): Expr {
             if(scale <= 0) { throw new Error(); }
             // special case for power of 2
-            return _isPowerOfTwo(scale) ? OP.bitwiseOr(OP.lshift(x, _log2(scale)), y)
+            return _isPowerOfTwo(scale) ? OP.bitwiseXor(OP.lshift(x, _log2(scale)), y)
                 : OP.add(OP.multConstant(x, scale), y)
         },
         divConstant(left: Expr, right: number): Expr {
@@ -228,6 +229,11 @@ namespace IR {
             return left === ZERO ? right
                 : right === ZERO ? left
                 : _binOp('int_or', left, right);
+        },
+        bitwiseXor(left: Expr, right: Expr): Expr {
+            return left === ZERO ? right
+                : right === ZERO ? left
+                : _binOp('int_xor', left, right);
         },
         bitwiseNot(expr: Expr): Expr {
             return expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child

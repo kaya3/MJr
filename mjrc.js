@@ -506,6 +506,7 @@ var CodeGen;
                 int_ge: GE,
                 int_and: CodeGen.infixOp(7 /* Precedence.BITWISE_AND */, '&', 3 /* Associativity.BOTH */),
                 int_or: CodeGen.infixOp(5 /* Precedence.BITWISE_OR */, '|', 3 /* Associativity.BOTH */),
+                int_xor: CodeGen.infixOp(6 /* Precedence.BITWISE_XOR */, '^', 3 /* Associativity.BOTH */),
                 int_lshift: CodeGen.infixOp(10 /* Precedence.BITWISE_SHIFT */, '<<'),
                 int_rshift: CodeGen.infixOp(10 /* Precedence.BITWISE_SHIFT */, '>>'),
                 str_concat: PLUS,
@@ -973,6 +974,7 @@ var CodeGen;
                 int_ge: GE,
                 int_and: CodeGen.infixOp(10 /* Precedence.BITWISE_AND */, '&', 3 /* Associativity.BOTH */),
                 int_or: CodeGen.infixOp(8 /* Precedence.BITWISE_OR */, '|', 3 /* Associativity.BOTH */),
+                int_xor: CodeGen.infixOp(9 /* Precedence.BITWISE_XOR */, '^', 3 /* Associativity.BOTH */),
                 int_lshift: CodeGen.infixOp(11 /* Precedence.BITWISE_SHIFT */, '<<'),
                 int_rshift: CodeGen.infixOp(11 /* Precedence.BITWISE_SHIFT */, '>>'),
                 str_concat: PLUS,
@@ -1383,11 +1385,11 @@ var IR;
     }
     IR.declVars = declVars;
     function forRange(index, low, high, body) {
-        return { kind: 'stmt.for.range', index, low, high, reverse: false, body };
+        return { kind: 'stmt.for.range', index, low, high, reverse: false, body: block(body) };
     }
     IR.forRange = forRange;
     function forRangeReverse(index, low, high, body) {
-        return { kind: 'stmt.for.range', index, low, high, reverse: true, body };
+        return { kind: 'stmt.for.range', index, low, high, reverse: true, body: block(body) };
     }
     IR.forRangeReverse = forRangeReverse;
     function if_(condition, then, otherwise) {
@@ -1754,7 +1756,8 @@ var IR;
                     : _binOp('loose_int_plus', left, right);
         },
         minusOne(expr) {
-            return expr.kind === 'expr.literal.int' ? IR.int(expr.value - 1) : _binOp('loose_int_minus', expr, IR.ONE);
+            return expr.kind === 'expr.literal.int' ? IR.int(expr.value - 1)
+                : _binOp('loose_int_minus', expr, IR.ONE);
         },
         mult(left, right) {
             return left.kind === 'expr.literal.int' ? IR.OP.multConstant(right, left.value)
@@ -1791,7 +1794,7 @@ var IR;
                 throw new Error();
             }
             // special case for power of 2
-            return _isPowerOfTwo(scale) ? IR.OP.bitwiseOr(IR.OP.lshift(x, _log2(scale)), y)
+            return _isPowerOfTwo(scale) ? IR.OP.bitwiseXor(IR.OP.lshift(x, _log2(scale)), y)
                 : IR.OP.add(IR.OP.multConstant(x, scale), y);
         },
         divConstant(left, right) {
@@ -1828,6 +1831,11 @@ var IR;
             return left === IR.ZERO ? right
                 : right === IR.ZERO ? left
                     : _binOp('int_or', left, right);
+        },
+        bitwiseXor(left, right) {
+            return left === IR.ZERO ? right
+                : right === IR.ZERO ? left
+                    : _binOp('int_xor', left, right);
         },
         bitwiseNot(expr) {
             return expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
@@ -2243,7 +2251,7 @@ var Compiler;
             const { pattern } = stmt;
             return IR.block([
                 // TODO: check bounds, given size of pattern
-                _declareAt(g, c.expr(stmt.at)),
+                g.declareAtIndex(c.expr(stmt.at)),
                 pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
                 IR.if_(_writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition), _doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
             ]);
@@ -2269,13 +2277,6 @@ var Compiler;
     function _stmtNotSupported(c, stmt) {
         c.notSupported(`'${stmt.kind}'`, stmt.pos);
         return IR.PASS;
-    }
-    function _declareAt(g, at) {
-        return IR.declVars([
-            { name: AT, type: IR.INT_TYPE, initialiser: at },
-            { name: AT_X, type: IR.INT_TYPE, initialiser: OP.mod(AT, g.width) },
-            { name: AT_Y, type: IR.INT_TYPE, initialiser: OP.floordiv(AT, g.width) },
-        ]);
     }
     function _doWrite(c, outGrid, from, to, useMask, flagVar, doUpdate, doYield) {
         const out = [];
@@ -2354,23 +2355,24 @@ var Compiler;
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
         const switchWrites = IR.block([
-            _declareAt(g, OP.divConstant(MATCH, k)),
+            g.declareAtIndex(OP.divConstant(MATCH, k)),
             IR.switch_(OP.modConstant(MATCH, k), rewrites.map((rule, i) => IR.block([
                 rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
                 IR.if_(writeConditions[i], _doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
             ]))),
         ]);
         return allUnconditionalAndEffective
-            ? IR.if_(sampler.isNotEmpty, IR.block([
+            ? IR.if_(OP.gt(sampler.count, IR.ZERO), IR.block([
                 IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithReplacement()),
                 switchWrites,
                 ifChanged,
             ]), then)
             : IR.block([
+                sampler.beginSamplingWithoutReplacement(MATCH),
                 c.matches.declareCount(sampler.count, true),
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), IR.block([
-                    IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithoutReplacement(c.matches.count)),
+                    sampler.sampleWithoutReplacement(MATCH, c.matches.count),
                     switchWrites,
                     c.matches.decrementCount,
                 ])),
@@ -2423,22 +2425,22 @@ var Compiler;
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if (firstPassConditions.every(c => c === IR.TRUE)) {
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            out.push(c.matches.copyFrom(sampler.name, shuffle), c.matches.declareCount(sampler.count, false));
+            out.push(...sampler.copyInto(I, c.matches, shuffle));
         }
         else {
             out.push(c.matches.declareCount(IR.ZERO, true));
             for (let i = 0; i < k; ++i) {
                 const rule = rewrites[i];
                 const sampler = g.makeSampler([rule.from]);
-                const declareAt = _declareAt(g, sampler.get(I));
+                const declareAt = sampler.declareAt(I);
                 const condition = firstPassConditions[i];
                 const addMatch = c.matches.add(OP.multAddConstant(AT, k, IR.int(i)), shuffle);
                 out.push(
                 // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                 conditionIsSameEverywhere[i]
-                    ? IR.if_(condition, sampler.forEach(I, [declareAt, addMatch]))
+                    ? IR.if_(condition, IR.forRange(I, IR.ZERO, sampler.count, [declareAt, ...addMatch]))
                     // otherwise, need to check the condition separately for each match
-                    : sampler.forEach(I, [declareAt, IR.if_(condition, addMatch)]));
+                    : IR.forRange(I, IR.ZERO, sampler.count, [declareAt, IR.if_(condition, IR.block(addMatch))]));
             }
         }
         const doWrites = rewrites.map((rule, i) => IR.block([
@@ -2452,8 +2454,9 @@ var Compiler;
         }
         out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
             useMask ? c.mask.clear(g) : IR.PASS,
-            c.matches.forEach(I, [
-                _declareAt(g, OP.divConstant(MATCH, k)),
+            IR.forRange(I, IR.ZERO, c.matches.count, [
+                IR.declVar(MATCH, IR.INT_TYPE, c.matches.get(I)),
+                g.declareAtIndex(OP.divConstant(MATCH, k)),
                 IR.switch_(OP.modConstant(MATCH, k), doWrites),
             ]),
             useFlag ? IR.PASS : ifChanged,
@@ -2477,13 +2480,11 @@ var Compiler;
         // TODO: different strategy if rules don't cover the whole alphabet?
         return IR.block([
             IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-            IR.forRange(AT_Y, IR.ZERO, g.height, IR.forRange(AT_X, IR.ZERO, g.width, IR.block([
-                IR.declVars([
-                    { name: AT, type: IR.INT_TYPE, initialiser: g.index(AT_X, AT_Y) },
-                    { name: AT_CONV, type: IR.INT_TYPE, initialiser: atConvInitialiser },
-                ]),
-                IR.switch_(g.access(AT), cases),
-            ]))),
+            IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
+                    g.declareAtXY(AT_X, AT_Y),
+                    IR.declVar(AT_CONV, IR.INT_TYPE, atConvInitialiser),
+                    IR.switch_(g.access(AT), cases),
+                ])]),
             IR.if_(ANY, IR.block([
                 // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
                 ...g.update(IR.ZERO, IR.ZERO, g.width, g.height, c.config.animate),
@@ -2611,6 +2612,46 @@ var MJr;
         return rng.nextInt(n);
     }
     MJr.nextIntChecked = nextIntChecked;
+    function lfsrFeedbackTerm(n) {
+        // http://users.ece.cmu.edu/~koopman/lfsr/
+        if (n < 0xFF) {
+            return 0xA6;
+        }
+        else if (n < 0x3FF) {
+            return 0x344;
+        }
+        else if (n < 0xFFF) {
+            return 0xAF5;
+        }
+        else if (n < 0x3FFF) {
+            return 0x243F;
+        }
+        else if (n < 0xFFFF) {
+            return 0x8580;
+        }
+        else if (n < 0x3FFFF) {
+            return 0x204C9;
+        }
+        else if (n < 0xFFFFF) {
+            return 0x80534;
+        }
+        else if (n < 0x3FFFFF) {
+            return 0x200634;
+        }
+        else if (n < 0xFFFFFF) {
+            return 0x8009F8;
+        }
+        else if (n < 0x3FFFFFF) {
+            return 0x20006B9;
+        }
+        else if (n < 0xFFFFFFF) {
+            return 0x8000893;
+        }
+        else {
+            return 0x20000A46;
+        }
+    }
+    MJr.lfsrFeedbackTerm = lfsrFeedbackTerm;
     class Grid {
         width;
         height;
@@ -5753,6 +5794,7 @@ var IR;
         data;
         obj = undefined;
         origin = undefined;
+        lfsrFeedbackTerm = undefined;
         originX;
         originY;
         counters = new Map();
@@ -5792,11 +5834,17 @@ var IR;
         makeSampler(patterns) {
             const { samplers, matcher } = this;
             const key = patterns.map(Pattern.key).join('\n');
-            let sampler = samplers.get(key);
-            if (sampler !== undefined) {
+            const cached = samplers.get(key);
+            if (cached !== undefined) {
+                return cached;
+            }
+            if (patterns.length === 1 && patterns[0].width === 1 && patterns[0].height === 1 && ISet.size(patterns[0].masks[0]) === this.grid.alphabet.key.length) {
+                const sampler = new IR.TrivialSampler(this);
+                samplers.set(key, sampler);
                 return sampler;
             }
-            samplers.set(key, sampler = new IR.Sampler(samplers.size, this, patterns.length));
+            const sampler = new IR.Sampler(samplers.size, this, patterns.length);
+            samplers.set(key, sampler);
             for (let i = 0; i < patterns.length; ++i) {
                 const pattern = patterns[i];
                 matcher.addMatchHandler({ kind: 'sampler', pattern, sampler, i });
@@ -5825,8 +5873,11 @@ var IR;
         useObj() {
             return this.obj ??= IR.NAMES.gridVar(this, 'obj');
         }
+        useLsfrFeedbackTerm() {
+            return this.lfsrFeedbackTerm ??= IR.NAMES.gridVar(this, 'lfsrFeedbackTerm');
+        }
         declareVars() {
-            const { width, height, n, data, obj, origin, originX, originY, grid } = this;
+            const { width, height, n, data, obj, origin, lfsrFeedbackTerm, grid } = this;
             const alphabetKey = grid.alphabet.key;
             const consts = [];
             const vars = [];
@@ -5842,13 +5893,16 @@ var IR;
                 consts.push({ name: obj, type: IR.GRID_TYPE, initialiser });
             }
             if (origin !== undefined) {
-                consts.push({ name: origin, type: IR.INT_TYPE, initialiser: IR.OP.add(originX, IR.OP.mult(originY, width)) });
+                consts.push({ name: origin, type: IR.INT_TYPE, initialiser: IR.OP.add(this.originX, IR.OP.mult(this.originY, width)) });
+            }
+            if (lfsrFeedbackTerm !== undefined) {
+                consts.push({ name: lfsrFeedbackTerm, type: IR.INT_TYPE, initialiser: IR.libFunctionCall('lfsrFeedbackTerm', [n]) });
             }
             for (const buffer of this.convBuffers.values()) {
                 consts.push(...buffer.declare());
             }
             for (const sampler of this.samplers.values()) {
-                consts.push(sampler.declare());
+                consts.push(...sampler.declare());
             }
             vars.push(...Array.from(this.counters.values(), counter => ({
                 name: counter,
@@ -5884,6 +5938,25 @@ var IR;
         }
         checkedIndex(x, y) {
             return IR.libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.useObj(), [x, y]);
+        }
+        declareAtIndex(index) {
+            const decls = [];
+            if (index !== AT) {
+                decls.push({ name: AT, type: IR.INT_TYPE, initialiser: index });
+            }
+            decls.push({ name: AT_X, type: IR.INT_TYPE, initialiser: IR.OP.mod(AT, this.width) }, { name: AT_Y, type: IR.INT_TYPE, initialiser: IR.OP.floordiv(AT, this.width) });
+            return IR.declVars(decls);
+        }
+        declareAtXY(x, y) {
+            const decls = [];
+            if (x !== AT_X) {
+                decls.push({ name: AT_X, type: IR.INT_TYPE, initialiser: x });
+            }
+            if (y !== AT_Y) {
+                decls.push({ name: AT_Y, type: IR.INT_TYPE, initialiser: y });
+            }
+            decls.push({ name: AT, type: IR.INT_TYPE, initialiser: this.index(AT_X, AT_Y) });
+            return IR.declVars(decls);
         }
         access(index) {
             return IR.access(this.data, index);
@@ -5967,7 +6040,7 @@ var IR;
                 IR.declVar(this.name, IR.INT32_ARRAY_TYPE, IR.newInt32Array(this.maskN(IR.OP.multConstant(IR.OP.mult(WIDTH, HEIGHT), this.scale)))),
                 IR.declFunc(MASK_CLEAR, undefined, [N], [IR.INT_TYPE], IR.VOID_TYPE, IR.block([
                     IR.assign(N, '=', this.maskN(N)),
-                    IR.forRange(I, IR.ZERO, N, IR.assign(IR.access(this.name, I), '=', IR.ZERO)),
+                    IR.forRange(I, IR.ZERO, N, [IR.assign(IR.access(this.name, I), '=', IR.ZERO)]),
                 ])),
                 IR.declFunc(MASK_SET, undefined, [G, I, S], [IR.GRID_DATA_ARRAY_TYPE, IR.INT_TYPE, IR.BYTE_TYPE], IR.VOID_TYPE, IR.block([
                     IR.assign(IR.access(G, I), '=', S),
@@ -6067,9 +6140,9 @@ var IR;
                     ]),
                     IR.BLANK_LINE,
                     IR.comment('recompute row states'),
-                    IR.forRange(Y, START_Y, END_Y, IR.block([
+                    IR.forRange(Y, START_Y, END_Y, [
                         IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_X, g.width), IR.access(rowStates, g.index(END_X, Y)), IR.ZERO), true),
-                        IR.forRangeReverse(X, IR.ZERO, END_X, IR.block([
+                        IR.forRangeReverse(X, IR.ZERO, END_X, [
                             IR.declVars([
                                 { name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
                                 { name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(rowStates, I) },
@@ -6079,13 +6152,13 @@ var IR;
                                 IR.assign(IR.access(rowStates, I), '=', S),
                                 IR.if_(IR.OP.lt(X, START_X), IR.assign(START_X, '=', X)),
                             ]), IR.if_(IR.OP.lt(X, START_X), IR.BREAK)),
-                        ])),
-                    ])),
+                        ]),
+                    ]),
                     IR.BLANK_LINE,
                     IR.comment('recompute col states'),
-                    IR.forRange(X, START_X, END_X, IR.block([
+                    IR.forRange(X, START_X, END_X, [
                         IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_Y, g.height), IR.access(colStates, g.index(X, END_Y)), IR.ZERO), true),
-                        IR.forRangeReverse(Y, IR.ZERO, END_Y, IR.block([
+                        IR.forRangeReverse(Y, IR.ZERO, END_Y, [
                             IR.declVars([
                                 { name: I, type: IR.INT_TYPE, initialiser: g.index(X, Y) },
                                 { name: OLD_S, type: IR.INT_TYPE, initialiser: IR.access(colStates, I) },
@@ -6097,8 +6170,8 @@ var IR;
                                 IR.switch_(IR.access(colAcceptSets, OLD_S), makeStateChangeHandlers('del')),
                                 IR.switch_(IR.access(colAcceptSets, S), makeStateChangeHandlers('add')),
                             ]), IR.if_(IR.OP.lt(Y, START_Y), IR.BREAK)),
-                        ])),
-                    ])),
+                        ]),
+                    ]),
                 ])),
                 IR.localCallStmt(updateFuncName, [IR.ZERO, IR.ZERO, g.width, g.height]),
                 IR.BLANK_LINE,
@@ -6110,7 +6183,7 @@ var IR;
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
-    const { MATCH, MATCHES, MATCH_COUNT, WIDTH, HEIGHT, RNG, J, } = IR.NAMES;
+    const { MATCHES, MATCH_COUNT, WIDTH, HEIGHT, RNG, J, } = IR.NAMES;
     class MatchesArray {
         scale = 0;
         array = MATCHES;
@@ -6133,16 +6206,11 @@ var IR;
         declareCount(initial, mutable) {
             return IR.declVar(this.count, IR.INT_TYPE, initial, mutable);
         }
-        copyFrom(sampler, shuffle) {
-            return shuffle
-                ? IR.libMethodCallStmt('Sampler', 'shuffleInto', sampler, [this.array, RNG])
-                : IR.libMethodCallStmt('Sampler', 'copyInto', sampler, [this.array]);
-        }
         get(index) {
             return IR.access(this.array, index);
         }
         add(match, shuffle) {
-            return IR.block(shuffle ? [
+            return shuffle ? [
                 IR.declVar(J, IR.INT_TYPE, IR.libMethodCall('PRNG', 'nextInt', RNG, [IR.OP.add(this.count, IR.ONE)])),
                 IR.assign(this.getAtCount, '=', this.get(J)),
                 IR.assign(this.get(J), '=', match),
@@ -6150,55 +6218,93 @@ var IR;
             ] : [
                 IR.assign(this.getAtCount, '=', match),
                 this.incrementCount,
-            ]);
-        }
-        forEach(indexVar, then) {
-            return IR.forRange(indexVar, IR.ZERO, this.count, IR.block([
-                IR.declVar(MATCH, IR.INT_TYPE, this.get(indexVar)),
-                ...then,
-            ]));
+            ];
         }
     }
     IR.MatchesArray = MatchesArray;
 })(IR || (IR = {}));
+///<reference path="names.ts"/>
 var IR;
 (function (IR) {
+    const { RNG, S } = IR.NAMES;
     class Sampler {
-        inGrid;
+        g;
         numPatterns;
         name;
         count;
         arr;
-        isNotEmpty;
-        constructor(id, inGrid, numPatterns) {
-            this.inGrid = inGrid;
+        constructor(id, g, numPatterns) {
+            this.g = g;
             this.numPatterns = numPatterns;
-            this.name = IR.NAMES.sampler(inGrid, id);
+            this.name = IR.NAMES.sampler(g, id);
             this.count = IR.attr(this.name, 'count');
             this.arr = IR.attr(this.name, 'arr');
-            this.isNotEmpty = IR.OP.gt(this.count, IR.ZERO);
         }
         declare() {
-            return {
-                name: this.name,
-                type: IR.SAMPLER_TYPE,
-                initialiser: IR.libConstructorCall('Sampler', [IR.OP.multConstant(this.inGrid.n, this.numPatterns)]),
-            };
+            return [{
+                    name: this.name,
+                    type: IR.SAMPLER_TYPE,
+                    initialiser: IR.libConstructorCall('Sampler', [IR.OP.multConstant(this.g.n, this.numPatterns)]),
+                }];
         }
-        get(index) {
-            return IR.access(this.arr, index);
+        declareAt(i) {
+            return this.g.declareAtIndex(IR.access(this.arr, i));
         }
         sampleWithReplacement() {
-            return this.get(IR.libMethodCall('PRNG', 'nextInt', IR.NAMES.RNG, [this.count]));
+            return IR.access(this.arr, IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]));
         }
-        sampleWithoutReplacement(count) {
-            return IR.libMethodCall('Sampler', 'sample', this.name, [this.count, IR.NAMES.RNG]);
+        beginSamplingWithoutReplacement() {
+            return IR.PASS;
         }
-        forEach(indexVar, then) {
-            return IR.forRange(indexVar, IR.ZERO, this.count, IR.block(then));
+        sampleWithoutReplacement(matchVar, count) {
+            return IR.declVar(matchVar, IR.INT_TYPE, IR.libMethodCall('Sampler', 'sample', this.name, [count, RNG]));
+        }
+        copyInto(indexVar, matches, shuffle) {
+            return [
+                shuffle ? IR.libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matches.array, RNG])
+                    : IR.libMethodCallStmt('Sampler', 'copyInto', this.name, [matches.array]),
+                IR.declVar(matches.count, IR.INT_TYPE, this.count),
+            ];
         }
     }
     IR.Sampler = Sampler;
+    class TrivialSampler {
+        g;
+        count;
+        constructor(g) {
+            this.g = g;
+            this.count = g.n;
+        }
+        declare() {
+            return [];
+        }
+        declareAt(i) {
+            return this.g.declareAtIndex(i);
+        }
+        sampleWithReplacement() {
+            return IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]);
+        }
+        beginSamplingWithoutReplacement(matchVar) {
+            return IR.declVar(S, IR.INT_TYPE, IR.OP.add(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.g.n]), IR.ONE), true);
+        }
+        sampleWithoutReplacement(matchVar, count) {
+            const { g } = this;
+            return IR.block([
+                IR.while_(IR.TRUE, IR.block([
+                    IR.assign(S, '=', IR.ternary(IR.OP.ne(IR.OP.bitwiseAnd(S, IR.ONE), IR.ZERO), IR.OP.bitwiseXor(IR.OP.rshift(S, IR.ONE), g.useLsfrFeedbackTerm()), IR.OP.rshift(S, IR.ONE))),
+                    IR.if_(IR.OP.le(S, g.n), IR.BREAK),
+                ])),
+                IR.declVar(matchVar, IR.INT_TYPE, IR.OP.minusOne(S)),
+            ]);
+        }
+        copyInto(indexVar, matches, shuffle) {
+            return [
+                IR.declVar(matches.count, IR.INT_TYPE, IR.ZERO, true),
+                IR.forRange(indexVar, IR.ZERO, this.count, matches.add(indexVar, shuffle)),
+            ];
+        }
+    }
+    IR.TrivialSampler = TrivialSampler;
 })(IR || (IR = {}));
 var IR;
 (function (IR) {

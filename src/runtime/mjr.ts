@@ -85,6 +85,35 @@ namespace MJr {
         return rng.nextInt(n);
     }
     
+    export function lfsrFeedbackTerm(n: number): number {
+        // http://users.ece.cmu.edu/~koopman/lfsr/
+        if(n < 0xFF) {
+            return 0xA6;
+        } else if(n < 0x3FF) {
+            return 0x344;
+        } else if(n < 0xFFF) {
+            return 0xAF5;
+        } else if(n < 0x3FFF) {
+            return 0x243F;
+        } else if(n < 0xFFFF) {
+            return 0x8580;
+        } else if(n < 0x3FFFF) {
+            return 0x204C9;
+        } else if(n < 0xFFFFF) {
+            return 0x80534;
+        } else if(n < 0x3FFFFF) {
+            return 0x200634;
+        } else if(n < 0xFFFFFF) {
+            return 0x8009F8;
+        } else if(n < 0x3FFFFFF) {
+            return 0x20006B9;
+        } else if(n < 0xFFFFFFF) {
+            return 0x8000893;
+        } else {
+            return 0x20000A46;
+        }
+    }
+    
     export class Grid {
         public constructor(
             public readonly width: number,

@@ -29,7 +29,7 @@ namespace IR {
     export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
     
     export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
-    export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
+    export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
     export type UnaryOp = Op.UnaryOp | 'int_not'
     export type Op = BinaryOp | UnaryOp
     
@@ -209,11 +209,11 @@ namespace IR {
     export function declVars(decls: readonly VarDecl[], mutable: boolean = false): Stmt {
         return decls.length > 0 ? {kind: 'stmt.decl.vars', decls, mutable} : PASS;
     }
-    export function forRange(index: NameExpr, low: Expr, high: Expr, body: Stmt): ForRangeStmt {
-        return {kind: 'stmt.for.range', index, low, high, reverse: false, body};
+    export function forRange(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[]): ForRangeStmt {
+        return {kind: 'stmt.for.range', index, low, high, reverse: false, body: block(body)};
     }
-    export function forRangeReverse(index: NameExpr, low: Expr, high: Expr, body: Stmt): ForRangeStmt {
-        return {kind: 'stmt.for.range', index, low, high, reverse: true, body};
+    export function forRangeReverse(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[]): ForRangeStmt {
+        return {kind: 'stmt.for.range', index, low, high, reverse: true, body: block(body)};
     }
     export function if_(condition: Expr, then: Stmt, otherwise?: Stmt): Stmt {
         if(otherwise === PASS) { otherwise = undefined; }

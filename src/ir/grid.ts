@@ -13,11 +13,12 @@ namespace IR {
         public readonly data: NameExpr;
         private obj: NameExpr | undefined = undefined;
         private origin: NameExpr | undefined = undefined;
+        private lfsrFeedbackTerm: NameExpr | undefined = undefined;
         public readonly originX: Expr;
         public readonly originY: Expr;
         
         private readonly counters = new Map<string, NameExpr>();
-        private readonly samplers = new Map<string, Sampler>();
+        private readonly samplers = new Map<string, AbstractSampler>();
         private readonly convBuffers = new Map<string, ConvBuffer>();
         public readonly matcher: Matcher;
         
@@ -55,14 +56,21 @@ namespace IR {
             return counter;
         }
         
-        public makeSampler(patterns: readonly Pattern[]): Sampler {
+        public makeSampler(patterns: readonly Pattern[]): AbstractSampler {
             const {samplers, matcher} = this;
             
             const key = patterns.map(Pattern.key).join('\n');
-            let sampler = samplers.get(key);
-            if(sampler !== undefined) { return sampler; }
+            const cached = samplers.get(key);
+            if(cached !== undefined) { return cached; }
             
-            samplers.set(key, sampler = new Sampler(samplers.size, this, patterns.length));
+            if(patterns.length === 1 && patterns[0].width === 1 && patterns[0].height === 1 && ISet.size(patterns[0].masks[0]) === this.grid.alphabet.key.length) {
+                const sampler = new TrivialSampler(this);
+                samplers.set(key, sampler);
+                return sampler;
+            }
+            
+            const sampler = new Sampler(samplers.size, this, patterns.length);
+            samplers.set(key, sampler);
             
             for(let i = 0; i < patterns.length; ++i) {
                 const pattern = patterns[i];
@@ -94,8 +102,12 @@ namespace IR {
             return this.obj ??= NAMES.gridVar(this, 'obj');
         }
         
+        public useLsfrFeedbackTerm(): NameExpr {
+            return this.lfsrFeedbackTerm ??= NAMES.gridVar(this, 'lfsrFeedbackTerm');
+        }
+        
         public declareVars(): Stmt[] {
-            const {width, height, n, data, obj, origin, originX, originY, grid} = this;
+            const {width, height, n, data, obj, origin, lfsrFeedbackTerm, grid} = this;
             const alphabetKey = grid.alphabet.key;
             const consts: VarDeclWithInitialiser[] = [];
             const vars: VarDeclWithInitialiser[] = [];
@@ -115,14 +127,17 @@ namespace IR {
                 consts.push({name: obj, type: GRID_TYPE, initialiser});
             }
             if(origin !== undefined) {
-                consts.push({name: origin, type: INT_TYPE, initialiser: OP.add(originX, OP.mult(originY, width))});
+                consts.push({name: origin, type: INT_TYPE, initialiser: OP.add(this.originX, OP.mult(this.originY, width))});
+            }
+            if(lfsrFeedbackTerm !== undefined) {
+                consts.push({name: lfsrFeedbackTerm, type: INT_TYPE, initialiser: libFunctionCall('lfsrFeedbackTerm', [n])});
             }
             
             for(const buffer of this.convBuffers.values()) {
                 consts.push(...buffer.declare());
             }
             for(const sampler of this.samplers.values()) {
-                consts.push(sampler.declare());
+                consts.push(...sampler.declare());
             }
             
             vars.push(...Array.from(this.counters.values(), counter => ({
@@ -162,6 +177,24 @@ namespace IR {
         
         public checkedIndex(x: Expr, y: Expr): Expr {
             return libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.useObj(), [x, y]);
+        }
+        
+        public declareAtIndex(index: Expr): Stmt {
+            const decls: VarDeclWithInitialiser[] = [];
+            if(index !== AT) { decls.push({name: AT, type: INT_TYPE, initialiser: index}); }
+            decls.push(
+                {name: AT_X, type: INT_TYPE, initialiser: OP.mod(AT, this.width)},
+                {name: AT_Y, type: INT_TYPE, initialiser: OP.floordiv(AT, this.width)},
+            );
+            return declVars(decls);
+        }
+        
+        public declareAtXY(x: Expr, y: Expr): Stmt {
+            const decls: VarDeclWithInitialiser[] = [];
+            if(x !== AT_X) { decls.push({name: AT_X, type: INT_TYPE, initialiser: x}); }
+            if(y !== AT_Y) { decls.push({name: AT_Y, type: INT_TYPE, initialiser: y}); }
+            decls.push({name: AT, type: INT_TYPE, initialiser: this.index(AT_X, AT_Y)});
+            return declVars(decls);
         }
         
         public access(index: Expr): ArrayAccessExpr {

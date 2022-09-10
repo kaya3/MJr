@@ -409,7 +409,7 @@ namespace Compiler {
             const {pattern} = stmt;
             return IR.block([
                 // TODO: check bounds, given size of pattern
-                _declareAt(g, c.expr(stmt.at)),
+                g.declareAtIndex(c.expr(stmt.at)),
                 pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
                 IR.if_(
                     _writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition),
@@ -438,14 +438,6 @@ namespace Compiler {
     function _stmtNotSupported(c: Compiler, stmt: ASG.Statement): IR.Stmt {
         c.notSupported(`'${stmt.kind}'`, stmt.pos);
         return IR.PASS;
-    }
-    
-    function _declareAt(g: IR.Grid, at: IR.Expr): IR.Stmt {
-        return IR.declVars([
-            {name: AT, type: IR.INT_TYPE, initialiser: at},
-            {name: AT_X, type: IR.INT_TYPE, initialiser: OP.mod(AT, g.width)},
-            {name: AT_Y, type: IR.INT_TYPE, initialiser: OP.floordiv(AT, g.width)},
-        ]);
     }
     
     function _doWrite(c: Compiler, outGrid: IR.Grid, from: Pattern | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
@@ -537,7 +529,7 @@ namespace Compiler {
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
         
         const switchWrites = IR.block([
-            _declareAt(g, OP.divConstant(MATCH, k)),
+            g.declareAtIndex(OP.divConstant(MATCH, k)),
             IR.switch_(
                 OP.modConstant(MATCH, k),
                 rewrites.map((rule, i) => IR.block([
@@ -552,7 +544,7 @@ namespace Compiler {
         
         return allUnconditionalAndEffective
             ? IR.if_(
-                sampler.isNotEmpty,
+                OP.gt(sampler.count, IR.ZERO),
                 IR.block([
                     IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithReplacement()),
                     switchWrites,
@@ -561,12 +553,13 @@ namespace Compiler {
                 then,
             )
             : IR.block([
+                sampler.beginSamplingWithoutReplacement(MATCH),
                 c.matches.declareCount(sampler.count, true),
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(
                     OP.and(c.matches.isNotEmpty, OP.not(ANY)),
                     IR.block([
-                        IR.declVar(MATCH, IR.INT_TYPE, sampler.sampleWithoutReplacement(c.matches.count)),
+                        sampler.sampleWithoutReplacement(MATCH, c.matches.count),
                         switchWrites,
                         c.matches.decrementCount,
                     ]),
@@ -644,25 +637,22 @@ namespace Compiler {
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if(firstPassConditions.every(c => c === IR.TRUE)) {
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            out.push(
-                c.matches.copyFrom(sampler.name, shuffle),
-                c.matches.declareCount(sampler.count, false),
-            );
+            out.push(...sampler.copyInto(I, c.matches, shuffle));
         } else {
             out.push(c.matches.declareCount(IR.ZERO, true));
             for(let i = 0; i < k; ++i) {
                 const rule = rewrites[i];
                 const sampler = g.makeSampler([rule.from]);
-                const declareAt = _declareAt(g, sampler.get(I));
+                const declareAt = sampler.declareAt(I);
                 const condition = firstPassConditions[i];
                 const addMatch = c.matches.add(OP.multAddConstant(AT, k, IR.int(i)), shuffle);
                 
                 out.push(
                     // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                     conditionIsSameEverywhere[i]
-                    ? IR.if_(condition, sampler.forEach(I, [declareAt, addMatch]))
+                    ? IR.if_(condition, IR.forRange(I, IR.ZERO, sampler.count, [declareAt, ...addMatch]))
                     // otherwise, need to check the condition separately for each match
-                    : sampler.forEach(I, [declareAt, IR.if_(condition, addMatch)])
+                    : IR.forRange(I, IR.ZERO, sampler.count, [declareAt, IR.if_(condition, IR.block(addMatch))])
                 );
             }
         }
@@ -693,8 +683,9 @@ namespace Compiler {
                 c.matches.isNotEmpty,
                 IR.block([
                     useMask ? c.mask.clear(g) : IR.PASS,
-                    c.matches.forEach(I, [
-                        _declareAt(g, OP.divConstant(MATCH, k)),
+                    IR.forRange(I, IR.ZERO, c.matches.count, [
+                        IR.declVar(MATCH, IR.INT_TYPE, c.matches.get(I)),
+                        g.declareAtIndex(OP.divConstant(MATCH, k)),
                         IR.switch_(OP.modConstant(MATCH, k), doWrites),
                     ]),
                     useFlag ? IR.PASS : ifChanged,
@@ -719,7 +710,7 @@ namespace Compiler {
             ISet.forEach(rule.from.masks[0], i => {
                 if(cases[i] !== IR.PASS) { throw new Error(); }
                 cases[i] = caseHandler;
-            })
+            });
         }
         
         const bufferWidth = OP.add(g.width, IR.int(kernel.width - 1)),
@@ -731,13 +722,11 @@ namespace Compiler {
         // TODO: different strategy if rules don't cover the whole alphabet?
         return IR.block([
             IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-            IR.forRange(AT_Y, IR.ZERO, g.height, IR.forRange(AT_X, IR.ZERO, g.width, IR.block([
-                IR.declVars([
-                    {name: AT, type: IR.INT_TYPE, initialiser: g.index(AT_X, AT_Y)},
-                    {name: AT_CONV, type: IR.INT_TYPE, initialiser: atConvInitialiser},
-                ]),
+            IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
+                g.declareAtXY(AT_X, AT_Y),
+                IR.declVar(AT_CONV, IR.INT_TYPE, atConvInitialiser),
                 IR.switch_(g.access(AT), cases),
-            ]))),
+            ])]),
             IR.if_(
                 ANY,
                 IR.block([

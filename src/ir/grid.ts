@@ -22,6 +22,8 @@ namespace IR {
         private readonly convBuffers = new Map<string, ConvBuffer>();
         public readonly matcher: Matcher;
         
+        private scale: number = 1;
+
         public constructor(public readonly grid: ASG.FormalGrid) {
             const {scaleX, scaleY} = grid;
             
@@ -35,6 +37,10 @@ namespace IR {
             
             // TODO: multiple matchers per grid?
             this.matcher = new Matcher(this, 0);
+        }
+
+        public getScale(): number {
+            return this.grid.scaleX * this.grid.scaleY * this.scale;
         }
         
         public makeCounter(patterns: readonly Pattern[]): Expr {
@@ -77,6 +83,7 @@ namespace IR {
                 const pattern = patterns[i];
                 matcher.addMatchHandler({kind: 'sampler', pattern, sampler, i});
             }
+            this.scale = Math.max(this.scale, patterns.length);
             return sampler;
         }
         
@@ -92,6 +99,7 @@ namespace IR {
             });
             
             convBuffers.set(key, buffer = new ConvBuffer(convBuffers.size, this, charsets, p.kernel));
+            this.scale = Math.max(this.scale, charsets.length);
             return buffer;
         }
         

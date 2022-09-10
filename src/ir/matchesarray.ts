@@ -8,7 +8,7 @@ namespace IR {
     } = NAMES;
     
     export class MatchesArray {
-        private scale: number = 0;
+        public scale: number = 0;
         
         public readonly array = MATCHES;
         public readonly count = MATCH_COUNT;

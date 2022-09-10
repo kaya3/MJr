@@ -90,7 +90,6 @@ namespace IR {
         }
     }
     
-    // TODO: larger trivial patterns than 1x1
     export class TrivialSampler implements AbstractSampler {
         public readonly count: Expr;
         private readonly width: Expr;

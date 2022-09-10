@@ -53,7 +53,7 @@ namespace Compiler {
         private readonly limits: IR.Limits;
         readonly matches = new IR.MatchesArray();
         readonly variables: IR.Variables;
-        
+
         constructor(
             readonly asg: ASG.ASG,
             readonly config: Readonly<Config>,
@@ -121,7 +121,7 @@ namespace Compiler {
             mainParams.push(RNG);
             mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
             
-            // need to compile everything before preamble, so that `this.opsUsed` is complete
+            // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
             const matchesDecl = this.matches.declare(),
                 maskDecl = this.mask.declare(),
                 constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({name: IR.NAMES.constant(i), type: s.type, initialiser: s.expr}))),
@@ -129,10 +129,25 @@ namespace Compiler {
                 flagDecls = this.flags.declare(),
                 limitDecls = this.limits.declare(this);
             
+            // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
+            // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
+            // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
+            const maxScale = Math.max(
+                this.matches.scale,
+                ...this.grids.map(g => g.getScale()),
+            );
+            const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
+            
             return IR.declFunc(IR.nameExpr(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${COMPILER_VERSION} on ${date}`),
-                // TODO: compute and pass max width/height, to ensure no overflow of "loose" integer operations
-                this.config.emitChecks ? IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_("Grid dimensions must be positive")) : IR.PASS,
+                this.config.emitChecks ? IR.if_(
+                    OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)),
+                    IR.throw_('Grid dimensions must be positive'),
+                    IR.if_(
+                        OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)),
+                        IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`),
+                    ),
+                ) : IR.PASS,
                 
                 IR.preamble(this.dictType(params), this.config.emitChecks, REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,

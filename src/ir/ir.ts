@@ -251,6 +251,8 @@ namespace IR {
         return {kind: 'stmt.return', expr};
     }
     export function switch_(expr: Expr, casesByIndex: readonly Stmt[]): Stmt {
+        if(casesByIndex.length === 0) { return PASS; }
+        
         const firstCase = casesByIndex[0];
         if(firstCase.kind === 'stmt.if' && casesByIndex.every(c => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
             // factor out common condition; the `otherwise` part will generally be trivial

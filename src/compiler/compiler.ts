@@ -351,7 +351,7 @@ namespace Compiler {
             const decls: IR.VarDeclWithInitialiser[] = [];
             let cur: ASG.Expression = expr;
             while(cur.kind === 'expr.decl') {
-                const {variable, rhs} = expr.decl;
+                const {variable, rhs} = cur.decl;
                 if(variable.references > 0) {
                     decls.push({
                         name: c.variables.name(variable.id),

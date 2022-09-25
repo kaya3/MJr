@@ -1441,6 +1441,9 @@ var IR;
     }
     IR.return_ = return_;
     function switch_(expr, casesByIndex) {
+        if (casesByIndex.length === 0) {
+            return IR.PASS;
+        }
         const firstCase = casesByIndex[0];
         if (firstCase.kind === 'stmt.if' && casesByIndex.every(c => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
             // factor out common condition; the `otherwise` part will generally be trivial
@@ -2180,7 +2183,7 @@ var Compiler;
             const decls = [];
             let cur = expr;
             while (cur.kind === 'expr.decl') {
-                const { variable, rhs } = expr.decl;
+                const { variable, rhs } = cur.decl;
                 if (variable.references > 0) {
                     decls.push({
                         name: c.variables.name(variable.id),
@@ -3033,13 +3036,13 @@ var Parser;
         }
         assertPoll(kind) {
             if (!this.q.hasNext(kind)) {
-                throw this;
+                throw new Error();
             }
             return this.q.poll();
         }
         assertPollS(...strings) {
             if (!this.q.hasNextS(...strings)) {
-                throw this;
+                throw new Error();
             }
             return this.q.poll();
         }
@@ -3322,7 +3325,7 @@ var Parser;
         parseBlockChildren(kind) {
             this.expectPollIfS(':');
             if (this.q.pollIf('NEWLINE')) {
-                if (this.expectPollIf('INDENT') === undefined) {
+                if (!this.expectPollIf('INDENT')) {
                     return [];
                 }
                 const children = this.parseUntil(kind, 'DEDENT');
@@ -4547,16 +4550,15 @@ var Resolver;
         const uncertain = [];
         for (let i = 0; i < toPattern.length; ++i) {
             const toC = toPattern[i];
-            if (toC < 0) {
+            // this cell definitely doesn't change the grid
+            if (toC < 0 || (from !== undefined && from.pattern[i] === toC)) {
                 continue;
             }
-            if (from === undefined || (from.pattern[i] !== toC && ISet.has(from.masks[i], toC))) {
-                uncertain.push(i);
-            }
-            else {
-                // writing this pattern definitely changes the grid
+            // this cell definitely does change the grid
+            if (from !== undefined && !ISet.has(from.masks[i], toC)) {
                 return undefined;
             }
+            uncertain.push(i);
         }
         if (uncertain.length === 0) {
             ctx.error(`output pattern has no effect`, toExpr.pos);

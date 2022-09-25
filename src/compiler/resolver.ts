@@ -718,14 +718,14 @@ namespace Resolver {
         const uncertain: number[] = [];
         for(let i = 0; i < toPattern.length; ++i) {
             const toC = toPattern[i];
-            if(toC < 0) { continue; }
             
-            if(from === undefined || (from.pattern[i] !== toC && ISet.has(from.masks[i], toC))) {
-                uncertain.push(i);
-            } else {
-                // writing this pattern definitely changes the grid
-                return undefined;
-            }
+            // this cell definitely doesn't change the grid
+            if(toC < 0 || (from !== undefined && from.pattern[i] === toC)) { continue; }
+            
+            // this cell definitely does change the grid
+            if(from !== undefined && !ISet.has(from.masks[i], toC)) { return undefined; }
+            
+            uncertain.push(i);
         }
         
         if(uncertain.length === 0) { ctx.error(`output pattern has no effect`, toExpr.pos); }

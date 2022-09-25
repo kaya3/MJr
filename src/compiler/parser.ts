@@ -145,11 +145,11 @@ namespace Parser {
             }
         }
         private assertPoll<K extends Tokenizer.Kind>(kind: K): Tokenizer.Token<K> {
-            if(!this.q.hasNext(kind)) { throw this; }
+            if(!this.q.hasNext(kind)) { throw new Error(); }
             return this.q.poll() as Tokenizer.Token<K>;
         }
         private assertPollS<S extends string>(...strings: S[]): Tokenizer.Token & {s: S} {
-            if(!this.q.hasNextS(...strings)) { throw this; }
+            if(!this.q.hasNextS(...strings)) { throw new Error(); }
             return this.q.poll() as Tokenizer.Token & {s: S};
         }
         
@@ -460,7 +460,7 @@ namespace Parser {
             this.expectPollIfS(':');
             
             if(this.q.pollIf('NEWLINE')) {
-                if(this.expectPollIf('INDENT') === undefined) { return []; }
+                if(!this.expectPollIf('INDENT')) { return []; }
                 const children = this.parseUntil(kind, 'DEDENT');
                 this.assertPoll('DEDENT');
                 return children;

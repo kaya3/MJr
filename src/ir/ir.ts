@@ -225,9 +225,16 @@ namespace IR {
         } else if(equals(then, otherwise)) {
             return then;
         } else if(then === PASS) {
-            return otherwise === undefined ? PASS : if_(unaryOp('bool_not', condition), otherwise);
+            return otherwise === undefined ? PASS : if_(OP.not(condition), otherwise);
         } else if(then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && equals(then.left, otherwise.left) && then.op === otherwise.op) {
+            // replace `if(c) { x = a; } else { x = b; }` with `x = c ? a : b;`
             return assign(then.left, then.op, ternary(condition, then.right, otherwise.right));
+        } else if(then.kind === 'stmt.for.range' && then.low === ZERO && (equals(condition, OP.gt(then.high, ZERO)) || equals(condition, OP.lt(ZERO, then.high))) && otherwise === undefined) {
+            // omit redundant `if` statement guarding a `for` loop
+            return then;
+        } else if(then.kind === 'stmt.if' && otherwise === undefined && then.otherwise === undefined) {
+            // collapse nested `if` statements
+            return if_(OP.and(condition, then.condition), then.then);
         } else {
             return {kind: 'stmt.if', condition, then, otherwise};
         }
@@ -251,7 +258,13 @@ namespace IR {
         return {kind: 'stmt.return', expr};
     }
     export function switch_(expr: Expr, casesByIndex: readonly Stmt[]): Stmt {
-        if(casesByIndex.length === 0) { return PASS; }
+        if(casesByIndex.length === 0) {
+            return PASS;
+        } else if(casesByIndex.length === 1) {
+            return casesByIndex[0];
+        } else if(casesByIndex.length === 2) {
+            return if_(OP.eq(expr, ZERO), casesByIndex[0], casesByIndex[1]);
+        }
         
         const firstCase = casesByIndex[0];
         if(firstCase.kind === 'stmt.if' && casesByIndex.every(c => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
@@ -285,6 +298,9 @@ namespace IR {
         return {kind: 'stmt.throw', message};
     }
     export function while_(condition: Expr, then: Stmt): Stmt {
+        // the compiler won't ever output an infinite loop that does nothing; if the loop body is empty, then the condition must be false
+        if(then === PASS) { return PASS; }
+        
         return {kind: 'stmt.while', condition, then};
     }
     export function yield_(expr?: Expr): YieldStmt {

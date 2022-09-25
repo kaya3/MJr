@@ -1406,10 +1406,19 @@ var IR;
             return then;
         }
         else if (then === IR.PASS) {
-            return otherwise === undefined ? IR.PASS : if_(IR.unaryOp('bool_not', condition), otherwise);
+            return otherwise === undefined ? IR.PASS : if_(IR.OP.not(condition), otherwise);
         }
         else if (then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && equals(then.left, otherwise.left) && then.op === otherwise.op) {
+            // replace `if(c) { x = a; } else { x = b; }` with `x = c ? a : b;`
             return assign(then.left, then.op, ternary(condition, then.right, otherwise.right));
+        }
+        else if (then.kind === 'stmt.for.range' && then.low === IR.ZERO && (equals(condition, IR.OP.gt(then.high, IR.ZERO)) || equals(condition, IR.OP.lt(IR.ZERO, then.high))) && otherwise === undefined) {
+            // omit redundant `if` statement guarding a `for` loop
+            return then;
+        }
+        else if (then.kind === 'stmt.if' && otherwise === undefined && then.otherwise === undefined) {
+            // collapse nested `if` statements
+            return if_(IR.OP.and(condition, then.condition), then.then);
         }
         else {
             return { kind: 'stmt.if', condition, then, otherwise };
@@ -1444,6 +1453,12 @@ var IR;
         if (casesByIndex.length === 0) {
             return IR.PASS;
         }
+        else if (casesByIndex.length === 1) {
+            return casesByIndex[0];
+        }
+        else if (casesByIndex.length === 2) {
+            return if_(IR.OP.eq(expr, IR.ZERO), casesByIndex[0], casesByIndex[1]);
+        }
         const firstCase = casesByIndex[0];
         if (firstCase.kind === 'stmt.if' && casesByIndex.every(c => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
             // factor out common condition; the `otherwise` part will generally be trivial
@@ -1476,6 +1491,10 @@ var IR;
     }
     IR.throw_ = throw_;
     function while_(condition, then) {
+        // the compiler won't ever output an infinite loop that does nothing; if the loop body is empty, then the condition must be false
+        if (then === IR.PASS) {
+            return IR.PASS;
+        }
         return { kind: 'stmt.while', condition, then };
     }
     IR.while_ = while_;
@@ -4359,6 +4378,9 @@ var Resolver;
             fields: allowFieldObserve ? [] : undefined,
             observations: allowFieldObserve ? [] : undefined,
         };
+        if (!node.rules.some(r => r.kind === 'rule.rewrite')) {
+            ctx.error(`'${node.kind}' block must have at least one rewrite rule`, node.pos);
+        }
         for (const rule of node.rules) {
             const r = ctx.resolveRule(rule, outGrid);
             if (r === undefined) {
@@ -4379,9 +4401,6 @@ var Resolver;
                     ctx.error(`'${resolved.kind}' not allowed in '${node.kind}' block`, resolved.pos);
                 }
             }
-        }
-        if (out.rewrites.length === 0) {
-            ctx.error(`'${node.kind}' block must have at least one rewrite rule`, node.pos);
         }
         // sorting makes it more likely that samplers can be reused
         out.rewrites.sort((a, b) => _cmpPatternKey(a.from, b.from));
@@ -4581,6 +4600,10 @@ var Resolver;
         if (via === PROP_ERROR || to === undefined || to === PROP_ERROR || condition === PROP_ERROR) {
             return undefined;
         }
+        if (condition.kind === 'expr.constant' && !condition.constant.value) {
+            // condition is constant `false` expression
+            return { rules: [] };
+        }
         const rules = [];
         const makeRule = (from, via, to) => {
             const toUncertainties = _getOutputPatternUncertainties(ctx, ctx.grid.id === outGrid.id ? from : undefined, to);
@@ -4644,6 +4667,9 @@ var Resolver;
         }
         const { search: isSearch = false, maxStates, depthCoefficient, temperature } = props;
         const { rewrites, fields, observations, assigns } = _resolveRules(stmt, ctx, ctx.grid, true);
+        if (rewrites.length === 0) {
+            return undefined;
+        }
         const inGrid = ctx.grid.id;
         const kind = stmt.kind === 'stmt.rules.all' ? 'all' : 'one';
         const isBasic = fields.length === 0 && observations.length === 0;
@@ -5097,6 +5123,9 @@ var Resolver;
                 return undefined;
             }
             const { rewrites, assigns } = _resolveRules(stmt, ctx, ctx.grid, false);
+            if (rewrites.length === 0) {
+                return undefined;
+            }
             const charsUsed = ISet.empty(ctx.grid.alphabet.key.length);
             for (const rule of rewrites) {
                 if (rule.from.width !== 1 || rule.from.height !== 1) {
@@ -5130,6 +5159,9 @@ var Resolver;
             const formalOutGrid = ctx.globals.grids[outGrid];
             const { assigns, rewrites } = _resolveRules(stmt, ctx, formalOutGrid, false);
             ctx.grid = formalOutGrid;
+            if (rewrites.length === 0) {
+                return undefined;
+            }
             const commutative = rewrites.every(rule => rule.from.width === 1 && rule.from.height === 1);
             return { kind: 'stmt', assigns, stmt: { kind: 'stmt.rules.map', inGrid, outGrid, rewrites, commutative, pos } };
         },
@@ -5141,6 +5173,9 @@ var Resolver;
                 return undefined;
             }
             const { rewrites, assigns } = _resolveRules(stmt, ctx, ctx.grid, false);
+            if (rewrites.length === 0) {
+                return undefined;
+            }
             return {
                 kind: 'stmt',
                 assigns,

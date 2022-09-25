@@ -533,6 +533,10 @@ namespace Resolver {
             observations: allowFieldObserve ? [] : undefined,
         };
         
+        if(!node.rules.some(r => r.kind === 'rule.rewrite')) {
+            ctx.error(`'${node.kind}' block must have at least one rewrite rule`, node.pos);
+        }
+        
         for(const rule of node.rules) {
             const r = ctx.resolveRule(rule, outGrid);
             if(r === undefined) { continue; }
@@ -554,8 +558,6 @@ namespace Resolver {
                 }
             }
         }
-        
-        if(out.rewrites.length === 0) { ctx.error(`'${node.kind}' block must have at least one rewrite rule`, node.pos); }
         
         // sorting makes it more likely that samplers can be reused
         out.rewrites.sort((a, b) => _cmpPatternKey(a.from, b.from));
@@ -747,7 +749,13 @@ namespace Resolver {
         ctx.isRuleContext = false;
         if(via === PROP_ERROR || to === undefined || to === PROP_ERROR || condition === PROP_ERROR) { return undefined; }
         
+        if(condition.kind === 'expr.constant' && !condition.constant.value) {
+            // condition is constant `false` expression
+            return {rules: []};
+        }
+        
         const rules: ASG.Rule[] = [];
+        
         const makeRule = (from: Pattern, via: ASG.Prop<'pattern.out?'>, to: ASG.Prop<'pattern.out'>): void => {
             const toUncertainties = _getOutputPatternUncertainties(ctx, ctx.grid.id === outGrid.id ? from : undefined, to);
             rules.push({kind: rule.kind, from, via, to, toUncertainties, condition, pos});
@@ -816,6 +824,7 @@ namespace Resolver {
         
         const {search: isSearch = false, maxStates, depthCoefficient, temperature} = props;
         const {rewrites, fields, observations, assigns} = _resolveRules(stmt, ctx, ctx.grid, true);
+        if(rewrites.length === 0) { return undefined; }
         
         const inGrid = ctx.grid.id;
         const kind = stmt.kind === 'stmt.rules.all' ? 'all' : 'one';
@@ -1223,6 +1232,7 @@ namespace Resolver {
             if(!ctx.expectGrid(pos)) { return undefined; }
             
             const {rewrites, assigns} = _resolveRules(stmt, ctx, ctx.grid, false);
+            if(rewrites.length === 0) { return undefined; }
             
             const charsUsed = ISet.empty(ctx.grid.alphabet.key.length);
             for(const rule of rewrites) {
@@ -1253,6 +1263,7 @@ namespace Resolver {
             const formalOutGrid = ctx.globals.grids[outGrid];
             const {assigns, rewrites} = _resolveRules(stmt, ctx, formalOutGrid, false);
             ctx.grid = formalOutGrid;
+            if(rewrites.length === 0) { return undefined; }
             
             const commutative = rewrites.every(rule => rule.from.width === 1 && rule.from.height === 1);
             return {kind: 'stmt', assigns, stmt: {kind: 'stmt.rules.map', inGrid, outGrid, rewrites, commutative, pos}};
@@ -1264,6 +1275,8 @@ namespace Resolver {
             if(!ctx.expectGrid(pos)) { return undefined; }
             
             const {rewrites, assigns} = _resolveRules(stmt, ctx, ctx.grid, false);
+            if(rewrites.length === 0) { return undefined; }
+            
             return {
                 kind: 'stmt',
                 assigns,

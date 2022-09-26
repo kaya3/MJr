@@ -1474,11 +1474,7 @@ var IR;
                 continue;
             }
             const k = key(c);
-            let aggregated = map.get(k);
-            if (aggregated === undefined) {
-                map.set(k, aggregated = { values: [], then: c });
-            }
-            aggregated.values.push(i);
+            getOrCompute(map, k, () => ({ values: [], then: c })).values.push(i);
         }
         const cases = Array.from(map.values());
         return cases.length === 0 ? IR.PASS
@@ -4371,6 +4367,11 @@ var Resolver;
         }
         return allOK ? props : undefined;
     }
+    // check AST instead of resolved, because we want to allow rules with constant false conditions
+    function _hasAtLeastOneRewriteRule(rules) {
+        return rules.some(rule => rule.kind === 'rule.rewrite'
+            || (rule.kind === 'rule.decl' && _hasAtLeastOneRewriteRule(rule.children)));
+    }
     function _resolveRules(node, ctx, outGrid, allowFieldObserve) {
         const out = {
             assigns: [],
@@ -4378,7 +4379,7 @@ var Resolver;
             fields: allowFieldObserve ? [] : undefined,
             observations: allowFieldObserve ? [] : undefined,
         };
-        if (!node.rules.some(r => r.kind === 'rule.rewrite')) {
+        if (!_hasAtLeastOneRewriteRule(node.rules)) {
             ctx.error(`'${node.kind}' block must have at least one rewrite rule`, node.pos);
         }
         for (const rule of node.rules) {
@@ -5863,54 +5864,44 @@ var IR;
             if (sampler !== undefined) {
                 return sampler.count;
             }
-            let counter = counters.get(key);
-            if (counter !== undefined) {
+            return getOrCompute(counters, key, () => {
+                const counter = IR.NAMES.counter(this, counters.size);
+                for (const pattern of patterns) {
+                    matcher.addMatchHandler({ kind: 'counter', pattern, counter });
+                }
                 return counter;
-            }
-            counters.set(key, counter = IR.NAMES.counter(this, counters.size));
-            for (const pattern of patterns) {
-                matcher.addMatchHandler({ kind: 'counter', pattern, counter });
-            }
-            return counter;
+            });
         }
         makeSampler(patterns) {
             const { samplers, matcher } = this;
             const key = patterns.map(Pattern.key).join('\n');
-            const cached = samplers.get(key);
-            if (cached !== undefined) {
-                return cached;
-            }
-            if (patterns.length === 1 && patterns[0].isTrivial()) {
-                const { width, height } = patterns[0];
-                const sampler = new IR.TrivialSampler(this, width, height);
-                samplers.set(key, sampler);
+            return getOrCompute(samplers, key, () => {
+                if (patterns.length === 1 && patterns[0].isTrivial()) {
+                    const { width, height } = patterns[0];
+                    return new IR.TrivialSampler(this, width, height);
+                }
+                const sampler = new IR.Sampler(samplers.size, this, patterns.length);
+                for (let i = 0; i < patterns.length; ++i) {
+                    const pattern = patterns[i];
+                    matcher.addMatchHandler({ kind: 'sampler', pattern, sampler, i });
+                }
+                this.scale = Math.max(this.scale, patterns.length);
                 return sampler;
-            }
-            const sampler = new IR.Sampler(samplers.size, this, patterns.length);
-            samplers.set(key, sampler);
-            for (let i = 0; i < patterns.length; ++i) {
-                const pattern = patterns[i];
-                matcher.addMatchHandler({ kind: 'sampler', pattern, sampler, i });
-            }
-            this.scale = Math.max(this.scale, patterns.length);
-            return sampler;
+            });
         }
         makeConvBuffer(p) {
             const { convBuffers } = this;
             const key = Convolution.Kernel.key(p.kernel);
-            let buffer = convBuffers.get(key);
-            if (buffer !== undefined) {
-                return buffer;
-            }
-            const charsets = [];
-            this.grid.convPatterns.forEach(q => {
-                if (p.kernel.equals(q.kernel)) {
-                    charsets.push(q.chars);
-                }
+            return getOrCompute(convBuffers, key, () => {
+                const charsets = [];
+                this.grid.convPatterns.forEach(q => {
+                    if (p.kernel.equals(q.kernel)) {
+                        charsets.push(q.chars);
+                    }
+                });
+                this.scale = Math.max(this.scale, charsets.length);
+                return new IR.ConvBuffer(convBuffers.size, this, charsets, p.kernel);
             });
-            convBuffers.set(key, buffer = new IR.ConvBuffer(convBuffers.size, this, charsets, p.kernel));
-            this.scale = Math.max(this.scale, charsets.length);
-            return buffer;
         }
         useOrigin() {
             return this.origin ??= IR.NAMES.gridVar(this, 'origin');
@@ -6148,32 +6139,35 @@ var IR;
             const colStates = IR.NAMES.matcherVar(g, id, 'colStates');
             const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), Pattern.key);
             const [_rowDFA, _colDFA] = makePatternMatcherDFAs(alphabet.key.length, patternMap);
-            const handlersByPattern = makeArray(patternMap.size(), () => []);
+            const handlersByPattern = new Map();
             for (const handler of this.matchHandlers) {
-                const patternID = patternMap.getID(handler.pattern);
-                handlersByPattern[patternID].push(handler);
+                const key = Pattern.key(handler.pattern);
+                getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            const makeStateChangeHandlers = (f) => {
-                return _colDFA.acceptSetMap.map(patternIDs => {
+            const makeStateChangeHandlers = (dfa, f) => {
+                return dfa.acceptSetMap.map(accepts => {
                     const out = [];
-                    for (const patternID of patternIDs) {
-                        for (const h of handlersByPattern[patternID]) {
-                            out.push(this.makeMatchHandler(h, f));
+                    for (const pattern of accepts) {
+                        const handlers = handlersByPattern.get(Pattern.key(pattern));
+                        if (handlers !== undefined) {
+                            for (const h of handlers) {
+                                out.push(this.makeMatchHandler(h, f));
+                            }
                         }
                     }
                     return IR.block(out);
                 });
             };
-            const rowDFAType = IR.constArrayType(_rowDFA.size()), rowAcceptSetsType = IR.constArrayType(_rowDFA.acceptSetMap.size()), colDFAType = IR.constArrayType(_colDFA.size()), colAcceptSetsType = IR.constArrayType(_colDFA.acceptSetMap.size()), rowStatesType = IR.mutableArrayType(rowDFAType.domainSize), colStatesType = IR.mutableArrayType(colDFAType.domainSize);
+            const rowDFASize = _rowDFA.size(), colDFASize = _colDFA.size(), rowAcceptSetsCount = _rowDFA.acceptSetMap.size(), colAcceptSetsCount = _colDFA.acceptSetMap.size();
             return [
                 IR.declVars([
-                    { name: rowDFA, type: rowDFAType, initialiser: IR.constArray(_rowDFA.toFlatArray(), rowDFAType.domainSize, _rowDFA.alphabetSize) },
-                    { name: rowAcceptSets, type: rowAcceptSetsType, initialiser: IR.constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsType.domainSize) },
-                    { name: colDFA, type: colDFAType, initialiser: IR.constArray(_colDFA.toFlatArray(), colDFAType.domainSize, _colDFA.alphabetSize) },
-                    { name: colAcceptSets, type: colAcceptSetsType, initialiser: IR.constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsType.domainSize) },
-                    { name: rowStates, type: rowStatesType, initialiser: IR.newArray(g.n, rowDFAType.domainSize) },
-                    { name: colStates, type: colStatesType, initialiser: IR.newArray(g.n, colDFAType.domainSize) },
+                    { name: rowDFA, type: IR.constArrayType(rowDFASize), initialiser: IR.constArray(_rowDFA.toFlatArray(), rowDFASize, _rowDFA.alphabetSize) },
+                    { name: rowAcceptSets, type: IR.constArrayType(rowAcceptSetsCount), initialiser: IR.constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsCount) },
+                    { name: colDFA, type: IR.constArrayType(colDFASize), initialiser: IR.constArray(_colDFA.toFlatArray(), colDFASize, _colDFA.alphabetSize) },
+                    { name: colAcceptSets, type: IR.constArrayType(colAcceptSetsCount), initialiser: IR.constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsCount) },
+                    { name: rowStates, type: IR.mutableArrayType(rowDFASize), initialiser: IR.newArray(g.n, rowDFASize) },
+                    { name: colStates, type: IR.mutableArrayType(colDFASize), initialiser: IR.newArray(g.n, colDFASize) },
                 ]),
                 IR.declFunc(updateFuncName, undefined, [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT], [IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE], IR.VOID_TYPE, IR.block([
                     IR.declVars([
@@ -6190,6 +6184,9 @@ var IR;
                             IR.assign(S, '=', IR.access(rowDFA, IR.OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(AT)))),
                             IR.if_(IR.OP.ne(S, OLD_S), IR.block([
                                 IR.assign(IR.access(rowStates, AT), '=', S),
+                                // update samplers
+                                IR.switch_(IR.access(rowAcceptSets, OLD_S), makeStateChangeHandlers(_rowDFA, 'del')),
+                                IR.switch_(IR.access(rowAcceptSets, S), makeStateChangeHandlers(_rowDFA, 'add')),
                                 IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)),
                             ]), IR.if_(IR.OP.lt(AT_X, START_X), IR.BREAK)),
                         ]),
@@ -6205,8 +6202,8 @@ var IR;
                             IR.if_(IR.OP.ne(S, OLD_S), IR.block([
                                 IR.assign(IR.access(colStates, AT), '=', S),
                                 // update samplers
-                                IR.switch_(IR.access(colAcceptSets, OLD_S), makeStateChangeHandlers('del')),
-                                IR.switch_(IR.access(colAcceptSets, S), makeStateChangeHandlers('add')),
+                                IR.switch_(IR.access(colAcceptSets, OLD_S), makeStateChangeHandlers(_colDFA, 'del')),
+                                IR.switch_(IR.access(colAcceptSets, S), makeStateChangeHandlers(_colDFA, 'add')),
                             ]), IR.if_(IR.OP.lt(AT_Y, START_Y), IR.BREAK)),
                         ]),
                     ]),
@@ -6226,26 +6223,33 @@ var IR;
      * matches are reported where the patterns start rather than where they end.
      */
     function makePatternMatcherDFAs(alphabetSize, patterns) {
-        const numPatterns = patterns.size();
         const rowPatterns = IDMap.ofWithKey(patterns.map(Pattern.rowsOf).flat(), Pattern.key);
-        const rowRegex = _makeRegex(rowPatterns.map(row => row.masks.map(ISet.toArray)));
-        const rowDFA = Regex.compile(alphabetSize, rowPatterns.size(), rowRegex);
+        const rowRegex = _makeRegex(rowPatterns.map(pattern => ({
+            pattern,
+            seq: pattern.masks.map(ISet.toArray),
+        })));
+        const rowDFA = Regex.compile(alphabetSize, rowRegex, Pattern.key);
         const acceptingSets = makeArray(rowPatterns.size(), () => []);
-        rowDFA.acceptSetMap.forEach((xs, id) => {
-            for (const x of xs) {
-                acceptingSets[x].push(id);
+        rowDFA.acceptSetMap.forEach((patterns, id) => {
+            for (const pattern of patterns) {
+                const patternID = rowPatterns.getID(pattern);
+                acceptingSets[patternID].push(id);
             }
         });
-        const colRegex = _makeRegex(patterns.map(pattern => Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)])));
-        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), numPatterns, colRegex);
+        // patterns with only one row can be matched by the rowDFA directly
+        const colRegex = _makeRegex(patterns.filter(pattern => pattern.height > 1).map(pattern => ({
+            pattern,
+            seq: Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)]),
+        })));
+        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), colRegex, Pattern.key);
         return [rowDFA, colDFA];
     }
-    function _makeRegex(sequences) {
+    function _makeRegex(patterns) {
         return Regex.concat([
-            Regex.kleeneStar(Regex.WILDCARD),
-            Regex.union(sequences.map((seq, seqID) => Regex.concat([
-                Regex.concat(seq.map(Regex.letters).reverse()),
-                Regex.accept(seqID),
+            Regex.DOT_STAR,
+            Regex.union(patterns.map(p => Regex.concat([
+                ...p.seq.map(Regex.letters).reverse(),
+                Regex.accept(p.pattern),
             ]))),
         ]);
     }
@@ -6727,19 +6731,18 @@ var Regex;
         return { kind: 5 /* Kind.ACCEPT */, accept };
     }
     Regex.accept = accept;
-    function compile(alphabetSize, acceptCount, regex) {
-        return new NFA(alphabetSize, acceptCount, regex).toDFA().minimise();
+    Regex.DOT_STAR = kleeneStar(Regex.WILDCARD);
+    function compile(alphabetSize, regex, keyFunc) {
+        return new NFA(alphabetSize, regex).toDFA(keyFunc).minimise();
     }
     Regex.compile = compile;
 })(Regex || (Regex = {}));
 class NFA {
     alphabetSize;
-    acceptCount;
     nodes = [];
     startID;
-    constructor(alphabetSize, acceptCount, regex) {
+    constructor(alphabetSize, regex) {
         this.alphabetSize = alphabetSize;
-        this.acceptCount = acceptCount;
         this.startID = this.makeFromRegex(regex, this.makeNode([]));
         //console.log(`NFA with ${this.nodes.length} nodes on alphabet of size ${alphabetSize}`);
     }
@@ -6782,7 +6785,7 @@ class NFA {
             }
         }
     }
-    toDFA() {
+    toDFA(keyFunc) {
         // https://en.wikipedia.org/wiki/Powerset_construction
         const { alphabetSize, nodes } = this;
         // need to use a primitive key which will be compared by value; bigint is faster than sorting and joining as a string
@@ -6829,38 +6832,39 @@ class NFA {
         if (startID !== 0) {
             throw new Error();
         }
-        const acceptSetMap = IDMap.withKey(ISet.arrayToKey);
+        const acceptMap = IDMap.withKey(keyFunc);
+        const acceptSetMap = IDMap.withKey(set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))));
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for (let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {
             const transitionStates = makeArray(alphabetSize, () => ISet.empty(nodes.length));
-            const acceptIDs = [];
+            const accepts = [];
             ISet.forEach(nfaStates.getByID(nfaStateID), nfaNodeID => {
                 const nfaNode = nodes[nfaNodeID];
                 for (const letterID of nfaNode.letters) {
                     ISet.add(transitionStates[letterID], nfaNode.nextID);
                 }
-                acceptIDs.push(...nfaNode.acceptSet);
+                accepts.push(...nfaNode.acceptSet);
             });
             dfaNodes.push({
                 transitions: transitionStates.map(getNodeID),
-                acceptSetID: acceptSetMap.getOrCreateID(acceptIDs),
-                acceptIDs,
+                acceptSetID: acceptSetMap.getOrCreateID(accepts),
+                accepts,
             });
         }
-        return new DFA(alphabetSize, this.acceptCount, acceptSetMap, dfaNodes);
+        return new DFA(alphabetSize, acceptMap, acceptSetMap, dfaNodes);
     }
 }
 class DFA {
     alphabetSize;
-    acceptCount;
+    acceptMap;
     acceptSetMap;
     nodes;
-    constructor(alphabetSize, acceptCount, acceptSetMap, nodes) {
+    constructor(alphabetSize, acceptMap, acceptSetMap, nodes) {
         this.alphabetSize = alphabetSize;
-        this.acceptCount = acceptCount;
+        this.acceptMap = acceptMap;
         this.acceptSetMap = acceptSetMap;
         this.nodes = nodes;
-        //console.log(`DFA with ${nodes.length} nodes on alphabet of size ${alphabetSize}, ${acceptCount} accepts and ${acceptSetMap.size()} accept sets`);
+        //console.log(`DFA with ${nodes.length} nodes on alphabet of size ${alphabetSize} and ${acceptSetMap.size()} accept sets`);
     }
     /**
      * Returns the number of distinct states of this DFA.
@@ -6877,8 +6881,8 @@ class DFA {
             throw new Error();
         }
     }
-    getAcceptIDs(state) {
-        return this.nodes[state].acceptIDs;
+    getAccepts(state) {
+        return this.nodes[state].accepts;
     }
     getAcceptSetID(state) {
         return this.nodes[state].acceptSetID;
@@ -6890,14 +6894,15 @@ class DFA {
         return this.nodes.flatMap(node => node.transitions);
     }
     /**
-     * Returns an array mapping each acceptID to the set of node IDs which accept it.
+     * Returns an array mapping each accept to the set of node IDs which accept it.
      */
     computeAcceptingStates() {
-        const { nodes, acceptCount } = this;
+        const { nodes, acceptMap } = this;
         const n = nodes.length;
-        const table = makeArray(acceptCount, () => ISet.empty(n));
+        const table = makeArray(acceptMap.size(), () => ISet.empty(n));
         for (let id = 0; id < n; ++id) {
-            for (const acceptID of nodes[id].acceptIDs) {
+            for (const accept of nodes[id].accepts) {
+                const acceptID = acceptMap.getID(accept);
                 ISet.add(table[acceptID], id);
             }
         }
@@ -6945,14 +6950,14 @@ class DFA {
         reps.getOrCreateID(0);
         partition.forEachRepresentative(x => reps.getOrCreateID(x));
         const repNodes = reps.map(rep => {
-            const { transitions, acceptSetID, acceptIDs } = this.nodes[rep];
+            const { transitions, acceptSetID, accepts } = this.nodes[rep];
             return {
                 transitions: transitions.map(nodeID => reps.getID(nodeID)),
                 acceptSetID,
-                acceptIDs,
+                accepts,
             };
         });
-        return new DFA(alphabetSize, this.acceptCount, this.acceptSetMap, repNodes);
+        return new DFA(alphabetSize, this.acceptMap, this.acceptSetMap, repNodes);
     }
 }
 /**
@@ -7021,13 +7026,11 @@ class IDMap {
      */
     getOrCreateID(x) {
         const key = this.keyFunc(x);
-        let id = this.ids.get(key);
-        if (id === undefined) {
-            id = this.arr.length;
+        return getOrCompute(this.ids, key, () => {
+            const id = this.arr.length;
             this.arr.push(x);
-            this.ids.set(key, id);
-        }
-        return id;
+            return id;
+        });
     }
     /**
      * Indicates whether the given element is associated with an ID, in O(1)
@@ -7066,6 +7069,9 @@ class IDMap {
     }
     forEach(f) {
         this.arr.forEach(f);
+    }
+    filter(f) {
+        return this.arr.filter(f);
     }
     map(f) {
         return this.arr.map(f);
@@ -7291,6 +7297,13 @@ function withNextID(arr, obj) {
     t.id = arr.length;
     arr.push(t);
     return t;
+}
+function getOrCompute(map, key, f) {
+    let v = map.get(key);
+    if (v === undefined) {
+        map.set(key, v = f());
+    }
+    return v;
 }
 function quoteJoin(hints, delimiter = ', ') {
     return hints.map(s => `'${s}'`).join(delimiter);

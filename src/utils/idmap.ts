@@ -7,6 +7,7 @@ interface ReadonlyIDMap<T> {
     getIDOrDefault(x: T): number;
     getByID(id: number): T;
     forEach(f: (x: T, id: number) => void): void;
+    filter(f: (x: T) => boolean): T[];
     map<S>(f: (x: T, id: number) => S): S[];
 }
 
@@ -82,13 +83,11 @@ class IDMap<T> implements ReadonlyIDMap<T> {
      */
     public getOrCreateID(x: T): number {
         const key = this.keyFunc(x);
-        let id = this.ids.get(key);
-        if(id === undefined) {
-            id = this.arr.length;
+        return getOrCompute(this.ids, key, () => {
+            const id = this.arr.length;
             this.arr.push(x);
-            this.ids.set(key, id);
-        }
-        return id;
+            return id;
+        });
     }
     
     /**
@@ -128,6 +127,9 @@ class IDMap<T> implements ReadonlyIDMap<T> {
     
     public forEach(f: (x: T, id: number) => void): void {
         this.arr.forEach(f);
+    }
+    public filter(f: (x: T) => boolean): T[] {
+        return this.arr.filter(f);
     }
     public map<S>(f: (x: T, id: number) => S): S[] {
         return this.arr.map(f);

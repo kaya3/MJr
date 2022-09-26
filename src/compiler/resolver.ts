@@ -521,6 +521,14 @@ namespace Resolver {
         return allOK ? props as ResolvedProps<K> : undefined;
     }
     
+    // check AST instead of resolved, because we want to allow rules with constant false conditions
+    function _hasAtLeastOneRewriteRule(rules: readonly AST.Rule[]): boolean {
+        return rules.some(rule =>
+            rule.kind === 'rule.rewrite'
+            || (rule.kind === 'rule.decl' && _hasAtLeastOneRewriteRule(rule.children))
+        );
+    }
+    
     // TODO: check that there aren't multiple `fields` for the same color? or can this be allowed?
     type RuleArrays = {assigns: ASG.AssignStmt[], rewrites: ASG.RewriteRule[], fields: ASG.FieldRule[], observations: ASG.ObserveRule[]}
     function _resolveRules(node: AST.RuleBlockStmt, ctx: GridContext, outGrid: FormalGrid, allowFieldObserve: true): RuleArrays;
@@ -533,7 +541,7 @@ namespace Resolver {
             observations: allowFieldObserve ? [] : undefined,
         };
         
-        if(!node.rules.some(r => r.kind === 'rule.rewrite')) {
+        if(!_hasAtLeastOneRewriteRule(node.rules)) {
             ctx.error(`'${node.kind}' block must have at least one rewrite rule`, node.pos);
         }
         

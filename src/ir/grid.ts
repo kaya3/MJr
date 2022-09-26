@@ -52,55 +52,47 @@ namespace IR {
             const sampler = samplers.get(key);
             if(sampler !== undefined) { return sampler.count; }
             
-            let counter = counters.get(key);
-            if(counter !== undefined) { return counter; }
-            
-            counters.set(key, counter = NAMES.counter(this, counters.size));
-            for(const pattern of patterns) {
-                matcher.addMatchHandler({kind: 'counter', pattern, counter});
-            }
-            return counter;
+            return getOrCompute(counters, key, () => {
+                const counter = NAMES.counter(this, counters.size);
+                for(const pattern of patterns) {
+                    matcher.addMatchHandler({kind: 'counter', pattern, counter});
+                }
+                return counter;
+            });
         }
         
         public makeSampler(patterns: readonly Pattern[]): AbstractSampler {
             const {samplers, matcher} = this;
             
             const key = patterns.map(Pattern.key).join('\n');
-            const cached = samplers.get(key);
-            if(cached !== undefined) { return cached; }
-            
-            if(patterns.length === 1 && patterns[0].isTrivial()) {
-                const {width, height} = patterns[0];
-                const sampler = new TrivialSampler(this, width, height);
-                samplers.set(key, sampler);
+            return getOrCompute(samplers, key, () => {
+                if(patterns.length === 1 && patterns[0].isTrivial()) {
+                    const {width, height} = patterns[0];
+                    return new TrivialSampler(this, width, height);
+                }
+                
+                const sampler = new Sampler(samplers.size, this, patterns.length);
+                for(let i = 0; i < patterns.length; ++i) {
+                    const pattern = patterns[i];
+                    matcher.addMatchHandler({kind: 'sampler', pattern, sampler, i});
+                }
+                this.scale = Math.max(this.scale, patterns.length);
                 return sampler;
-            }
-            
-            const sampler = new Sampler(samplers.size, this, patterns.length);
-            samplers.set(key, sampler);
-            
-            for(let i = 0; i < patterns.length; ++i) {
-                const pattern = patterns[i];
-                matcher.addMatchHandler({kind: 'sampler', pattern, sampler, i});
-            }
-            this.scale = Math.max(this.scale, patterns.length);
-            return sampler;
+            });
         }
         
         public makeConvBuffer(p: ASG.ConvPattern): ConvBuffer {
             const {convBuffers} = this;
             const key = Convolution.Kernel.key(p.kernel);
-            let buffer = convBuffers.get(key);
-            if(buffer !== undefined) { return buffer; }
-            
-            const charsets: ISet[] = [];
-            this.grid.convPatterns.forEach(q => {
-                if(p.kernel.equals(q.kernel)) { charsets.push(q.chars); }
+            return getOrCompute(convBuffers, key, () => {
+                const charsets: ISet[] = [];
+                this.grid.convPatterns.forEach(q => {
+                    if(p.kernel.equals(q.kernel)) { charsets.push(q.chars); }
+                });
+                
+                this.scale = Math.max(this.scale, charsets.length);
+                return new ConvBuffer(convBuffers.size, this, charsets, p.kernel);
             });
-            
-            convBuffers.set(key, buffer = new ConvBuffer(convBuffers.size, this, charsets, p.kernel));
-            this.scale = Math.max(this.scale, charsets.length);
-            return buffer;
         }
         
         public useOrigin(): NameExpr {

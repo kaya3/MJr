@@ -36,6 +36,12 @@ function withNextID<T extends {id: number}>(arr: T[], obj: Omit<T, 'id'>): T {
     return t;
 }
 
+function getOrCompute<K extends PrimitiveKey, V>(map: Map<K, V>, key: K, f: () => V): V {
+    let v = map.get(key);
+    if(v === undefined) { map.set(key, v = f()); }
+    return v;
+} 
+
 function quoteJoin(hints: string[], delimiter: string = ', '): string {
     return hints.map(s => `'${s}'`).join(delimiter);
 }

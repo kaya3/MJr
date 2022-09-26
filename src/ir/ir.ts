@@ -284,9 +284,7 @@ namespace IR {
             if(c === PASS) { exhaustive = false; continue; }
             
             const k = key(c);
-            let aggregated = map.get(k);
-            if(aggregated === undefined) { map.set(k, aggregated = {values: [], then: c}); }
-            aggregated.values.push(i);
+            getOrCompute(map, k, () => ({values: [], then: c})).values.push(i);
         }
         
         const cases = Array.from(map.values());

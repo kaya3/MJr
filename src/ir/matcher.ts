@@ -57,40 +57,41 @@ namespace IR {
             const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), Pattern.key);
             const [_rowDFA, _colDFA] = makePatternMatcherDFAs(alphabet.key.length, patternMap);
             
-            const handlersByPattern = makeArray<MatchHandler[]>(patternMap.size(), () => []);
+            const handlersByPattern = new Map<string, MatchHandler[]>();
             for(const handler of this.matchHandlers) {
-                const patternID = patternMap.getID(handler.pattern);
-                handlersByPattern[patternID].push(handler);
+                const key = Pattern.key(handler.pattern);
+                getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             
             // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            const makeStateChangeHandlers = (f: 'add' | 'del'): Stmt[] => {
-                return _colDFA.acceptSetMap.map(patternIDs => {
+            const makeStateChangeHandlers = (dfa: DFA<Pattern>, f: 'add' | 'del'): Stmt[] => {
+                return dfa.acceptSetMap.map(accepts => {
                     const out: Stmt[] = [];
-                    for(const patternID of patternIDs) {
-                        for(const h of handlersByPattern[patternID]) {
-                            out.push(this.makeMatchHandler(h, f));
+                    for(const pattern of accepts) {
+                        const handlers = handlersByPattern.get(Pattern.key(pattern));
+                        if(handlers !== undefined) {
+                            for(const h of handlers) {
+                                out.push(this.makeMatchHandler(h, f));
+                            }
                         }
                     }
                     return block(out);
                 });
             };
             
-            const rowDFAType = constArrayType(_rowDFA.size()),
-                rowAcceptSetsType = constArrayType(_rowDFA.acceptSetMap.size()),
-                colDFAType = constArrayType(_colDFA.size()),
-                colAcceptSetsType = constArrayType(_colDFA.acceptSetMap.size()),
-                rowStatesType = mutableArrayType(rowDFAType.domainSize),
-                colStatesType = mutableArrayType(colDFAType.domainSize);
+            const rowDFASize = _rowDFA.size(),
+                colDFASize = _colDFA.size(),
+                rowAcceptSetsCount = _rowDFA.acceptSetMap.size(),
+                colAcceptSetsCount = _colDFA.acceptSetMap.size();
             
             return [
                 declVars([
-                    {name: rowDFA, type: rowDFAType, initialiser: constArray(_rowDFA.toFlatArray(), rowDFAType.domainSize, _rowDFA.alphabetSize)},
-                    {name: rowAcceptSets, type: rowAcceptSetsType, initialiser: constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsType.domainSize)},
-                    {name: colDFA, type: colDFAType, initialiser: constArray(_colDFA.toFlatArray(), colDFAType.domainSize, _colDFA.alphabetSize)},
-                    {name: colAcceptSets, type: colAcceptSetsType, initialiser: constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsType.domainSize)},
-                    {name: rowStates, type: rowStatesType, initialiser: newArray(g.n, rowDFAType.domainSize)},
-                    {name: colStates, type: colStatesType, initialiser: newArray(g.n, colDFAType.domainSize)},
+                    {name: rowDFA, type: constArrayType(rowDFASize), initialiser: constArray(_rowDFA.toFlatArray(), rowDFASize, _rowDFA.alphabetSize)},
+                    {name: rowAcceptSets, type: constArrayType(rowAcceptSetsCount), initialiser: constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsCount)},
+                    {name: colDFA, type: constArrayType(colDFASize), initialiser: constArray(_colDFA.toFlatArray(), colDFASize, _colDFA.alphabetSize)},
+                    {name: colAcceptSets, type: constArrayType(colAcceptSetsCount), initialiser: constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsCount)},
+                    {name: rowStates, type: mutableArrayType(rowDFASize), initialiser: newArray(g.n, rowDFASize)},
+                    {name: colStates, type: mutableArrayType(colDFASize), initialiser: newArray(g.n, colDFASize)},
                 ]),
                 declFunc(
                     updateFuncName,
@@ -123,6 +124,11 @@ namespace IR {
                                     OP.ne(S, OLD_S),
                                     block([
                                         assign(access(rowStates, AT), '=', S),
+                                        
+                                        // update samplers
+                                        switch_(access(rowAcceptSets, OLD_S), makeStateChangeHandlers(_rowDFA, 'del')),
+                                        switch_(access(rowAcceptSets, S), makeStateChangeHandlers(_rowDFA, 'add')),
+                                        
                                         if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
                                     ]),
                                     if_(OP.lt(AT_X, START_X), BREAK),
@@ -151,8 +157,8 @@ namespace IR {
                                         assign(access(colStates, AT), '=', S),
                                         
                                         // update samplers
-                                        switch_(access(colAcceptSets, OLD_S), makeStateChangeHandlers('del')),
-                                        switch_(access(colAcceptSets, S), makeStateChangeHandlers('add')),
+                                        switch_(access(colAcceptSets, OLD_S), makeStateChangeHandlers(_colDFA, 'del')),
+                                        switch_(access(colAcceptSets, S), makeStateChangeHandlers(_colDFA, 'add')),
                                     ]),
                                     if_(OP.lt(AT_Y, START_Y), BREAK),
                                 ),
@@ -174,33 +180,41 @@ namespace IR {
      * The DFAs recognise the patterns in reverse order, for convenience so that
      * matches are reported where the patterns start rather than where they end.
      */
-    function makePatternMatcherDFAs(alphabetSize: number, patterns: ReadonlyIDMap<Pattern>): [DFA, DFA] {
-        const numPatterns = patterns.size();
-        
+    function makePatternMatcherDFAs(alphabetSize: number, patterns: ReadonlyIDMap<Pattern>): [DFA<Pattern>, DFA<Pattern>] {
         const rowPatterns = IDMap.ofWithKey(patterns.map(Pattern.rowsOf).flat(), Pattern.key);
-        const rowRegex = _makeRegex(rowPatterns.map(row => row.masks.map(ISet.toArray)));
-        const rowDFA = Regex.compile(alphabetSize, rowPatterns.size(), rowRegex);
+        const rowRegex = _makeRegex(rowPatterns.map(pattern => ({
+            pattern,
+            seq: pattern.masks.map(ISet.toArray),
+        })));
+        const rowDFA = Regex.compile(alphabetSize, rowRegex, Pattern.key);
         
         const acceptingSets: number[][] = makeArray(rowPatterns.size(), () => []);
-        rowDFA.acceptSetMap.forEach((xs, id) => {
-            for(const x of xs) {
-                acceptingSets[x].push(id);
+        rowDFA.acceptSetMap.forEach((patterns, id) => {
+            for(const pattern of patterns) {
+                const patternID = rowPatterns.getID(pattern);
+                acceptingSets[patternID].push(id);
             }
         });
         
-        const colRegex = _makeRegex(patterns.map(pattern => Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)])));
-        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), numPatterns, colRegex);
+        // patterns with only one row can be matched by the rowDFA directly
+        const colRegex = _makeRegex(patterns.filter(
+            pattern => pattern.height > 1
+        ).map(pattern => ({
+            pattern,
+            seq: Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)]),
+        })));
+        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), colRegex, Pattern.key);
         
         return [rowDFA, colDFA];
     }
     
-    function _makeRegex(sequences: readonly number[][][]): Regex.Node {
+    function _makeRegex(patterns: {pattern: Pattern, seq: readonly number[][]}[]): Regex.Node<Pattern> {
         return Regex.concat([
-            Regex.kleeneStar(Regex.WILDCARD),
+            Regex.DOT_STAR,
             Regex.union(
-                sequences.map((seq, seqID) => Regex.concat([
-                    Regex.concat(seq.map(Regex.letters).reverse()),
-                    Regex.accept(seqID),
+                patterns.map(p => Regex.concat([
+                    ...p.seq.map(Regex.letters).reverse(),
+                    Regex.accept(p.pattern),
                 ]))
             ),
         ]);

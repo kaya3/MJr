@@ -6749,7 +6749,7 @@ class NFA {
     makeNode(epsilons, letters = [], nextID = -1) {
         const { nodes } = this;
         const id = nodes.length;
-        nodes.push({ epsilons, letters, nextID, acceptSet: [] });
+        nodes.push({ epsilons, letters, nextID, acceptSet: [], epsilonClosure: undefined });
         return id;
     }
     makeFromRegex(regex, outID) {
@@ -6785,54 +6785,59 @@ class NFA {
             }
         }
     }
+    getEpsilonClosure(nodeID) {
+        const { nodes } = this;
+        // epsilon closure, by depth-first search
+        // use ISet instead of Set<number> or bigint for the state, for performance
+        const cached = nodes[nodeID].epsilonClosure;
+        if (cached !== undefined) {
+            return cached;
+        }
+        const out = ISet.empty(nodes.length);
+        const stack = [nodeID];
+        while (stack.length > 0) {
+            const id = stack.pop();
+            if (ISet.has(out, id)) {
+                continue;
+            }
+            ISet.add(out, id);
+            for (const eps of nodes[id].epsilons) {
+                if (!ISet.has(out, eps)) {
+                    stack.push(eps);
+                }
+            }
+        }
+        nodes[nodeID].epsilonClosure = out;
+        return out;
+    }
     toDFA(keyFunc) {
         // https://en.wikipedia.org/wiki/Powerset_construction
         const { alphabetSize, nodes } = this;
-        // need to use a primitive key which will be compared by value; bigint is faster than sorting and joining as a string
         const nfaStates = IDMap.withKey(ISet.key);
         const dfaNodes = [];
-        const epsilonClosures = emptyArray(nodes.length, undefined);
-        function getEpsilonClosure(nfaNodeID) {
-            // epsilon closure, by depth-first search
-            // use ISet instead of Set<number> or bigint for the state, for performance
-            const cached = epsilonClosures[nfaNodeID];
-            if (cached !== undefined) {
-                return cached;
-            }
-            const out = ISet.empty(nodes.length);
-            const stack = [nfaNodeID];
-            while (stack.length > 0) {
-                const id = stack.pop();
-                if (ISet.has(out, id)) {
-                    continue;
-                }
-                ISet.add(out, id);
-                for (const eps of nodes[id].epsilons) {
-                    if (!ISet.has(out, eps)) {
-                        stack.push(eps);
+        const cache = new Map();
+        const getNodeID = (nfaState) => getOrCompute(cache, ISet.key(nfaState), () => {
+            for (let nfaNodeID of ISet.toArray(nfaState)) {
+                while (true) {
+                    const epsilons = nodes[nfaNodeID].epsilons;
+                    if (epsilons.length === 0) {
+                        break;
                     }
-                }
-            }
-            epsilonClosures[nfaNodeID] = out;
-            return out;
-        }
-        function getNodeID(nfaState) {
-            for (const nfaNodeID of ISet.toArray(nfaState)) {
-                // this loop is a bit more efficient than `ISet.addAll(nfaState, getEpsilonClosure(nfaNodeID))`, because many nodes have no epsilons
-                for (const eps of nodes[nfaNodeID].epsilons) {
-                    if (ISet.has(nfaState, eps)) {
-                        // do nothing; `eps` is already covered
-                    }
-                    else if (nodes[eps].epsilons.length > 0) {
-                        ISet.addAll(nfaState, getEpsilonClosure(eps));
+                    else if (epsilons.length === 1) {
+                        const nfaNodeID = epsilons[0];
+                        if (ISet.has(nfaState, nfaNodeID)) {
+                            break;
+                        }
+                        ISet.add(nfaState, nfaNodeID);
                     }
                     else {
-                        ISet.add(nfaState, eps);
+                        ISet.addAll(nfaState, this.getEpsilonClosure(nfaNodeID));
+                        break;
                     }
                 }
             }
             return nfaStates.getOrCreateID(nfaState);
-        }
+        });
         const startID = getNodeID(ISet.of(nodes.length, [this.startID]));
         // sanity check
         if (startID !== 0) {
@@ -6944,7 +6949,7 @@ class DFA {
                 for (const id of a) {
                     const arr = inverseTransitions[c * n + id];
                     if (arr !== undefined) {
-                        // `ISet.addAll` would have better worst-case behaviour, but most of these sets are small
+                        // `ISet.addAll` would be faster for dense sets, but most of these sets are small
                         for (const x of arr) {
                             ISet.add(refinement, x);
                         }

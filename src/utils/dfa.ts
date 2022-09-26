@@ -140,8 +140,12 @@ class NFA<T> {
             for(const nfaNodeID of ISet.toArray(nfaState)) {
                 // this loop is a bit more efficient than `ISet.addAll(nfaState, getEpsilonClosure(nfaNodeID))`, because many nodes have no epsilons
                 for(const eps of nodes[nfaNodeID].epsilons) {
-                    if(!ISet.has(nfaState, eps)) {
+                    if(ISet.has(nfaState, eps)) {
+                        // do nothing; `eps` is already covered
+                    } else if(nodes[eps].epsilons.length > 0) {
                         ISet.addAll(nfaState, getEpsilonClosure(eps));
+                    } else {
+                        ISet.add(nfaState, eps);
                     }
                 }
             }
@@ -249,13 +253,13 @@ class DFA<T> {
         // https://en.wikipedia.org/wiki/DFA_minimization#Hopcroft's_algorithm
         
         const {alphabetSize, nodes} = this;
-        
         const n = nodes.length;
-        const inverseTransitions = makeArray(alphabetSize * n, () => ISet.empty(n));
+        
+        const inverseTransitions: (number[] | undefined)[] = emptyArray(alphabetSize * n, undefined);
         for(let id = 0; id < n; ++id) {
             const {transitions} = nodes[id];
             for(let c = 0; c < alphabetSize; ++c) {
-                ISet.add(inverseTransitions[c * n + transitions[c]], id);
+                (inverseTransitions[c * n + transitions[c]] ??= []).push(id);
             }
         }
         
@@ -271,7 +275,11 @@ class DFA<T> {
             for(let c = 0; c < alphabetSize; ++c) {
                 ISet.clear(refinement);
                 for(const id of a) {
-                    ISet.addAll(refinement, inverseTransitions[c * n + id]);
+                    const arr = inverseTransitions[c * n + id];
+                    if(arr !== undefined) {
+                        // `ISet.addAll` would have better worst-case behaviour, but most of these sets are small
+                        for(const x of arr) { ISet.add(refinement, x); }
+                    }
                 }
                 partition.refine(refinement);
                 
@@ -293,6 +301,9 @@ class DFA<T> {
                 accepts,
             };
         });
+        
+        // TODO: alphabet reduction
+        
         return new DFA(alphabetSize, this.acceptMap, this.acceptSetMap, repNodes);
     }
 }

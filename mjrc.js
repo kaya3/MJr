@@ -6820,8 +6820,14 @@ class NFA {
             for (const nfaNodeID of ISet.toArray(nfaState)) {
                 // this loop is a bit more efficient than `ISet.addAll(nfaState, getEpsilonClosure(nfaNodeID))`, because many nodes have no epsilons
                 for (const eps of nodes[nfaNodeID].epsilons) {
-                    if (!ISet.has(nfaState, eps)) {
+                    if (ISet.has(nfaState, eps)) {
+                        // do nothing; `eps` is already covered
+                    }
+                    else if (nodes[eps].epsilons.length > 0) {
                         ISet.addAll(nfaState, getEpsilonClosure(eps));
+                    }
+                    else {
+                        ISet.add(nfaState, eps);
                     }
                 }
             }
@@ -6915,11 +6921,11 @@ class DFA {
         // https://en.wikipedia.org/wiki/DFA_minimization#Hopcroft's_algorithm
         const { alphabetSize, nodes } = this;
         const n = nodes.length;
-        const inverseTransitions = makeArray(alphabetSize * n, () => ISet.empty(n));
+        const inverseTransitions = emptyArray(alphabetSize * n, undefined);
         for (let id = 0; id < n; ++id) {
             const { transitions } = nodes[id];
             for (let c = 0; c < alphabetSize; ++c) {
-                ISet.add(inverseTransitions[c * n + transitions[c]], id);
+                (inverseTransitions[c * n + transitions[c]] ??= []).push(id);
             }
         }
         const partition = new Partition(n);
@@ -6936,7 +6942,13 @@ class DFA {
             for (let c = 0; c < alphabetSize; ++c) {
                 ISet.clear(refinement);
                 for (const id of a) {
-                    ISet.addAll(refinement, inverseTransitions[c * n + id]);
+                    const arr = inverseTransitions[c * n + id];
+                    if (arr !== undefined) {
+                        // `ISet.addAll` would have better worst-case behaviour, but most of these sets are small
+                        for (const x of arr) {
+                            ISet.add(refinement, x);
+                        }
+                    }
                 }
                 partition.refine(refinement);
                 // shortcut if the DFA cannot be minimised
@@ -6957,6 +6969,7 @@ class DFA {
                 accepts,
             };
         });
+        // TODO: alphabet reduction
         return new DFA(alphabetSize, this.acceptMap, this.acceptSetMap, repNodes);
     }
 }
@@ -7187,37 +7200,33 @@ var ISet;
      */
     function arrayToKey(xs) {
         if (xs.length === 0) {
-            return 0n;
+            return 0;
         }
         const domainSize = Math.max(...xs) + 1;
         return key(of(domainSize, xs));
     }
     ISet.arrayToKey = arrayToKey;
-    function _toBigInt(set, a, b) {
-        if (a === b) {
-            return 0n;
-        }
-        else if (a + 1 === b) {
-            return BigInt(set[a]);
-        }
-        else {
-            const halfRange = (b - a) >> 1;
-            const mid = a + halfRange;
-            return _toBigInt(set, a, mid) | _toBigInt(set, mid, b) << BigInt(halfRange << 5);
-        }
-    }
     /**
      * Converts a set to a primitive type, suitable for use as a Map key, in
      * O(N) time.
      */
     function key(set) {
-        if (set.length <= 4) {
-            // O(N log N) time, but significantly faster for small domains, i.e. N <= 128
-            return _toBigInt(set, 0, set.length);
-        }
-        else {
-            // O(N) time
-            return String.fromCharCode(...new Uint16Array(set.buffer));
+        // this function is part of the hot loop in `NFA.toDFA`, so it needs to be fast
+        switch (set.length) {
+            case 0:
+                return 0;
+            case 1:
+                return set[0];
+            case 2:
+                return BigInt(set[0]) | BigInt(set[1]) << 32n;
+            case 3:
+                return BigInt(set[0]) | BigInt(set[1]) << 32n | BigInt(set[2]) << 64n;
+            case 4:
+                return (BigInt(set[0]) | BigInt(set[1]) << 32n)
+                    | (BigInt(set[2]) | BigInt(set[3]) << 32n) << 64n;
+            default:
+                // O(N) time
+                return String.fromCharCode(...new Uint16Array(set.buffer));
         }
     }
     ISet.key = key;

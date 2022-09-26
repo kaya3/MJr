@@ -69,7 +69,7 @@ namespace Resolver {
     type ResolvedProps<K extends keyof PropTypesMap> = {[J in keyof PropTypesMap[K]]: ASG.Prop<PropTypesMap[K][J] & ASG.PropSpec>}
     
     function _convPatternKey(p: ASG.ConvPattern): string {
-        return `${Convolution.Kernel.key(p.kernel)}:${ISet.toBigInt(p.chars)}`;
+        return `${Convolution.Kernel.key(p.kernel)}:${ISet.key(p.chars)}`;
     }
     
     type DeclResolveResult<T> = [decl: ASG.AssignStmt | undefined, result: T | undefined]
@@ -612,16 +612,18 @@ namespace Resolver {
                         ok = false;
                     }
                 }
-                pattern.push(-1);
+                const isUnion = ISet.size(mask) < alphabet.key.length;
+                pattern.push(isUnion ? -2 : -1);
                 masks.push(mask);
-                hasUnions = true;
+                hasUnions ||= isUnion;
             } else {
                 const mask = ctx.resolveChar(c);
                 if(mask !== undefined) {
                     const id = alphabet.map.getIDOrDefault(c.s);
-                    pattern.push(id);
+                    const isUnion = (id < 0 && c.s !== '.');
+                    pattern.push(id >= 0 ? id : isUnion ? -2 : -1);
                     masks.push(mask);
-                    hasUnions ||= (id < 0 && c.s !== '.');
+                    hasUnions ||= isUnion;
                 } else {
                     ok = false;
                 }

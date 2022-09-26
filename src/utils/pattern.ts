@@ -42,21 +42,50 @@ class Pattern extends MJr.Pattern {
     }
     
     public static key(p: Pattern): string {
-        return p._key ??= `${p.width}x${p.height}:${p.masks.map(mask => Array.from(mask).join(',')).join(';')}`;
+        return p._key ??= `${p.width}x${p.height}:${p.masks.map(ISet.key).join(';')}`;
     }
     
     public _key: string | undefined = undefined;
     
     public constructor(
+        /**
+         * The pattern's width.
+         */
         width: number,
+        /**
+         * The pattern's height.
+         */
         height: number,
+        /**
+         * The pattern, as a flat array. Wildcards are represented as -1, and
+         * unions as -2.
+         */
         pattern: readonly number[],
+        /**
+         * The pattern, as a flat array of bitmasks.
+         */
         public readonly masks: readonly ISet[],
+        /**
+         * Indicates whether this pattern has any unions, i.e. cells which can
+         * match multiple alphabet symbols, but are not wildcards.
+         */
         public readonly hasUnions: boolean,
     ) {
         super(width, height, pattern);
     }
     
+    /**
+     * Indicates whether this pattern is trivial, i.e. it always matches at any
+     * position.
+     */
+    public isTrivial(): boolean {
+        return this.pattern.every(p => p === -1);
+    }
+    
+    /**
+     * Calls the given function for each non-wildcard, non-union symbol in this
+     * pattern.
+     */
     public forEach(f: (dx: number, dy: number, c: number) => void): void {
         const v = this.vectorData;
         for(let i = 0; i < v.length; i += 3) {

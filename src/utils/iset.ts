@@ -84,6 +84,19 @@ namespace ISet {
         }
     }
     
+    /**
+     * Removes all elements from the set.
+     */
+    export function clear(a: MutableISet): void {
+        for(let i = 0; i < a.length; ++i) {
+            a[i] = 0;
+        }
+    }
+    
+    /**
+     * Determines whether the two sets are disjoint (i.e. they have no elements
+     * in common).
+     */
     export function isDisjoint(a: ISet, b: ISet): boolean {
         if(a.length < b.length) { throw new Error(); }
         for(let i = 0; i < b.length; ++i) {
@@ -93,33 +106,46 @@ namespace ISet {
     }
     
     /**
-     * Converts a set from an array to a `bigint`, in O(N^2) time.
-     * 
-     * Using a primitive type is convenient for Map keys; `number` would only
-     * work for sets with domain sizes of at most 32, and strings are slower.
+     * Converts an unordered array to a primitive type, suitable for use as a
+     * Map key, in O(N) time.
      */
-    export function arrayToBigInt(xs: readonly number[]): bigint {
-        let domainSize = 0;
-        for(const x of xs) { domainSize = Math.max(domainSize, x + 1); }
-        return domainSize > 0 ? toBigInt(of(domainSize, xs)) : 0n;
+    export function arrayToKey(xs: readonly number[]): PrimitiveKey {
+        if(xs.length === 0) { return 0n; }
+        const domainSize = Math.max(...xs) + 1;
+        return key(of(domainSize, xs));
+    }
+    
+    function _toBigInt(set: ISet, a: number, b: number): bigint {
+        if(a === b) {
+            return 0n;
+        } else if(a + 1 === b) {
+            return BigInt(set[a]);
+        } else {
+            const halfRange = (b - a) >> 1;
+            const mid = a + halfRange;
+            return _toBigInt(set, a, mid) | _toBigInt(set, mid, b) << BigInt(halfRange << 5);
+        }
     }
     
     /**
-     * Converts a set to a `bigint`, in O(N^2) time.
-     * 
-     * Using a primitive type is convenient for Map keys; `number` would only
-     * work for sets with domain sizes of at most 32, and strings are slower.
+     * Converts a set to a primitive type, suitable for use as a Map key, in
+     * O(N) time.
      */
-    export function toBigInt(set: ISet): bigint {
-        let r = 0n;
-        for(let i = set.length - 1; i >= 0; --i) {
-            r <<= 32n;
-            r |= BigInt(set[i]);
+    export function key(set: ISet): PrimitiveKey {
+        if(set.length <= 4) {
+            // O(N log N) time, but significantly faster for small domains, i.e. N <= 128
+            return _toBigInt(set, 0, set.length);
+        } else {
+            // O(N) time
+            return String.fromCharCode(...new Uint16Array(set.buffer));
         }
-        return r;
     }
     
+    /**
+     * Sentinel value used to halt the `_forEach` function.
+     */
     const STOP_ITERATION = Symbol();
+    
     function _forEach(set: ISet, f: (x: number) => unknown): boolean {
         for(let i = 0; i < set.length; ++i) {
             const x = i << 5;
@@ -152,11 +178,17 @@ namespace ISet {
         return arr;
     }
     
+    /**
+     * Determines whether the predicate is true for every element of the set.
+     */
     export function every(set: ISet, f: (x: number) => boolean): boolean {
         return _forEach(set, x => !f(x) ? STOP_ITERATION : undefined);
     }
     
+    /**
+     * Determines whether the predicate is true for some element of the set.
+     */
     export function some(set: ISet, f: (x: number) => boolean): boolean {
-        return !_forEach(set, x => f(x) ? undefined : STOP_ITERATION);
+        return !_forEach(set, x => f(x) ? STOP_ITERATION : undefined);
     }
 }

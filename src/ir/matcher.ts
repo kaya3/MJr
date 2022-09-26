@@ -165,4 +165,44 @@ namespace IR {
             ];
         }
     }
+    
+    /**
+     * Builds a pair of DFAs which can be used to match 2D patterns. The `rowDFA`
+     * recognises pattern rows, and the `colDFA` recognises sequences of pattern
+     * rows matched by the `rowDFA`.
+     * 
+     * The DFAs recognise the patterns in reverse order, for convenience so that
+     * matches are reported where the patterns start rather than where they end.
+     */
+    function makePatternMatcherDFAs(alphabetSize: number, patterns: ReadonlyIDMap<Pattern>): [DFA, DFA] {
+        const numPatterns = patterns.size();
+        
+        const rowPatterns = IDMap.ofWithKey(patterns.map(Pattern.rowsOf).flat(), Pattern.key);
+        const rowRegex = _makeRegex(rowPatterns.map(row => row.masks.map(ISet.toArray)));
+        const rowDFA = Regex.compile(alphabetSize, rowPatterns.size(), rowRegex);
+        
+        const acceptingSets: number[][] = makeArray(rowPatterns.size(), () => []);
+        rowDFA.acceptSetMap.forEach((xs, id) => {
+            for(const x of xs) {
+                acceptingSets[x].push(id);
+            }
+        });
+        
+        const colRegex = _makeRegex(patterns.map(pattern => Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)])));
+        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), numPatterns, colRegex);
+        
+        return [rowDFA, colDFA];
+    }
+    
+    function _makeRegex(sequences: readonly number[][][]): Regex.Node {
+        return Regex.concat([
+            Regex.kleeneStar(Regex.WILDCARD),
+            Regex.union(
+                sequences.map((seq, seqID) => Regex.concat([
+                    Regex.concat(seq.map(Regex.letters).reverse()),
+                    Regex.accept(seqID),
+                ]))
+            ),
+        ]);
+    }
 }

@@ -1460,7 +1460,7 @@ var IR;
             return if_(IR.OP.eq(expr, IR.ZERO), casesByIndex[0], casesByIndex[1]);
         }
         const firstCase = casesByIndex[0];
-        if (firstCase.kind === 'stmt.if' && casesByIndex.every(c => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
+        if (firstCase.kind === 'stmt.if' && casesByIndex.every((c) => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
             // factor out common condition; the `otherwise` part will generally be trivial
             return if_(firstCase.condition, switch_(expr, casesByIndex.map(c => c.then)), switch_(expr, casesByIndex.map(c => c.otherwise ?? IR.PASS)));
         }
@@ -3943,7 +3943,7 @@ var Resolver;
         },
     });
     function _convPatternKey(p) {
-        return `${Convolution.Kernel.key(p.kernel)}:${ISet.toBigInt(p.chars)}`;
+        return `${Convolution.Kernel.key(p.kernel)}:${ISet.key(p.chars)}`;
     }
     class Alphabet {
         key;
@@ -4450,17 +4450,19 @@ var Resolver;
                         ok = false;
                     }
                 }
-                pattern.push(-1);
+                const isUnion = ISet.size(mask) < alphabet.key.length;
+                pattern.push(isUnion ? -2 : -1);
                 masks.push(mask);
-                hasUnions = true;
+                hasUnions ||= isUnion;
             }
             else {
                 const mask = ctx.resolveChar(c);
                 if (mask !== undefined) {
                     const id = alphabet.map.getIDOrDefault(c.s);
-                    pattern.push(id);
+                    const isUnion = (id < 0 && c.s !== '.');
+                    pattern.push(id >= 0 ? id : isUnion ? -2 : -1);
                     masks.push(mask);
-                    hasUnions ||= (id < 0 && c.s !== '.');
+                    hasUnions ||= isUnion;
                 }
                 else {
                     ok = false;
@@ -5725,7 +5727,7 @@ var IR;
             });
             repMap.forEach((rep, i) => {
                 const chars = alphabetPartition.getSet(rep);
-                const pattern = new Pattern(1, 1, [-1], [chars], true);
+                const pattern = new Pattern(1, 1, [-2], [chars], true);
                 g.matcher.addMatchHandler({ kind: 'convolution', buffer: this, pattern, i });
             });
             this.k = repMap.size();
@@ -5739,7 +5741,7 @@ var IR;
                 if (exprs.length === 0) {
                     throw new Error();
                 }
-                values.set(ISet.toBigInt(chars), exprs.reduce(IR.OP.add));
+                values.set(ISet.key(chars), exprs.reduce(IR.OP.add));
             });
         }
         declare() {
@@ -5750,7 +5752,7 @@ var IR;
             ];
         }
         get(chars) {
-            const expr = this.values.get(ISet.toBigInt(chars));
+            const expr = this.values.get(ISet.key(chars));
             if (expr === undefined) {
                 throw new Error();
             }
@@ -5878,7 +5880,7 @@ var IR;
             if (cached !== undefined) {
                 return cached;
             }
-            if (patterns.length === 1 && patterns[0].masks.every(mask => ISet.size(mask) === this.grid.alphabet.key.length)) {
+            if (patterns.length === 1 && patterns[0].isTrivial()) {
                 const { width, height } = patterns[0];
                 const sampler = new IR.TrivialSampler(this, width, height);
                 samplers.set(key, sampler);
@@ -6215,6 +6217,38 @@ var IR;
         }
     }
     IR.Matcher = Matcher;
+    /**
+     * Builds a pair of DFAs which can be used to match 2D patterns. The `rowDFA`
+     * recognises pattern rows, and the `colDFA` recognises sequences of pattern
+     * rows matched by the `rowDFA`.
+     *
+     * The DFAs recognise the patterns in reverse order, for convenience so that
+     * matches are reported where the patterns start rather than where they end.
+     */
+    function makePatternMatcherDFAs(alphabetSize, patterns) {
+        const numPatterns = patterns.size();
+        const rowPatterns = IDMap.ofWithKey(patterns.map(Pattern.rowsOf).flat(), Pattern.key);
+        const rowRegex = _makeRegex(rowPatterns.map(row => row.masks.map(ISet.toArray)));
+        const rowDFA = Regex.compile(alphabetSize, rowPatterns.size(), rowRegex);
+        const acceptingSets = makeArray(rowPatterns.size(), () => []);
+        rowDFA.acceptSetMap.forEach((xs, id) => {
+            for (const x of xs) {
+                acceptingSets[x].push(id);
+            }
+        });
+        const colRegex = _makeRegex(patterns.map(pattern => Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)])));
+        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), numPatterns, colRegex);
+        return [rowDFA, colDFA];
+    }
+    function _makeRegex(sequences) {
+        return Regex.concat([
+            Regex.kleeneStar(Regex.WILDCARD),
+            Regex.union(sequences.map((seq, seqID) => Regex.concat([
+                Regex.concat(seq.map(Regex.letters).reverse()),
+                Regex.accept(seqID),
+            ]))),
+        ]);
+    }
 })(IR || (IR = {}));
 ///<reference path="names.ts"/>
 var IR;
@@ -6676,10 +6710,7 @@ var Regex;
         return { kind: 0 /* Kind.LETTERS */, letterIDs };
     }
     Regex.letters = letters;
-    function wildcard() {
-        return { kind: 1 /* Kind.WILDCARD */ };
-    }
-    Regex.wildcard = wildcard;
+    Regex.WILDCARD = { kind: 1 /* Kind.WILDCARD */ };
     function concat(children) {
         return { kind: 2 /* Kind.CONCAT */, children };
     }
@@ -6755,18 +6786,39 @@ class NFA {
         // https://en.wikipedia.org/wiki/Powerset_construction
         const { alphabetSize, nodes } = this;
         // need to use a primitive key which will be compared by value; bigint is faster than sorting and joining as a string
-        const nfaStates = IDMap.withKey(ISet.toBigInt);
+        const nfaStates = IDMap.withKey(ISet.key);
         const dfaNodes = [];
-        function getNodeID(nfaState) {
+        const epsilonClosures = emptyArray(nodes.length, undefined);
+        function getEpsilonClosure(nfaNodeID) {
             // epsilon closure, by depth-first search
             // use ISet instead of Set<number> or bigint for the state, for performance
-            const stack = ISet.toArray(nfaState);
+            const cached = epsilonClosures[nfaNodeID];
+            if (cached !== undefined) {
+                return cached;
+            }
+            const out = ISet.empty(nodes.length);
+            const stack = [nfaNodeID];
             while (stack.length > 0) {
-                const nfaNodeID = stack.pop();
+                const id = stack.pop();
+                if (ISet.has(out, id)) {
+                    continue;
+                }
+                ISet.add(out, id);
+                for (const eps of nodes[id].epsilons) {
+                    if (!ISet.has(out, eps)) {
+                        stack.push(eps);
+                    }
+                }
+            }
+            epsilonClosures[nfaNodeID] = out;
+            return out;
+        }
+        function getNodeID(nfaState) {
+            for (const nfaNodeID of ISet.toArray(nfaState)) {
+                // this loop is a bit more efficient than `ISet.addAll(nfaState, getEpsilonClosure(nfaNodeID))`, because many nodes have no epsilons
                 for (const eps of nodes[nfaNodeID].epsilons) {
                     if (!ISet.has(nfaState, eps)) {
-                        ISet.add(nfaState, eps);
-                        stack.push(eps);
+                        ISet.addAll(nfaState, getEpsilonClosure(eps));
                     }
                 }
             }
@@ -6777,7 +6829,7 @@ class NFA {
         if (startID !== 0) {
             throw new Error();
         }
-        const acceptSetMap = IDMap.withKey(ISet.arrayToBigInt);
+        const acceptSetMap = IDMap.withKey(ISet.arrayToKey);
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for (let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {
             const transitionStates = makeArray(alphabetSize, () => ISet.empty(nodes.length));
@@ -6869,17 +6921,19 @@ class DFA {
         for (const d of this.computeAcceptingStates()) {
             partition.refine(d);
         }
+        // pre-allocate
+        const refinement = ISet.empty(n);
         while (true) {
             const a = partition.pollUnprocessed();
             if (a === undefined) {
                 break;
             }
             for (let c = 0; c < alphabetSize; ++c) {
-                const x = ISet.empty(n);
+                ISet.clear(refinement);
                 for (const id of a) {
-                    ISet.addAll(x, inverseTransitions[c * n + id]);
+                    ISet.addAll(refinement, inverseTransitions[c * n + id]);
                 }
-                partition.refine(x);
+                partition.refine(refinement);
                 // shortcut if the DFA cannot be minimised
                 if (partition.countSubsets() === n) {
                     return this;
@@ -7096,6 +7150,19 @@ var ISet;
         }
     }
     ISet.addAll = addAll;
+    /**
+     * Removes all elements from the set.
+     */
+    function clear(a) {
+        for (let i = 0; i < a.length; ++i) {
+            a[i] = 0;
+        }
+    }
+    ISet.clear = clear;
+    /**
+     * Determines whether the two sets are disjoint (i.e. they have no elements
+     * in common).
+     */
     function isDisjoint(a, b) {
         if (a.length < b.length) {
             throw new Error();
@@ -7109,34 +7176,48 @@ var ISet;
     }
     ISet.isDisjoint = isDisjoint;
     /**
-     * Converts a set from an array to a `bigint`, in O(N^2) time.
-     *
-     * Using a primitive type is convenient for Map keys; `number` would only
-     * work for sets with domain sizes of at most 32, and strings are slower.
+     * Converts an unordered array to a primitive type, suitable for use as a
+     * Map key, in O(N) time.
      */
-    function arrayToBigInt(xs) {
-        let domainSize = 0;
-        for (const x of xs) {
-            domainSize = Math.max(domainSize, x + 1);
+    function arrayToKey(xs) {
+        if (xs.length === 0) {
+            return 0n;
         }
-        return domainSize > 0 ? toBigInt(of(domainSize, xs)) : 0n;
+        const domainSize = Math.max(...xs) + 1;
+        return key(of(domainSize, xs));
     }
-    ISet.arrayToBigInt = arrayToBigInt;
+    ISet.arrayToKey = arrayToKey;
+    function _toBigInt(set, a, b) {
+        if (a === b) {
+            return 0n;
+        }
+        else if (a + 1 === b) {
+            return BigInt(set[a]);
+        }
+        else {
+            const halfRange = (b - a) >> 1;
+            const mid = a + halfRange;
+            return _toBigInt(set, a, mid) | _toBigInt(set, mid, b) << BigInt(halfRange << 5);
+        }
+    }
     /**
-     * Converts a set to a `bigint`, in O(N^2) time.
-     *
-     * Using a primitive type is convenient for Map keys; `number` would only
-     * work for sets with domain sizes of at most 32, and strings are slower.
+     * Converts a set to a primitive type, suitable for use as a Map key, in
+     * O(N) time.
      */
-    function toBigInt(set) {
-        let r = 0n;
-        for (let i = set.length - 1; i >= 0; --i) {
-            r <<= 32n;
-            r |= BigInt(set[i]);
+    function key(set) {
+        if (set.length <= 4) {
+            // O(N log N) time, but significantly faster for small domains, i.e. N <= 128
+            return _toBigInt(set, 0, set.length);
         }
-        return r;
+        else {
+            // O(N) time
+            return String.fromCharCode(...new Uint16Array(set.buffer));
+        }
     }
-    ISet.toBigInt = toBigInt;
+    ISet.key = key;
+    /**
+     * Sentinel value used to halt the `_forEach` function.
+     */
     const STOP_ITERATION = Symbol();
     function _forEach(set, f) {
         for (let i = 0; i < set.length; ++i) {
@@ -7170,53 +7251,21 @@ var ISet;
         return arr;
     }
     ISet.toArray = toArray;
+    /**
+     * Determines whether the predicate is true for every element of the set.
+     */
     function every(set, f) {
         return _forEach(set, x => !f(x) ? STOP_ITERATION : undefined);
     }
     ISet.every = every;
+    /**
+     * Determines whether the predicate is true for some element of the set.
+     */
     function some(set, f) {
-        return !_forEach(set, x => f(x) ? undefined : STOP_ITERATION);
+        return !_forEach(set, x => f(x) ? STOP_ITERATION : undefined);
     }
     ISet.some = some;
 })(ISet || (ISet = {}));
-/**
- * Builds a pair of DFAs which can be used to match 2D patterns. The `rowDFA`
- * recognises pattern rows, and the `colDFA` recognises sequences of pattern
- * rows matched by the `rowDFA`.
- *
- * The DFAs recognise the patterns in reverse order, for convenience so that
- * matches are reported where the patterns start rather than where they end.
- */
-function makePatternMatcherDFAs(alphabetSize, patterns) {
-    const numPatterns = patterns.size();
-    const rowPatterns = IDMap.ofWithKey(patterns.map(Pattern.rowsOf).flat(), Pattern.key);
-    const rowRegex = Regex.concat([
-        Regex.kleeneStar(Regex.wildcard()),
-        Regex.union(rowPatterns.map((row, rowID) => Regex.concat([
-            Regex.concat(row.masks.map(c => Regex.letters(ISet.toArray(c))).reverse()),
-            Regex.accept(rowID),
-        ]))),
-    ]);
-    const rowDFA = Regex.compile(alphabetSize, rowPatterns.size(), rowRegex);
-    const acceptingSets = makeArray(rowPatterns.size(), () => []);
-    rowDFA.acceptSetMap.forEach((xs, id) => {
-        for (const x of xs) {
-            acceptingSets[x].push(id);
-        }
-    });
-    const colRegex = Regex.concat([
-        Regex.kleeneStar(Regex.wildcard()),
-        Regex.union(patterns.map((pattern, patternID) => Regex.concat([
-            Regex.concat(Pattern.rowsOf(pattern).map(row => {
-                const rowID = rowPatterns.getID(row);
-                return Regex.letters(acceptingSets[rowID]);
-            }).reverse()),
-            Regex.accept(patternID),
-        ]))),
-    ]);
-    const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), numPatterns, colRegex);
-    return [rowDFA, colDFA];
-}
 function objHasKey(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
 }
@@ -7288,14 +7337,47 @@ class Pattern extends MJr.Pattern {
         return new Pattern(width, height, newData, newMasks, p.hasUnions);
     }
     static key(p) {
-        return p._key ??= `${p.width}x${p.height}:${p.masks.map(mask => Array.from(mask).join(',')).join(';')}`;
+        return p._key ??= `${p.width}x${p.height}:${p.masks.map(ISet.key).join(';')}`;
     }
     _key = undefined;
-    constructor(width, height, pattern, masks, hasUnions) {
+    constructor(
+    /**
+     * The pattern's width.
+     */
+    width, 
+    /**
+     * The pattern's height.
+     */
+    height, 
+    /**
+     * The pattern, as a flat array. Wildcards are represented as -1, and
+     * unions as -2.
+     */
+    pattern, 
+    /**
+     * The pattern, as a flat array of bitmasks.
+     */
+    masks, 
+    /**
+     * Indicates whether this pattern has any unions, i.e. cells which can
+     * match multiple alphabet symbols, but are not wildcards.
+     */
+    hasUnions) {
         super(width, height, pattern);
         this.masks = masks;
         this.hasUnions = hasUnions;
     }
+    /**
+     * Indicates whether this pattern is trivial, i.e. it always matches at any
+     * position.
+     */
+    isTrivial() {
+        return this.pattern.every(p => p === -1);
+    }
+    /**
+     * Calls the given function for each non-wildcard, non-union symbol in this
+     * pattern.
+     */
     forEach(f) {
         const v = this.vectorData;
         for (let i = 0; i < v.length; i += 3) {

@@ -22,9 +22,7 @@ namespace Regex {
     export function letters(letterIDs: readonly number[]): Node {
         return {kind: Kind.LETTERS, letterIDs};
     }
-    export function wildcard(): Node {
-        return {kind: Kind.WILDCARD};
-    }
+    export const WILDCARD: Node = {kind: Kind.WILDCARD};
     export function concat(children: Node[]): Node {
         return {kind: Kind.CONCAT, children};
     }
@@ -110,23 +108,42 @@ class NFA {
         
         const {alphabetSize, nodes} = this;
         // need to use a primitive key which will be compared by value; bigint is faster than sorting and joining as a string
-        const nfaStates: IDMap<ISet> = IDMap.withKey(ISet.toBigInt);
+        const nfaStates: IDMap<ISet> = IDMap.withKey(ISet.key);
         const dfaNodes: DFANode[] = [];
         
-        function getNodeID(nfaState: MutableISet): number {
+        const epsilonClosures: (ISet | undefined)[] = emptyArray(nodes.length, undefined);
+        function getEpsilonClosure(nfaNodeID: number): ISet {
             // epsilon closure, by depth-first search
             // use ISet instead of Set<number> or bigint for the state, for performance
-            const stack = ISet.toArray(nfaState);
+            const cached = epsilonClosures[nfaNodeID];
+            if(cached !== undefined) { return cached; }
+            
+            const out = ISet.empty(nodes.length);
+            const stack = [nfaNodeID];
             while(stack.length > 0) {
-                const nfaNodeID = stack.pop()!;
-                for(const eps of nodes[nfaNodeID].epsilons) {
-                    if(!ISet.has(nfaState, eps)) {
-                        ISet.add(nfaState, eps);
+                const id = stack.pop()!;
+                if(ISet.has(out, id)) { continue; }
+                
+                ISet.add(out, id);
+                for(const eps of nodes[id].epsilons) {
+                    if(!ISet.has(out, eps)) {
                         stack.push(eps);
                     }
                 }
             }
-            
+            epsilonClosures[nfaNodeID] = out;
+            return out;
+        }
+        
+        function getNodeID(nfaState: MutableISet): number {
+            for(const nfaNodeID of ISet.toArray(nfaState)) {
+                // this loop is a bit more efficient than `ISet.addAll(nfaState, getEpsilonClosure(nfaNodeID))`, because many nodes have no epsilons
+                for(const eps of nodes[nfaNodeID].epsilons) {
+                    if(!ISet.has(nfaState, eps)) {
+                        ISet.addAll(nfaState, getEpsilonClosure(eps));
+                    }
+                }
+            }
             return nfaStates.getOrCreateID(nfaState);
         }
         
@@ -134,7 +151,7 @@ class NFA {
         // sanity check
         if(startID !== 0) { throw new Error(); }
         
-        const acceptSetMap: IDMap<readonly number[]> = IDMap.withKey(ISet.arrayToBigInt);
+        const acceptSetMap: IDMap<readonly number[]> = IDMap.withKey(ISet.arrayToKey);
         
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for(let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {
@@ -242,16 +259,18 @@ class DFA {
         const partition = new Partition(n);
         for(const d of this.computeAcceptingStates()) { partition.refine(d); }
         
+        // pre-allocate
+        const refinement = ISet.empty(n);
         while(true) {
             const a = partition.pollUnprocessed();
             if(a === undefined) { break; }
             
             for(let c = 0; c < alphabetSize; ++c) {
-                const x = ISet.empty(n);
+                ISet.clear(refinement);
                 for(const id of a) {
-                    ISet.addAll(x, inverseTransitions[c * n + id]);
+                    ISet.addAll(refinement, inverseTransitions[c * n + id]);
                 }
-                partition.refine(x);
+                partition.refine(refinement);
                 
                 // shortcut if the DFA cannot be minimised
                 if(partition.countSubsets() === n) { return this; }

@@ -5,7 +5,7 @@ namespace IR {
         private readonly height: Expr;
         private readonly n: NameExpr;
         private readonly k: number;
-        private readonly values: ReadonlyMap<bigint, Expr>;
+        private readonly values: ReadonlyMap<PrimitiveKey, Expr>;
         
         public constructor(
             id: number,
@@ -31,12 +31,12 @@ namespace IR {
             });
             repMap.forEach((rep, i) => {
                 const chars = alphabetPartition.getSet(rep);
-                const pattern = new Pattern(1, 1, [-1], [chars], true);
+                const pattern = new Pattern(1, 1, [-2], [chars], true);
                 g.matcher.addMatchHandler({kind: 'convolution', buffer: this, pattern, i});
             });
             this.k = repMap.size();
             
-            const values = this.values = new Map<bigint, Expr>();
+            const values = this.values = new Map<PrimitiveKey, Expr>();
             charsets.forEach((chars, i) => {
                 const exprs: Expr[] = Array.from(mappedBuffers[i], j => {
                     const index = OP.add(OP.multConstant(n, j), NAMES.AT_CONV);
@@ -44,7 +44,7 @@ namespace IR {
                 });
                 // sanity check
                 if(exprs.length === 0) { throw new Error(); }
-                values.set(ISet.toBigInt(chars), exprs.reduce(OP.add));
+                values.set(ISet.key(chars), exprs.reduce(OP.add));
             });
         }
         
@@ -57,7 +57,7 @@ namespace IR {
         }
         
         public get(chars: ISet): Expr {
-            const expr = this.values.get(ISet.toBigInt(chars));
+            const expr = this.values.get(ISet.key(chars));
             if(expr === undefined) { throw new Error(); }
             return expr;
         }

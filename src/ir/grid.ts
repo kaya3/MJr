@@ -69,7 +69,7 @@ namespace IR {
             const cached = samplers.get(key);
             if(cached !== undefined) { return cached; }
             
-            if(patterns.length === 1 && patterns[0].masks.every(mask => ISet.size(mask) === this.grid.alphabet.key.length)) {
+            if(patterns.length === 1 && patterns[0].isTrivial()) {
                 const {width, height} = patterns[0];
                 const sampler = new TrivialSampler(this, width, height);
                 samplers.set(key, sampler);

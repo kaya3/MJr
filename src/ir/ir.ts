@@ -267,12 +267,12 @@ namespace IR {
         }
         
         const firstCase = casesByIndex[0];
-        if(firstCase.kind === 'stmt.if' && casesByIndex.every(c => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
+        if(firstCase.kind === 'stmt.if' && casesByIndex.every((c: Stmt): c is IfStmt => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
             // factor out common condition; the `otherwise` part will generally be trivial
             return if_(
                 firstCase.condition,
-                switch_(expr, casesByIndex.map(c => (c as IfStmt).then)),
-                switch_(expr, casesByIndex.map(c => (c as IfStmt).otherwise ?? PASS)),
+                switch_(expr, casesByIndex.map(c => c.then)),
+                switch_(expr, casesByIndex.map(c => c.otherwise ?? PASS)),
             );
         }
         

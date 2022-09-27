@@ -4053,6 +4053,26 @@ var Resolver;
             }
             return set;
         }
+        resolveCharSet(charset) {
+            if (this.grid === undefined) {
+                throw new Error();
+            }
+            const k = this.grid.alphabet.key.length;
+            const mask = charset.inverted ? ISet.full(k) : ISet.empty(k);
+            for (const c of charset.chars) {
+                const cMask = this.resolveChar(c);
+                if (cMask === undefined) {
+                    return undefined;
+                }
+                else if (charset.inverted) {
+                    ISet.removeAll(mask, cMask);
+                }
+                else {
+                    ISet.addAll(mask, cMask);
+                }
+            }
+            return mask;
+        }
         resolveStmts(children, canReset) {
             return children.flatMap(c => {
                 const r = this.resolveStmt(c, canReset);
@@ -4470,41 +4490,37 @@ var Resolver;
         const masks = [];
         let ok = true, hasUnions = false;
         for (const c of value) {
+            let charID = -1, isUnion = false;
+            let mask;
             if (c.kind === 'CHARSET') {
-                const mask = c.inverted ? ISet.full(alphabet.key.length) : ISet.empty(alphabet.key.length);
-                for (const cc of c.chars) {
-                    const cMask = ctx.resolveChar(cc);
-                    if (cMask === undefined) {
-                        ok = false;
+                mask = ctx.resolveCharSet(c);
+                if (mask !== undefined) {
+                    const size = ISet.size(mask);
+                    if (size === 0) {
+                        ctx.error('empty charset', c.pos);
                     }
-                    else if (c.inverted) {
-                        ISet.removeAll(mask, cMask);
+                    else if (size === 1) {
+                        [charID] = ISet.toArray(mask);
                     }
                     else {
-                        ISet.addAll(mask, cMask);
+                        isUnion = size < alphabet.key.length;
                     }
                 }
-                const size = ISet.size(mask);
-                if (size === 0) {
-                    ctx.error('empty charset', c.pos);
+            }
+            else {
+                mask = ctx.resolveChar(c);
+                if (mask !== undefined) {
+                    charID = alphabet.map.getIDOrDefault(c.s);
+                    isUnion = charID < 0 && c.s !== '.';
                 }
-                const isUnion = size < alphabet.key.length;
-                pattern.push(isUnion ? -2 : -1);
+            }
+            if (mask !== undefined) {
+                pattern.push(isUnion ? -2 : charID);
                 masks.push(mask);
                 hasUnions ||= isUnion;
             }
             else {
-                const mask = ctx.resolveChar(c);
-                if (mask !== undefined) {
-                    const id = alphabet.map.getIDOrDefault(c.s);
-                    const isUnion = (id < 0 && c.s !== '.');
-                    pattern.push(id >= 0 ? id : isUnion ? -2 : -1);
-                    masks.push(mask);
-                    hasUnions ||= isUnion;
-                }
-                else {
-                    ok = false;
-                }
+                ok = false;
             }
         }
         if (!ok) {

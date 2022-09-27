@@ -61,6 +61,10 @@ namespace CodeGen {
                 out.beginLine();
                 out.write(`// ${stmt.comment}`);
             },
+            'stmt.continue': (out, stmt) => {
+                out.beginLine();
+                out.write('continue;');
+            },
             'stmt.decl.func': (out, stmt) => {
                 const {params, paramTypes} = stmt;
                 out.beginLine();

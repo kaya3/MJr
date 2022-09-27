@@ -163,9 +163,6 @@ class NFA<T> {
         // sanity check
         if(startID !== 0) { throw new Error(); }
         
-        const acceptMap = IDMap.withKey(keyFunc);
-        const acceptSetMap: IDMap<readonly T[]> = IDMap.withKey(set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))));
-        
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for(let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {
             const transitionStates = makeArray(alphabetSize, () => ISet.empty(nodes.length));
@@ -180,27 +177,24 @@ class NFA<T> {
             
             dfaNodes.push({
                 transitions: transitionStates.map(getNodeID),
-                acceptSetID: acceptSetMap.getOrCreateID(accepts),
                 accepts,
             });
         }
         
-        return new DFA(alphabetSize, acceptMap, acceptSetMap, dfaNodes);
+        return new DFA(alphabetSize, dfaNodes, keyFunc);
     }
 }
 
 type DFANode<T> = Readonly<{
     transitions: readonly number[],
-    acceptSetID: number,
     accepts: readonly T[],
 }>
 
 class DFA<T> {
     public constructor(
         public readonly alphabetSize: number,
-        public readonly acceptMap: ReadonlyIDMap<T>,
-        public readonly acceptSetMap: ReadonlyIDMap<readonly T[]>,
         private readonly nodes: readonly DFANode<T>[],
+        private readonly keyFunc: (accept: T) => PrimitiveKey,
     ) {
         //console.log(`DFA with ${nodes.length} nodes on alphabet of size ${alphabetSize} and ${acceptSetMap.size()} accept sets`);
     }
@@ -212,45 +206,44 @@ class DFA<T> {
         return this.nodes.length;
     }
     
-    public go(state: number, letterID: number): number {
-        const {nodes, alphabetSize} = this;
-        if(state >= 0 && state < nodes.length && letterID >= 0 && letterID < alphabetSize) {
-            return nodes[state].transitions[letterID];
-        } else {
-            throw new Error();
-        }
-    }
-    
-    public getAccepts(state: number): readonly T[] {
-        return this.nodes[state].accepts;
-    }
-    
-    public getAcceptSetID(state: number): number {
-        return this.nodes[state].acceptSetID;
-    }
-    
-    public getAcceptSetIDs(): readonly number[] {
-        return this.nodes.map(node => node.acceptSetID);
-    }
-    
     public toFlatArray(): readonly number[] {
         return this.nodes.flatMap(node => node.transitions);
     }
     
+    public getAcceptSetMap(predicate?: (accept: T) => boolean): [readonly number[], ReadonlyIDMap<readonly T[]>] {
+        const {nodes} = this;
+        const acceptSets = nodes.map(
+            predicate !== undefined
+            ? node => node.accepts.filter(predicate)
+            : node => node.accepts
+        );
+        const acceptMap = IDMap.withKey(this.keyFunc);
+        const acceptSetMap = IDMap.ofWithKey(
+            acceptSets,
+            set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))),
+        );
+        return [
+            acceptSets.map(set => acceptSetMap.getID(set)),
+            acceptSetMap,
+        ];
+    }
+    
     /**
-     * Returns an array mapping each accept to the set of node IDs which accept it.
+     * Returns an iterable mapping each accept to the set of node IDs which
+     * accept it.
      */
     private computeAcceptingStates(): Iterable<ISet> {
-        const {nodes, acceptMap} = this;
+        const {nodes, keyFunc} = this;
         const n = nodes.length;
-        const table = makeArray(acceptMap.size(), () => ISet.empty(n));
+        const map = new Map<PrimitiveKey, MutableISet>();
         for(let id = 0; id < n; ++id) {
             for(const accept of nodes[id].accepts) {
-                const acceptID = acceptMap.getID(accept);
-                ISet.add(table[acceptID], id);
+                const key = keyFunc(accept);
+                const set = getOrCompute(map, key, () => ISet.empty(n));
+                ISet.add(set, id);
             }
         }
-        return table;
+        return map.values();
     }
     
     /**
@@ -300,17 +293,14 @@ class DFA<T> {
         reps.getOrCreateID(0);
         partition.forEachRepresentative(x => reps.getOrCreateID(x));
         
-        const repNodes: DFANode<T>[] = reps.map(rep => {
-            const {transitions, acceptSetID, accepts} = this.nodes[rep];
+        const repNodes: readonly DFANode<T>[] = reps.map(rep => {
+            const {transitions, accepts} = this.nodes[rep];
             return {
                 transitions: transitions.map(nodeID => reps.getID(nodeID)),
-                acceptSetID,
                 accepts,
             };
         });
         
-        // TODO: alphabet reduction
-        
-        return new DFA(alphabetSize, this.acceptMap, this.acceptSetMap, repNodes);
+        return new DFA(alphabetSize, repNodes, this.keyFunc);
     }
 }

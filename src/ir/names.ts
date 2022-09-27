@@ -26,6 +26,8 @@ namespace IR {
         EFFECTIVE_HEIGHT: nameExpr('h'),
         S: nameExpr('s'),
         OLD_S: nameExpr('oldS'),
+        T: nameExpr('t'),
+        OLD_T: nameExpr('oldT'),
         MASK: nameExpr('mask'),
         MASK_CLEAR: nameExpr('mask_clear'),
         MASK_SET: nameExpr('mask_set'),
@@ -63,7 +65,7 @@ namespace IR {
         gridVar(g: Grid, v: 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'lfsrFeedbackTerm'): NameExpr {
             return nameExpr(`grid${g.grid.id}_${v}`);
         },
-        matcherVar(g: Grid, id: number, v: 'update' | 'rowDFA' | 'colDFA' | 'rowStates' | 'colStates' | 'rowAcceptSets' | 'colAcceptSets'): NameExpr {
+        matcherVar(g: Grid, id: number, v: 'update' | 'rowDFA' | 'colDFA' | 'rowStates' | 'colStates' | 'rowAcceptSets' | 'colAcceptSets' | 'rowsToCols'): NameExpr {
             return nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
         },
     };

@@ -9,6 +9,7 @@ interface ReadonlyIDMap<T> {
     forEach(f: (x: T, id: number) => void): void;
     filter(f: (x: T) => boolean): T[];
     map<S>(f: (x: T, id: number) => S): S[];
+    flatMap<S>(f: (x: T, id: number) => readonly S[]): S[];
 }
 
 /**
@@ -133,5 +134,8 @@ class IDMap<T> implements ReadonlyIDMap<T> {
     }
     public map<S>(f: (x: T, id: number) => S): S[] {
         return this.arr.map(f);
+    }
+    public flatMap<S>(f: (x: T, id: number) => readonly S[]): S[] {
+        return this.arr.flatMap(f);
     }
 }

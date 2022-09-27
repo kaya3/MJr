@@ -26,7 +26,7 @@ namespace IR {
     }
     
     export type Expr = AttrExpr | LetInExpr | LiteralExpr | NameExpr | ObjectExpr | OpExpr | ParamExpr
-    export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
+    export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | ContinueStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
     
     export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
     export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
@@ -51,6 +51,7 @@ namespace IR {
     export interface BlockStmt extends _StmtNode<'block', {children: readonly Stmt[]}> {}
     export interface BreakStmt extends _StmtNode<'break', {}> {}
     export interface CommentStmt extends _StmtNode<'comment', {comment: string}> {}
+    export interface ContinueStmt extends _StmtNode<'continue', {}> {}
     export interface DeclFuncStmt extends _StmtNode<'decl.func', {name: NameExpr, yields: IRType | undefined, params: readonly NameExpr[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt}> {}
     export interface DeclVarsStmt extends _StmtNode<'decl.vars', {decls: readonly VarDecl[], mutable: boolean}> {}
     export interface ExprStmt extends _StmtNode<'expr', {expr: CallLibExpr | CallLocalExpr}> {}
@@ -152,6 +153,21 @@ namespace IR {
         return {kind: 'expr.array.const', from, domainSize, rowLength};
     }
     
+    export function constArrayDecl(name: NameExpr, from: readonly number[], domainSize: number, rowLength: number = DEFAULT_ROW_LENGTH): VarDeclWithInitialiser {
+        return {
+            name,
+            type: constArrayType(domainSize),
+            initialiser: constArray(from, domainSize, rowLength),
+        };
+    }
+    export function newArrayDecl(name: NameExpr, length: Expr, domainSize: number): VarDeclWithInitialiser {
+        return {
+            name,
+            type: mutableArrayType(domainSize),
+            initialiser: newArray(length, domainSize),
+        };
+    }
+    
     export function access(left: Expr, right: Expr): ArrayAccessExpr {
         return {kind: 'expr.op.access', left, right};
     }
@@ -182,6 +198,7 @@ namespace IR {
     // singletons
     export const BLANK_LINE: BlankLineStmt = {kind: 'stmt.blankline'};
     export const BREAK: BreakStmt = {kind: 'stmt.break'};
+    export const CONTINUE: ContinueStmt = {kind: 'stmt.continue'};
     export const PASS: PassStmt = {kind: 'stmt.pass'};
     
     export function assign(left: NameExpr | AttrExpr | ArrayAccessExpr, op: AssignOp, right: Expr): AssignStmt {

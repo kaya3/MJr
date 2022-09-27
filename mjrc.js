@@ -230,6 +230,10 @@ var CodeGen;
                 out.beginLine();
                 out.write(`// ${stmt.comment}`);
             },
+            'stmt.continue': (out, stmt) => {
+                out.beginLine();
+                out.write('continue;');
+            },
             'stmt.decl.func': (out, stmt) => {
                 const { params, paramTypes } = stmt;
                 out.beginLine();
@@ -692,6 +696,10 @@ var CodeGen;
             'stmt.comment': (out, stmt) => {
                 out.beginLine();
                 out.write(`# ${stmt.comment}`);
+            },
+            'stmt.continue': (out, stmt) => {
+                out.beginLine();
+                out.write('continue');
             },
             'stmt.decl.func': (out, stmt) => {
                 const { params, paramTypes } = stmt;
@@ -1315,6 +1323,22 @@ var IR;
         return { kind: 'expr.array.const', from, domainSize, rowLength };
     }
     IR.constArray = constArray;
+    function constArrayDecl(name, from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
+        return {
+            name,
+            type: IR.constArrayType(domainSize),
+            initialiser: constArray(from, domainSize, rowLength),
+        };
+    }
+    IR.constArrayDecl = constArrayDecl;
+    function newArrayDecl(name, length, domainSize) {
+        return {
+            name,
+            type: IR.mutableArrayType(domainSize),
+            initialiser: newArray(length, domainSize),
+        };
+    }
+    IR.newArrayDecl = newArrayDecl;
     function access(left, right) {
         return { kind: 'expr.op.access', left, right };
     }
@@ -1354,6 +1378,7 @@ var IR;
     // singletons
     IR.BLANK_LINE = { kind: 'stmt.blankline' };
     IR.BREAK = { kind: 'stmt.break' };
+    IR.CONTINUE = { kind: 'stmt.continue' };
     IR.PASS = { kind: 'stmt.pass' };
     function assign(left, op, right) {
         return { kind: 'stmt.assign', op, left, right };
@@ -1528,6 +1553,8 @@ var IR;
         EFFECTIVE_HEIGHT: IR.nameExpr('h'),
         S: IR.nameExpr('s'),
         OLD_S: IR.nameExpr('oldS'),
+        T: IR.nameExpr('t'),
+        OLD_T: IR.nameExpr('oldT'),
         MASK: IR.nameExpr('mask'),
         MASK_CLEAR: IR.nameExpr('mask_clear'),
         MASK_SET: IR.nameExpr('mask_set'),
@@ -6104,7 +6131,7 @@ var IR;
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
-    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, S, OLD_S, AT, AT_X, AT_Y, } = IR.NAMES;
+    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, AT, AT_X, AT_Y, S, OLD_S, T, OLD_T, } = IR.NAMES;
     class Matcher {
         g;
         id;
@@ -6135,39 +6162,48 @@ var IR;
             const colDFA = IR.NAMES.matcherVar(g, id, 'colDFA');
             const rowAcceptSets = IR.NAMES.matcherVar(g, id, 'rowAcceptSets');
             const colAcceptSets = IR.NAMES.matcherVar(g, id, 'colAcceptSets');
+            const rowsToCols = IR.NAMES.matcherVar(g, id, 'rowsToCols');
             const rowStates = IR.NAMES.matcherVar(g, id, 'rowStates');
             const colStates = IR.NAMES.matcherVar(g, id, 'colStates');
             const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), Pattern.key);
-            const [_rowDFA, _colDFA] = makePatternMatcherDFAs(alphabet.key.length, patternMap);
+            const dfas = makePatternMatcherDFAs(alphabet.key.length, patternMap);
             const handlersByPattern = new Map();
             for (const handler of this.matchHandlers) {
                 const key = Pattern.key(handler.pattern);
                 getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            const makeStateChangeHandlers = (dfa, f) => {
-                return dfa.acceptSetMap.map(accepts => {
-                    const out = [];
-                    for (const pattern of accepts) {
-                        const handlers = handlersByPattern.get(Pattern.key(pattern));
-                        if (handlers !== undefined) {
-                            for (const h of handlers) {
-                                out.push(this.makeMatchHandler(h, f));
-                            }
+            const makeStateChangeHandlers = (acceptSetMap, f) => acceptSetMap.map(accepts => {
+                const out = [];
+                for (const pattern of accepts) {
+                    const handlers = handlersByPattern.get(Pattern.key(pattern));
+                    if (handlers !== undefined) {
+                        for (const h of handlers) {
+                            out.push(this.makeMatchHandler(h, f));
                         }
                     }
-                    return IR.block(out);
-                });
-            };
-            const rowDFASize = _rowDFA.size(), colDFASize = _colDFA.size(), rowAcceptSetsCount = _rowDFA.acceptSetMap.size(), colAcceptSetsCount = _colDFA.acceptSetMap.size();
+                }
+                return IR.block(out);
+            });
+            const makeUpdateSamplers = (acceptSets, acceptSetMap) => acceptSetMap.size() > 1 ? [
+                IR.declVars([
+                    { name: T, type: IR.INT_TYPE, initialiser: IR.access(acceptSets, S) },
+                    { name: OLD_T, type: IR.INT_TYPE, initialiser: IR.access(acceptSets, OLD_S) },
+                ]),
+                IR.if_(IR.OP.eq(T, OLD_T), IR.CONTINUE),
+                IR.switch_(OLD_T, makeStateChangeHandlers(acceptSetMap, 'del')),
+                IR.switch_(T, makeStateChangeHandlers(acceptSetMap, 'add')),
+            ] : [];
+            const rowDFASize = dfas.rowDFA.size(), colDFASize = dfas.colDFA.size();
             return [
                 IR.declVars([
-                    { name: rowDFA, type: IR.constArrayType(rowDFASize), initialiser: IR.constArray(_rowDFA.toFlatArray(), rowDFASize, _rowDFA.alphabetSize) },
-                    { name: rowAcceptSets, type: IR.constArrayType(rowAcceptSetsCount), initialiser: IR.constArray(_rowDFA.getAcceptSetIDs(), rowAcceptSetsCount) },
-                    { name: colDFA, type: IR.constArrayType(colDFASize), initialiser: IR.constArray(_colDFA.toFlatArray(), colDFASize, _colDFA.alphabetSize) },
-                    { name: colAcceptSets, type: IR.constArrayType(colAcceptSetsCount), initialiser: IR.constArray(_colDFA.getAcceptSetIDs(), colAcceptSetsCount) },
-                    { name: rowStates, type: IR.mutableArrayType(rowDFASize), initialiser: IR.newArray(g.n, rowDFASize) },
-                    { name: colStates, type: IR.mutableArrayType(colDFASize), initialiser: IR.newArray(g.n, colDFASize) },
+                    IR.constArrayDecl(rowDFA, dfas.rowDFA.toFlatArray(), rowDFASize, dfas.rowDFA.alphabetSize),
+                    IR.constArrayDecl(rowAcceptSets, dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()),
+                    IR.constArrayDecl(rowsToCols, dfas.rowsToCols, dfas.colDFA.alphabetSize),
+                    IR.constArrayDecl(colDFA, dfas.colDFA.toFlatArray(), colDFASize, dfas.colDFA.alphabetSize),
+                    IR.constArrayDecl(colAcceptSets, dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size()),
+                    IR.newArrayDecl(rowStates, g.n, rowDFASize),
+                    IR.newArrayDecl(colStates, g.n, colDFASize),
                 ]),
                 IR.declFunc(updateFuncName, undefined, [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT], [IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE], IR.VOID_TYPE, IR.block([
                     IR.declVars([
@@ -6181,14 +6217,12 @@ var IR;
                         IR.forRangeReverse(AT_X, IR.ZERO, END_X, [
                             g.declareAtXY(AT_X, AT_Y),
                             IR.declVar(OLD_S, IR.INT_TYPE, IR.access(rowStates, AT)),
-                            IR.assign(S, '=', IR.access(rowDFA, IR.OP.multAddConstant(S, _rowDFA.alphabetSize, g.access(AT)))),
-                            IR.if_(IR.OP.ne(S, OLD_S), IR.block([
-                                IR.assign(IR.access(rowStates, AT), '=', S),
-                                // update samplers
-                                IR.switch_(IR.access(rowAcceptSets, OLD_S), makeStateChangeHandlers(_rowDFA, 'del')),
-                                IR.switch_(IR.access(rowAcceptSets, S), makeStateChangeHandlers(_rowDFA, 'add')),
-                                IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)),
-                            ]), IR.if_(IR.OP.lt(AT_X, START_X), IR.BREAK)),
+                            IR.assign(S, '=', IR.access(rowDFA, IR.OP.multAddConstant(S, dfas.rowDFA.alphabetSize, g.access(AT)))),
+                            IR.if_(IR.OP.eq(S, OLD_S), IR.if_(IR.OP.lt(AT_X, START_X), IR.BREAK, IR.CONTINUE)),
+                            IR.assign(IR.access(rowStates, AT), '=', S),
+                            IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)),
+                            // must occur last, since it uses `continue`
+                            ...makeUpdateSamplers(rowAcceptSets, dfas.rowsAcceptSetMap),
                         ]),
                     ]),
                     IR.BLANK_LINE,
@@ -6198,13 +6232,11 @@ var IR;
                         IR.forRangeReverse(AT_Y, IR.ZERO, END_Y, [
                             g.declareAtXY(AT_X, AT_Y),
                             IR.declVar(OLD_S, IR.INT_TYPE, IR.access(colStates, AT)),
-                            IR.assign(S, '=', IR.access(colDFA, IR.OP.multAddConstant(S, _colDFA.alphabetSize, IR.access(rowAcceptSets, IR.access(rowStates, AT))))),
-                            IR.if_(IR.OP.ne(S, OLD_S), IR.block([
-                                IR.assign(IR.access(colStates, AT), '=', S),
-                                // update samplers
-                                IR.switch_(IR.access(colAcceptSets, OLD_S), makeStateChangeHandlers(_colDFA, 'del')),
-                                IR.switch_(IR.access(colAcceptSets, S), makeStateChangeHandlers(_colDFA, 'add')),
-                            ]), IR.if_(IR.OP.lt(AT_Y, START_Y), IR.BREAK)),
+                            IR.assign(S, '=', IR.access(colDFA, IR.OP.multAddConstant(S, dfas.colDFA.alphabetSize, IR.access(rowsToCols, IR.access(rowStates, AT))))),
+                            IR.if_(IR.OP.eq(S, OLD_S), IR.if_(IR.OP.lt(AT_Y, START_Y), IR.BREAK, IR.CONTINUE)),
+                            IR.assign(IR.access(colStates, AT), '=', S),
+                            // must occur last, since it uses `continue`
+                            ...makeUpdateSamplers(colAcceptSets, dfas.colsAcceptSetMap),
                         ]),
                     ]),
                 ])),
@@ -6223,26 +6255,55 @@ var IR;
      * matches are reported where the patterns start rather than where they end.
      */
     function makePatternMatcherDFAs(alphabetSize, patterns) {
-        const rowPatterns = IDMap.ofWithKey(patterns.map(Pattern.rowsOf).flat(), Pattern.key);
-        const rowRegex = _makeRegex(rowPatterns.map(pattern => ({
+        const allRows = IDMap.withKey(Pattern.key);
+        const rowMap = patterns.map(pattern => Pattern.rowsOf(pattern).map(row => allRows.getOrCreateID(row)));
+        const rowRegex = _makeRegex(allRows.map(pattern => ({
             pattern,
             seq: pattern.masks.map(ISet.toArray),
         })));
         const rowDFA = Regex.compile(alphabetSize, rowRegex, Pattern.key);
-        const acceptingSets = makeArray(rowPatterns.size(), () => []);
-        rowDFA.acceptSetMap.forEach((patterns, id) => {
+        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(row => patterns.has(row));
+        // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
+        const keepRows = ISet.empty(allRows.size());
+        for (const rowIDs of rowMap) {
+            if (rowIDs.length === 1) {
+                continue;
+            }
+            for (const rowID of rowIDs) {
+                ISet.add(keepRows, rowID);
+            }
+        }
+        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(row => ISet.has(keepRows, allRows.getID(row)));
+        const acceptingSets = makeArray(allRows.size(), () => []);
+        rowsToColsMap.forEach((patterns, id) => {
             for (const pattern of patterns) {
-                const patternID = rowPatterns.getID(pattern);
+                const patternID = allRows.getID(pattern);
                 acceptingSets[patternID].push(id);
             }
         });
-        // patterns with only one row can be matched by the rowDFA directly
-        const colRegex = _makeRegex(patterns.filter(pattern => pattern.height > 1).map(pattern => ({
-            pattern,
-            seq: Pattern.rowsOf(pattern).map(row => acceptingSets[rowPatterns.getID(row)]),
-        })));
-        const colDFA = Regex.compile(rowDFA.acceptSetMap.size(), colRegex, Pattern.key);
-        return [rowDFA, colDFA];
+        const colRegexPatterns = [];
+        patterns.forEach((pattern, i) => {
+            // patterns with only one row will be matched by the rowDFA directly
+            if (pattern.height === 1) {
+                return;
+            }
+            colRegexPatterns.push({
+                pattern,
+                seq: rowMap[i].map(rowID => acceptingSets[rowID]),
+            });
+        });
+        const colRegex = _makeRegex(colRegexPatterns);
+        const colDFA = Regex.compile(rowsToColsMap.size(), colRegex, Pattern.key);
+        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap();
+        return {
+            rowDFA,
+            rowsAcceptSetIDs,
+            rowsAcceptSetMap,
+            rowsToCols,
+            colDFA,
+            colsAcceptSetIDs,
+            colsAcceptSetMap,
+        };
     }
     function _makeRegex(patterns) {
         return Regex.concat([
@@ -6843,8 +6904,6 @@ class NFA {
         if (startID !== 0) {
             throw new Error();
         }
-        const acceptMap = IDMap.withKey(keyFunc);
-        const acceptSetMap = IDMap.withKey(set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))));
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for (let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {
             const transitionStates = makeArray(alphabetSize, () => ISet.empty(nodes.length));
@@ -6858,23 +6917,20 @@ class NFA {
             });
             dfaNodes.push({
                 transitions: transitionStates.map(getNodeID),
-                acceptSetID: acceptSetMap.getOrCreateID(accepts),
                 accepts,
             });
         }
-        return new DFA(alphabetSize, acceptMap, acceptSetMap, dfaNodes);
+        return new DFA(alphabetSize, dfaNodes, keyFunc);
     }
 }
 class DFA {
     alphabetSize;
-    acceptMap;
-    acceptSetMap;
     nodes;
-    constructor(alphabetSize, acceptMap, acceptSetMap, nodes) {
+    keyFunc;
+    constructor(alphabetSize, nodes, keyFunc) {
         this.alphabetSize = alphabetSize;
-        this.acceptMap = acceptMap;
-        this.acceptSetMap = acceptSetMap;
         this.nodes = nodes;
+        this.keyFunc = keyFunc;
         //console.log(`DFA with ${nodes.length} nodes on alphabet of size ${alphabetSize} and ${acceptSetMap.size()} accept sets`);
     }
     /**
@@ -6883,41 +6939,37 @@ class DFA {
     size() {
         return this.nodes.length;
     }
-    go(state, letterID) {
-        const { nodes, alphabetSize } = this;
-        if (state >= 0 && state < nodes.length && letterID >= 0 && letterID < alphabetSize) {
-            return nodes[state].transitions[letterID];
-        }
-        else {
-            throw new Error();
-        }
-    }
-    getAccepts(state) {
-        return this.nodes[state].accepts;
-    }
-    getAcceptSetID(state) {
-        return this.nodes[state].acceptSetID;
-    }
-    getAcceptSetIDs() {
-        return this.nodes.map(node => node.acceptSetID);
-    }
     toFlatArray() {
         return this.nodes.flatMap(node => node.transitions);
     }
+    getAcceptSetMap(predicate) {
+        const { nodes } = this;
+        const acceptSets = nodes.map(predicate !== undefined
+            ? node => node.accepts.filter(predicate)
+            : node => node.accepts);
+        const acceptMap = IDMap.withKey(this.keyFunc);
+        const acceptSetMap = IDMap.ofWithKey(acceptSets, set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))));
+        return [
+            acceptSets.map(set => acceptSetMap.getID(set)),
+            acceptSetMap,
+        ];
+    }
     /**
-     * Returns an array mapping each accept to the set of node IDs which accept it.
+     * Returns an iterable mapping each accept to the set of node IDs which
+     * accept it.
      */
     computeAcceptingStates() {
-        const { nodes, acceptMap } = this;
+        const { nodes, keyFunc } = this;
         const n = nodes.length;
-        const table = makeArray(acceptMap.size(), () => ISet.empty(n));
+        const map = new Map();
         for (let id = 0; id < n; ++id) {
             for (const accept of nodes[id].accepts) {
-                const acceptID = acceptMap.getID(accept);
-                ISet.add(table[acceptID], id);
+                const key = keyFunc(accept);
+                const set = getOrCompute(map, key, () => ISet.empty(n));
+                ISet.add(set, id);
             }
         }
-        return table;
+        return map.values();
     }
     /**
      * Returns an equivalent DFA with the minimum possible number of states.
@@ -6967,15 +7019,13 @@ class DFA {
         reps.getOrCreateID(0);
         partition.forEachRepresentative(x => reps.getOrCreateID(x));
         const repNodes = reps.map(rep => {
-            const { transitions, acceptSetID, accepts } = this.nodes[rep];
+            const { transitions, accepts } = this.nodes[rep];
             return {
                 transitions: transitions.map(nodeID => reps.getID(nodeID)),
-                acceptSetID,
                 accepts,
             };
         });
-        // TODO: alphabet reduction
-        return new DFA(alphabetSize, this.acceptMap, this.acceptSetMap, repNodes);
+        return new DFA(alphabetSize, repNodes, this.keyFunc);
     }
 }
 /**
@@ -7093,6 +7143,9 @@ class IDMap {
     }
     map(f) {
         return this.arr.map(f);
+    }
+    flatMap(f) {
+        return this.arr.flatMap(f);
     }
 }
 /**

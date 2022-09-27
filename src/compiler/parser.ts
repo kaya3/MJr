@@ -906,13 +906,16 @@ namespace Parser {
          */
         private parseCharSet(beginTok: Tokenizer.Token): AST.CharSet {
             const {pos} = beginTok;
+            const inverted = this.q.pollIfS('^');
+            
             const chars: AST.Char[] = [];
             while(!this.q.pollIfS(']')) {
-                const tok = this.q.poll();
-                chars.push(tok as AST.Char);
+                const tok = this.expectPoll('PATTERN_CHAR');
+                if(tok !== undefined) { chars.push(tok); }
             }
-            if(chars.length === 0) { this.diagnostics.syntaxError('empty charset', pos); }
-            return {kind: 'CHARSET', chars, pos};
+            if(chars.length === 0 && !inverted) { this.diagnostics.syntaxError('empty charset', pos); }
+            
+            return {kind: 'CHARSET', chars, inverted, pos};
         }
         
         /**

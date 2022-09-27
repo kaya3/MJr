@@ -82,6 +82,7 @@ namespace Tokenizer {
         SLASH,
         HASH,
         BACKSLASH,
+        CARET,
         DOT,
         OTHER_OP,
         OTHER_PUNCTUATION,
@@ -113,6 +114,7 @@ namespace Tokenizer {
         ['/', C.SLASH],
         ['#', C.HASH],
         ['\\', C.BACKSLASH],
+        ['^', C.CARET],
         ['.', C.DOT],
         ['+*%', C.OTHER_OP],
         ['@|,:', C.OTHER_PUNCTUATION],
@@ -232,6 +234,8 @@ namespace Tokenizer {
                         case C.RSQB:
                             return ['PUNCTUATION', col + 1, depth - 1, mode === Mode.PATTERN ? Mode.NORMAL : Mode.PATTERN];
                         
+                        case C.CARET:
+                            return [mode === Mode.CHARSET ? 'PUNCTUATION' : 'ERROR', col + 1, depth, mode];
                         case C.DOT:
                             return [mode === Mode.PATTERN ? 'PATTERN_CHAR' : 'ERROR', col + 1, depth, mode];
                         

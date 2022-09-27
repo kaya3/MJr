@@ -25,7 +25,7 @@ Args = NameValuePairs?
 NameValuePairs = '{' (NameValuePair ',')* NameValuePair? '}'
 NameValuePair  = SimpleNameExpr '=' Expression
 
-CharSet = '[' Char+ ']'
+CharSet = '[' (Char+ | '^' Char*) ']'
 Char    = PATTERN_CHAR
 ```
 

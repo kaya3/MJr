@@ -77,10 +77,20 @@ namespace ISet {
     /**
      * Adds all the members of the set `b` to the set `a`, in O(N) time.
      */
-    export function addAll(a: MutableISet, b: ISet): void {
+     export function addAll(a: MutableISet, b: ISet): void {
         if(a.length < b.length) { throw new Error(); }
         for(let i = 0; i < b.length; ++i) {
             a[i] |= b[i];
+        }
+    }
+    
+    /**
+     * Removes all the members of the set `b` to the set `a`, in O(N) time.
+     */
+    export function removeAll(a: MutableISet, b: ISet): void {
+        if(a.length < b.length) { throw new Error(); }
+        for(let i = 0; i < b.length; ++i) {
+            a[i] &= ~b[i];
         }
     }
     

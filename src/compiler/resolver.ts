@@ -611,16 +611,21 @@ namespace Resolver {
         let ok = true, hasUnions = false;
         for(const c of value) {
             if(c.kind === 'CHARSET') {
-                const mask = ISet.empty(alphabet.key.length);
+                const mask = c.inverted ? ISet.full(alphabet.key.length) : ISet.empty(alphabet.key.length);
                 for(const cc of c.chars) {
                     const cMask = ctx.resolveChar(cc);
-                    if(cMask !== undefined) {
-                        ISet.addAll(mask, cMask);
-                    } else {
+                    if(cMask === undefined) {
                         ok = false;
+                    } else if(c.inverted) {
+                        ISet.removeAll(mask, cMask);
+                    } else {
+                        ISet.addAll(mask, cMask);
                     }
                 }
-                const isUnion = ISet.size(mask) < alphabet.key.length;
+                
+                const size = ISet.size(mask);
+                if(size === 0) { ctx.error('empty charset', c.pos); }
+                const isUnion = size < alphabet.key.length;
                 pattern.push(isUnion ? -2 : -1);
                 masks.push(mask);
                 hasUnions ||= isUnion;

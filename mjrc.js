@@ -3798,15 +3798,18 @@ var Parser;
          */
         parseCharSet(beginTok) {
             const { pos } = beginTok;
+            const inverted = this.q.pollIfS('^');
             const chars = [];
             while (!this.q.pollIfS(']')) {
-                const tok = this.q.poll();
-                chars.push(tok);
+                const tok = this.expectPoll('PATTERN_CHAR');
+                if (tok !== undefined) {
+                    chars.push(tok);
+                }
             }
-            if (chars.length === 0) {
+            if (chars.length === 0 && !inverted) {
                 this.diagnostics.syntaxError('empty charset', pos);
             }
-            return { kind: 'CHARSET', chars, pos };
+            return { kind: 'CHARSET', chars, inverted, pos };
         }
         /**
          * ```none
@@ -4468,17 +4471,24 @@ var Resolver;
         let ok = true, hasUnions = false;
         for (const c of value) {
             if (c.kind === 'CHARSET') {
-                const mask = ISet.empty(alphabet.key.length);
+                const mask = c.inverted ? ISet.full(alphabet.key.length) : ISet.empty(alphabet.key.length);
                 for (const cc of c.chars) {
                     const cMask = ctx.resolveChar(cc);
-                    if (cMask !== undefined) {
-                        ISet.addAll(mask, cMask);
-                    }
-                    else {
+                    if (cMask === undefined) {
                         ok = false;
                     }
+                    else if (c.inverted) {
+                        ISet.removeAll(mask, cMask);
+                    }
+                    else {
+                        ISet.addAll(mask, cMask);
+                    }
                 }
-                const isUnion = ISet.size(mask) < alphabet.key.length;
+                const size = ISet.size(mask);
+                if (size === 0) {
+                    ctx.error('empty charset', c.pos);
+                }
+                const isUnion = size < alphabet.key.length;
                 pattern.push(isUnion ? -2 : -1);
                 masks.push(mask);
                 hasUnions ||= isUnion;
@@ -5363,14 +5373,14 @@ var Tokenizer;
         'use',
     ];
     const C_MAP = (function (...pairs) {
-        const arr = emptyArray(128, 20 /* C.OTHER */);
+        const arr = emptyArray(128, 21 /* C.OTHER */);
         for (const [chars, c] of pairs) {
             for (let i = 0; i < chars.length; ++i) {
                 arr[chars.charCodeAt(i)] = c;
             }
         }
         return arr;
-    })([' \t', 0 /* C.WHITESPACE */], ['abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_', 1 /* C.LETTER_OR_UNDERSCORE */], ['0123456789', 2 /* C.DIGIT */], ['({', 3 /* C.LPAREN */], [')}', 4 /* C.RPAREN */], ['[', 5 /* C.LSQB */], [']', 6 /* C.RSQB */], ['<', 7 /* C.LANGLE */], ['>', 8 /* C.RANGLE */], ["'", 9 /* C.QUOTE */], ['"', 10 /* C.DBLQUOTE */], ['=', 11 /* C.EQUALS */], ['!', 12 /* C.EXCLAMATION_MARK */], ['-', 13 /* C.MINUS */], ['/', 14 /* C.SLASH */], ['#', 15 /* C.HASH */], ['\\', 16 /* C.BACKSLASH */], ['.', 17 /* C.DOT */], ['+*%', 18 /* C.OTHER_OP */], ['@|,:', 19 /* C.OTHER_PUNCTUATION */]);
+    })([' \t', 0 /* C.WHITESPACE */], ['abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_', 1 /* C.LETTER_OR_UNDERSCORE */], ['0123456789', 2 /* C.DIGIT */], ['({', 3 /* C.LPAREN */], [')}', 4 /* C.RPAREN */], ['[', 5 /* C.LSQB */], [']', 6 /* C.RSQB */], ['<', 7 /* C.LANGLE */], ['>', 8 /* C.RANGLE */], ["'", 9 /* C.QUOTE */], ['"', 10 /* C.DBLQUOTE */], ['=', 11 /* C.EQUALS */], ['!', 12 /* C.EXCLAMATION_MARK */], ['-', 13 /* C.MINUS */], ['/', 14 /* C.SLASH */], ['#', 15 /* C.HASH */], ['\\', 16 /* C.BACKSLASH */], ['^', 17 /* C.CARET */], ['.', 18 /* C.DOT */], ['+*%', 19 /* C.OTHER_OP */], ['@|,:', 20 /* C.OTHER_PUNCTUATION */]);
     class LineTokenizer {
         lineString;
         lineCodes;
@@ -5378,7 +5388,7 @@ var Tokenizer;
             this.lineString = lineString;
             this.lineCodes = makeArray(lineString.length, i => {
                 const charCode = lineString.charCodeAt(i);
-                return charCode >= 0 && charCode < C_MAP.length ? C_MAP[charCode] : 20 /* C.OTHER */;
+                return charCode >= 0 && charCode < C_MAP.length ? C_MAP[charCode] : 21 /* C.OTHER */;
             });
         }
         scan(i, cs) {
@@ -5436,7 +5446,7 @@ var Tokenizer;
                         // intentional fall-through
                         case 2 /* C.DIGIT */: {
                             const end = this.scan(col, [2 /* C.DIGIT */]);
-                            if (!this.has(end, 17 /* C.DOT */)) {
+                            if (!this.has(end, 18 /* C.DOT */)) {
                                 return ['INT', end, depth, mode];
                             }
                             else if (this.has(end + 1, 2 /* C.DIGIT */)) {
@@ -5446,11 +5456,11 @@ var Tokenizer;
                                 return ['ERROR', end + 1, depth, mode];
                             }
                         }
-                        case 17 /* C.DOT */:
-                        case 18 /* C.OTHER_OP */:
+                        case 18 /* C.DOT */:
+                        case 19 /* C.OTHER_OP */:
                             // '.', '+', '*' or '%'
                             return ['OP', col + 1, depth, mode];
-                        case 19 /* C.OTHER_PUNCTUATION */:
+                        case 20 /* C.OTHER_PUNCTUATION */:
                             return ['PUNCTUATION', col + 1, depth, mode];
                         default:
                             return ['ERROR', col + 1, depth, mode];
@@ -5468,16 +5478,18 @@ var Tokenizer;
                                 : ['ERROR', col + 1, depth, mode];
                         case 6 /* C.RSQB */:
                             return ['PUNCTUATION', col + 1, depth - 1, mode === 1 /* Mode.PATTERN */ ? 0 /* Mode.NORMAL */ : 1 /* Mode.PATTERN */];
-                        case 17 /* C.DOT */:
+                        case 17 /* C.CARET */:
+                            return [mode === 2 /* Mode.CHARSET */ ? 'PUNCTUATION' : 'ERROR', col + 1, depth, mode];
+                        case 18 /* C.DOT */:
                             return [mode === 1 /* Mode.PATTERN */ ? 'PATTERN_CHAR' : 'ERROR', col + 1, depth, mode];
                         case 1 /* C.LETTER_OR_UNDERSCORE */:
                         case 2 /* C.DIGIT */:
                         case 11 /* C.EQUALS */:
                         case 12 /* C.EXCLAMATION_MARK */:
                         case 13 /* C.MINUS */:
-                        case 18 /* C.OTHER_OP */:
-                        case 19 /* C.OTHER_PUNCTUATION */:
-                        case 20 /* C.OTHER */:
+                        case 19 /* C.OTHER_OP */:
+                        case 20 /* C.OTHER_PUNCTUATION */:
+                        case 21 /* C.OTHER */:
                             return ['PATTERN_CHAR', col + 1, depth, mode];
                         default:
                             return ['ERROR', col + 1, depth, mode];
@@ -7227,6 +7239,18 @@ var ISet;
         }
     }
     ISet.addAll = addAll;
+    /**
+     * Removes all the members of the set `b` to the set `a`, in O(N) time.
+     */
+    function removeAll(a, b) {
+        if (a.length < b.length) {
+            throw new Error();
+        }
+        for (let i = 0; i < b.length; ++i) {
+            a[i] &= ~b[i];
+        }
+    }
+    ISet.removeAll = removeAll;
     /**
      * Removes all elements from the set.
      */

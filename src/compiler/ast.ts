@@ -51,7 +51,7 @@ namespace AST {
     export interface GridExpr extends _ExprNode<'grid', {alphabetKey: string, scaleX?: Expression, scaleY?: Expression, periodic?: Expression}> {}
     
     export type Char = Tokenizer.Token<'PATTERN_CHAR'>
-    export interface CharSet extends Readonly<{kind: 'CHARSET', chars: readonly Char[], pos: SourcePosition}> {}
+    export interface CharSet extends Readonly<{kind: 'CHARSET', chars: readonly Char[], inverted: boolean, pos: SourcePosition}> {}
     
     // rules
     type _RuleNode<K extends string, T> = _Node<`rule.${K}`, T>

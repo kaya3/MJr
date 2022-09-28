@@ -38,8 +38,8 @@ namespace Regex {
     
     export const DOT_STAR = kleeneStar<never>(WILDCARD);
     
-    export function compile<T>(alphabetSize: number, regex: Node<T>, keyFunc: (accept: T) => PrimitiveKey): DFA<T> {
-        return new NFA(alphabetSize, regex).toDFA(keyFunc).minimise();
+    export function compile<T>(alphabetSize: number, regex: Node<T>): DFA<T> {
+        return new NFA(alphabetSize, regex).toDFA();
     }
 }
 
@@ -132,7 +132,7 @@ class NFA<T> {
         return out;
     }
     
-    public toDFA(keyFunc: (accept: T) => PrimitiveKey): DFA<T> {
+    public toDFA(): DFA<T> {
         // https://en.wikipedia.org/wiki/Powerset_construction
         
         const {alphabetSize, nodes} = this;
@@ -181,7 +181,7 @@ class NFA<T> {
             });
         }
         
-        return new DFA(alphabetSize, dfaNodes, keyFunc);
+        return new DFA(alphabetSize, dfaNodes);
     }
 }
 
@@ -194,7 +194,6 @@ class DFA<T> {
     public constructor(
         public readonly alphabetSize: number,
         private readonly nodes: readonly DFANode<T>[],
-        private readonly keyFunc: (accept: T) => PrimitiveKey,
     ) {
         //console.log(`DFA with ${nodes.length} nodes on alphabet of size ${alphabetSize} and ${acceptSetMap.size()} accept sets`);
     }
@@ -210,20 +209,26 @@ class DFA<T> {
         return this.nodes.flatMap(node => node.transitions);
     }
     
-    public getAcceptSetMap(predicate?: (accept: T) => boolean): [readonly number[], ReadonlyIDMap<readonly T[]>] {
+    /**
+     * Returns a pair `[acceptSetIDs, acceptSetMap]` where `acceptSetMap` is an
+     * IDMap of all distinct accept sets recognised by this DFA, and `acceptSetIDs`
+     * maps each DFA state to its accept set's ID in `acceptSetMap`.
+     */
+    public getAcceptSetMap<S extends T>(acceptMap: ReadonlyIDMap<T>, predicate: (accept: T) => accept is S): [readonly number[], ReadonlyIDMap<readonly S[]>];
+    public getAcceptSetMap(acceptMap: ReadonlyIDMap<T>, predicate?: (accept: T) => boolean): [readonly number[], ReadonlyIDMap<readonly T[]>];
+    public getAcceptSetMap(acceptMap: ReadonlyIDMap<T>, predicate?: (accept: T) => boolean): [readonly number[], ReadonlyIDMap<readonly T[]>] {
         const {nodes} = this;
         const acceptSets = nodes.map(
             predicate !== undefined
             ? node => node.accepts.filter(predicate)
             : node => node.accepts
         );
-        const acceptMap = IDMap.withKey(this.keyFunc);
         const acceptSetMap = IDMap.ofWithKey(
             acceptSets,
-            set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))),
+            set => ISet.key(acceptMap.getIDSet(set)),
         );
         return [
-            acceptSets.map(set => acceptSetMap.getID(set)),
+            acceptSetMap.getIDs(acceptSets),
             acceptSetMap,
         ];
     }
@@ -232,8 +237,8 @@ class DFA<T> {
      * Returns an iterable mapping each accept to the set of node IDs which
      * accept it.
      */
-    private computeAcceptingStates(): Iterable<ISet> {
-        const {nodes, keyFunc} = this;
+    private computeAcceptingStates(keyFunc: (accept: T) => PrimitiveKey): Iterable<ISet> {
+        const {nodes} = this;
         const n = nodes.length;
         const map = new Map<PrimitiveKey, MutableISet>();
         for(let id = 0; id < n; ++id) {
@@ -249,7 +254,7 @@ class DFA<T> {
     /**
      * Returns an equivalent DFA with the minimum possible number of states.
      */
-    public minimise(): DFA<T> {
+    public minimise(keyFunc: (accept: T) => PrimitiveKey): DFA<T> {
         // https://en.wikipedia.org/wiki/DFA_minimization#Hopcroft's_algorithm
         
         const {alphabetSize, nodes} = this;
@@ -264,7 +269,7 @@ class DFA<T> {
         }
         
         const partition = new Partition(n);
-        for(const d of this.computeAcceptingStates()) { partition.refine(d); }
+        for(const d of this.computeAcceptingStates(keyFunc)) { partition.refine(d); }
         
         // pre-allocate
         const refinement = ISet.empty(n);
@@ -296,11 +301,25 @@ class DFA<T> {
         const repNodes: readonly DFANode<T>[] = reps.map(rep => {
             const {transitions, accepts} = this.nodes[rep];
             return {
-                transitions: transitions.map(nodeID => reps.getID(nodeID)),
+                transitions: reps.getIDs(transitions),
                 accepts,
             };
         });
         
-        return new DFA(alphabetSize, repNodes, this.keyFunc);
+        return new DFA(alphabetSize, repNodes);
+    }
+    
+    /**
+     * Returns a new DFA, with the accept sets replaced using the function `f`.
+     */
+    public map<S>(f: (acceptSet: readonly T[]) => readonly S[]): DFA<S> {
+        const mappedNodes = this.nodes.map(node => {
+            const {transitions, accepts} = node;
+            return {
+                transitions,
+                accepts: f(accepts),
+            };
+        });
+        return new DFA(this.alphabetSize, mappedNodes);
     }
 }

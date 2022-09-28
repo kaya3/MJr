@@ -217,7 +217,7 @@ namespace Compiler {
             return f(this, expr);
         }
         
-        literal(c: Type.ConstantValue): IR.Expr {
+        literal(c: Type.ConstantValue, pos: SourcePosition): IR.Expr {
             switch(c.kind) {
                 case 'bool': return c.value ? IR.TRUE : IR.FALSE;
                 case 'float': return IR.float(c.value);
@@ -226,7 +226,7 @@ namespace Compiler {
                 
                 case 'dict': {
                     const type = this.dictType(c.type.entryTypes);
-                    const values = Array.from(type.keys, k => this.literal(c.value.get(k)!));
+                    const values = Array.from(type.keys, k => this.literal(c.value.get(k)!, pos));
                     return this.internLiteral(IR.dict(type, values), type);
                 }
                 case 'fraction': {
@@ -237,10 +237,13 @@ namespace Compiler {
                 case 'grid': {
                     return this.grids[c.value].useObj();
                 }
-                case 'pattern': {
+                case 'pattern.in': {
+                    this.notSupported('input pattern in non-constant expression', pos);
+                    return IR.NULL;
+                }
+                case 'pattern.out': {
                     const {width, height, pattern} = c.value;
                     const patternExpr = IR.constArray(pattern, 256, width);
-                    // TODO: if masks are needed, flatten them into one array
                     return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), this.type(c.type));
                 }
                 case 'position': {
@@ -252,6 +255,7 @@ namespace Compiler {
         }
         
         type(type: Type.Type): IR.IRType {
+            if(type.kind === 'pattern.in') { throw new Error(); }
             return type.kind === 'dict'
                 ? this.dictType(type.entryTypes)
                 : TYPES_TO_IR[type.kind];
@@ -308,13 +312,13 @@ namespace Compiler {
         }
     }
     
-    const TYPES_TO_IR: IRecord<Exclude<Type.Kind, 'dict'>, IR.IRType> = {
+    const TYPES_TO_IR: IRecord<Exclude<Type.Kind, 'dict' | 'pattern.in'>, IR.IRType> = {
         bool: IR.BOOL_TYPE,
         float: IR.FLOAT_TYPE,
         fraction: IR.FRACTION_TYPE,
         grid: IR.GRID_TYPE,
         int: IR.INT_TYPE,
-        pattern: IR.PATTERN_TYPE,
+        'pattern.out': IR.PATTERN_TYPE,
         position: IR.INT_TYPE,
         str: IR.STR_TYPE,
     };
@@ -322,7 +326,7 @@ namespace Compiler {
     type ExprCompileFunc<K extends ASG.Expression['kind']> = (c: Compiler, expr: Extract<ASG.Expression, {readonly kind: K}>) => IR.Expr
     const EXPR_COMPILE_FUNCS: {readonly [K in ASG.Expression['kind']]: ExprCompileFunc<K>} = {
         'expr.attr.dict': (c, expr) => IR.attr(c.expr(expr.left), expr.attr),
-        'expr.attr.grid': (c, expr) => c.grids[expr.grid][expr.attr],
+        'expr.attr.grid': (c, expr) => c.grids[expr.grid].attr(expr.attr),
         'expr.attr.position': (c, expr) => {
             const g = c.grids[expr.left.type.inGrid];
             
@@ -344,7 +348,7 @@ namespace Compiler {
             // exhaustivity check
             const _: never = expr.attr;
         },
-        'expr.constant': (c, expr) => c.literal(expr.constant),
+        'expr.constant': (c, expr) => c.literal(expr.constant, expr.pos),
         'expr.count': (c, expr) => c.grids[expr.inGrid].makeCounter(expr.patterns),
         'expr.decl': (c, expr) => {
             // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
@@ -422,12 +426,34 @@ namespace Compiler {
         'stmt.put': (c, stmt) => {
             const g = c.grids[stmt.inGrid];
             const {pattern} = stmt;
+            
+            // check whether pattern is effective
+            let isEffective: IR.Expr;
+            if(pattern.kind === 'expr.constant') {
+                const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.access(g.relativeIndex(dx, dy)), IR.int(c)));
+                if(checks.length === 0) { throw new Error(); }
+                isEffective = checks.reduce(OP.or);
+            } else {
+                // non-constant pattern will be checked in _writeCondition
+                isEffective = IR.TRUE;
+            }
+            
             return IR.block([
-                // TODO: check bounds, given size of pattern
                 g.declareAtIndex(c.expr(stmt.at)),
+                
+                // check bounds, given size of pattern
+                g.grid.periodic ? IR.PASS : IR.if_(
+                    OP.or(
+                        pattern.type.width > 1 ? OP.ge(OP.add(AT_X, IR.int(pattern.type.width - 1)), g.width) : IR.FALSE,
+                        pattern.type.height > 1 ? OP.ge(OP.add(AT_Y, IR.int(pattern.type.height - 1)), g.height) : IR.FALSE,
+                    ),
+                    IR.throw_('pattern would be out of bounds'),
+                ),
+                
                 pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
+                
                 IR.if_(
-                    _writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition),
+                    OP.and(isEffective, _writeCondition(c, g, pattern, P, stmt.condition)),
                     _doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate),
                 ),
             ]);
@@ -455,7 +481,7 @@ namespace Compiler {
         return IR.PASS;
     }
     
-    function _doWrite(c: Compiler, outGrid: IR.Grid, from: Pattern | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
+    function _doWrite(c: Compiler, outGrid: IR.Grid, from: PatternTree | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
         const out: IR.Stmt[] = [];
         let mX: IR.Expr, mY: IR.Expr, eW: IR.Expr, eH: IR.Expr;
         
@@ -465,7 +491,7 @@ namespace Compiler {
             
             let minX = value.width, maxX = 0, minY = value.height, maxY = 0;
             value.forEach((dx, dy, colour) => {
-                const ineffective = from !== undefined && from.pattern[dx + from.width * dy] === colour;
+                const ineffective = from !== undefined && from.kind === 'leaf' && from.pattern[dx + from.width * dy] === colour;
                 if(useMask || !ineffective) {
                     out.push(outGrid.write(
                         outGrid.relativeIndex(dx, dy),
@@ -510,26 +536,16 @@ namespace Compiler {
         return IR.block(out);
     }
     
-    function _writeCondition(c: Compiler, g: IR.Grid, patternExpr: ASG.Prop<'pattern.out'> | undefined, patternVar: IR.NameExpr | undefined, uncertainties: readonly number[] | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
-        let out: IR.Expr[] = [];
-        if(patternExpr !== undefined) {
-            if(patternExpr.kind !== 'expr.constant') {
-                if(patternVar === undefined) { throw new Error(); }
-                out.push(IR.libMethodCall('Pattern', 'hasEffect', patternVar, [g.useObj(), AT_X, AT_Y]));
-            } else if(uncertainties !== undefined) {
-                // uncertainties array should be non-empty, so `reduce` doesn't need an initial value
-                if(uncertainties.length === 0) { throw new Error(); }
-                
-                const {pattern, width} = patternExpr.constant.value;
-                const isEffective = uncertainties.map(i => OP.ne(
-                    g.access(g.relativeIndex(i % width, (i / width) | 0)),
-                    IR.int(pattern[i]),
-                ));
-                out.push(isEffective.reduce(OP.or));
-            }
+    function _writeCondition(c: Compiler, g: IR.Grid, patternExpr: ASG.Prop<'pattern.out'> | undefined, patternVar: IR.NameExpr | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
+        let out: IR.Expr;
+        if(patternExpr !== undefined && patternExpr.kind !== 'expr.constant') {
+            if(patternVar === undefined) { throw new Error(); }
+            out = IR.libMethodCall('Pattern', 'hasEffect', patternVar, [g.useObj(), AT_X, AT_Y]);
+        } else {
+            out = IR.TRUE;
         }
-        if(conditionExpr !== undefined) { out.push(c.expr(conditionExpr)); }
-        return out.length > 0 ? out.reduce(OP.and) : IR.TRUE;
+        if(conditionExpr !== undefined) { out = OP.and(out, c.expr(conditionExpr)); }
+        return out;
     }
     
     function _basicOne(c: Compiler, stmt: ASG.BasicRulesStmt, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
@@ -537,7 +553,7 @@ namespace Compiler {
         const g = c.grids[stmt.inGrid];
         const sampler = g.makeSampler(rewrites.map(rule => rule.from));
         
-        const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));
+        const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.condition));
         
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
@@ -587,7 +603,6 @@ namespace Compiler {
         const conditionIsSameEverywhere = rewrites.map(rule =>
             _exprIs(rule.condition, ExprFlags.SAME_EVERYWHERE)
             && rule.to.kind === 'expr.constant'
-            && rule.toUncertainties === undefined
         );
         const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
         const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, ExprFlags.SAME_EVERYWHERE));
@@ -624,7 +639,6 @@ namespace Compiler {
             g,
             outPatternIsSameEverywhere[i] ? rule.to : undefined,
             IR.NAMES.tmpPattern(i),
-            outPatternIsSameEverywhere[i] ? rule.toUncertainties : undefined,
             rule.condition,
         ));
         const secondPassConditions = rewrites.map((rule, i) => _writeCondition(
@@ -632,7 +646,6 @@ namespace Compiler {
             g,
             outPatternIsSameEverywhere[i] ? undefined : rule.to,
             P,
-            outPatternIsSameEverywhere[i] ? undefined : rule.toUncertainties,
             undefined,
         ));
         
@@ -708,11 +721,23 @@ namespace Compiler {
         
         const cases: IR.Stmt[] = emptyArray(g.grid.alphabet.key.length, IR.PASS);
         for(const rule of stmt.rewrites) {
+            let mask: ISet;
+            switch(rule.from.kind) {
+                case 'leaf':
+                    mask = rule.from.masks[0];
+                    break;
+                case 'top':
+                    mask = g.grid.alphabet.wildcard;
+                    break;
+                default:
+                    throw new Error();
+            }
+            
             const caseHandler = IR.if_(
-                _writeCondition(c, g, rule.to, undefined, rule.toUncertainties, rule.condition),
+                _writeCondition(c, g, rule.to, undefined, rule.condition),
                 _doWrite(c, g, rule.from, rule.to, false, ANY, false, false),
             );
-            ISet.forEach(rule.from.masks[0], i => {
+            ISet.forEach(mask, i => {
                 if(cases[i] !== IR.PASS) { throw new Error(); }
                 cases[i] = caseHandler;
             });

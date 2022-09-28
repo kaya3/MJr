@@ -71,14 +71,14 @@ Operators in the table below are binary unless shown otherwise via their syntax;
 | `%` | `int` or `float` | Modulo; result has same sign as second operand, not the first |
 | `==`, `!=` | Numeric or `str` | Comparison; result is `bool` |
 | `<`, `<=`, `>`, `>=` | Numeric | Comparison; result is `bool` |
-| `and`, `or` | `bool` | Logical operations |
+| `and`, `or` | `bool` or `pattern.in` | Logical operations |
 | `+`X | Numeric | Has no effect; it is included for symmetry with unary `-`, and by tradition |
 | `-`X | Numeric | Negation |
 | `not` X | `bool` | Logical negation |
-| `count` X | `pattern` | [Count operator](#count-operator) |
+| `count` X | `pattern.in` | [Count operator](#count-operator) |
 | `load` X | `str` | [Load operator](#load-operator) |
 | `randint` X | `int` | [Randint operator](#randint-operator) |
-| `sum` X | 1x1 `pattern` | [Sum operator](#sum-operator) |
+| `sum` X | 1x1 `pattern.in` | [Sum operator](#sum-operator) |
 | A&nbsp;`if`&nbsp;condition&nbsp;`else`&nbsp;B | condition:&nbsp;`bool` | Conditional expression; A and B must have a common type (after [coercion](types.md#type-coercion)). |
 
 The binary operators `+`, `-`, `*`, `//` and the unary operator `-` may overflow on values of type `int`, such that the result is within the signed 32-bit integer range.

@@ -6,7 +6,8 @@ namespace Type {
         | {kind: 'fraction'}
         | {kind: 'grid'}
         | {kind: 'int'}
-        | {kind: 'pattern', alphabetKey: string, hasUnions: boolean, width: number, height: number}
+        | {kind: 'pattern.in', alphabetKey: string, width: number, height: number}
+        | {kind: 'pattern.out', alphabetKey: string, width: number, height: number}
         | {kind: 'position', inGrid: number}
         | {kind: 'str'}
     >
@@ -23,7 +24,8 @@ namespace Type {
         fraction: MJr.Fraction,
         grid: number,
         int: number,
-        pattern: Pattern,
+        'pattern.in': PatternTree,
+        'pattern.out': Pattern,
         position: Readonly<{x: number, y: number, inGrid: number}>,
         str: string,
     }
@@ -58,10 +60,11 @@ namespace Type {
     export const OBJECT: InternalType = {kind: 'union', options: [ANY_DICT, ANY_POSITION, GRID]};
     export const NUMERIC: InternalType = {kind: 'union', options: [FLOAT, FRACTION, INT]};
     
-    export type GridAttribute = 'width' | 'height'
+    export type GridAttribute = 'width' | 'height' | 'area'
     export const GRID_ATTRS = new Map<GridAttribute, Type>([
         ['width', INT],
         ['height', INT],
+        ['area', INT],
     ]);
     export type PositionAttribute = 'x' | 'y'
     export const POSITION_ATTRS = new Map<PositionAttribute, Type>([
@@ -90,8 +93,9 @@ namespace Type {
             
             case 'dict':
                 return `{${Array.from(type.entryTypes, ([k, t]) => `${k}: ${toStr(t)}`).join(', ')}}`;
-            case 'pattern':
-                return `pattern.${type.hasUnions ? 'in' : 'out'}.${type.width}x${type.height}[${type.alphabetKey}]`;
+            case 'pattern.in':
+            case 'pattern.out':
+                return `${type.kind}.${type.width}x${type.height}[${type.alphabetKey}]`;
             case 'position':
                 return `position.grid${type.inGrid}`;
         }
@@ -113,8 +117,10 @@ namespace Type {
                     return v2 !== undefined && equals(v1, v2);
                 });
             
-            case 'pattern':
-                return t2.kind === 'pattern' && t1.alphabetKey === t2.alphabetKey && t1.hasUnions === t2.hasUnions
+            case 'pattern.in':
+            case 'pattern.out':
+                return t1.kind === t2.kind
+                    && t1.alphabetKey === t2.alphabetKey
                     && t1.width === t2.width && t1.height === t2.height;
             
             case 'position':
@@ -127,7 +133,8 @@ namespace Type {
             case 'any_dict':
                 return t1.kind === 'dict';
             case 'any_pattern':
-                return t1.kind === 'pattern' && t1.alphabetKey === t2.alphabetKey;
+                return (t1.kind === 'pattern.out' || (t1.kind === 'pattern.in' && t2.allowUnions))
+                    && t1.alphabetKey === t2.alphabetKey;
             case 'any_position':
                 return t1.kind === 'position';
             case 'union':
@@ -138,10 +145,12 @@ namespace Type {
                     const v2 = t2.entryTypes.get(k);
                     return v2 !== undefined && isSubtype(v1, v2);
                 });
-            case 'pattern':
-                return t1.kind === 'pattern' && t1.alphabetKey === t2.alphabetKey
+            case 'pattern.in':
+            case 'pattern.out':
+                return (t1.kind === 'pattern.in' || t1.kind === 'pattern.out')
+                    && t1.alphabetKey === t2.alphabetKey
                     && t1.width === t2.width && t1.height === t2.height
-                    && (!t1.hasUnions || t2.hasUnions);
+                    && (t1.kind === 'pattern.out' || t2.kind === 'pattern.in');
             
             default:
                 return equals(t1, t2);

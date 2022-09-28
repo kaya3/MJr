@@ -4,6 +4,8 @@ interface ReadonlyIDMap<T> {
     size(): number;
     has(x: T): boolean;
     getID(x: T): number;
+    getIDs(xs: readonly T[]): number[];
+    getIDSet(xs: readonly T[]): ISet;
     getIDOrDefault(x: T): number;
     getByID(id: number): T;
     forEach(f: (x: T, id: number) => void): void;
@@ -36,7 +38,7 @@ class IDMap<T> implements ReadonlyIDMap<T> {
     
     public static ofWithKey<T>(iterable: Iterable<T>, keyFunc: (x: T) => PrimitiveKey): IDMap<T> {
         const map = new IDMap(keyFunc);
-        for(const x of iterable) { map.getOrCreateID(x); }
+        map.addAll(iterable);
         return map;
     }
     
@@ -91,6 +93,10 @@ class IDMap<T> implements ReadonlyIDMap<T> {
         });
     }
     
+    public addAll(xs: Iterable<T>): void {
+        for(const x of xs) { this.getOrCreateID(x); }
+    }
+    
     /**
      * Indicates whether the given element is associated with an ID, in O(1)
      * time.
@@ -107,6 +113,16 @@ class IDMap<T> implements ReadonlyIDMap<T> {
         const id = this.ids.get(this.keyFunc(x));
         if(id === undefined) { throw new Error(); }
         return id;
+    }
+    
+    public getIDs(xs: readonly T[]): number[] {
+        return xs.map(x => this.getID(x));
+    }
+    
+    public getIDSet(xs: Iterable<T>): ISet {
+        const set = ISet.empty(this.arr.length);
+        for(const x of xs) { ISet.add(set, this.getID(x)); }
+        return set;
     }
     
     /**

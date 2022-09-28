@@ -77,10 +77,20 @@ namespace ISet {
     /**
      * Adds all the members of the set `b` to the set `a`, in O(N) time.
      */
-     export function addAll(a: MutableISet, b: ISet): void {
+    export function addAll(a: MutableISet, b: ISet): void {
         if(a.length < b.length) { throw new Error(); }
         for(let i = 0; i < b.length; ++i) {
             a[i] |= b[i];
+        }
+    }
+    
+    /**
+     * Removes the members from the set `a` which are not in `b`, in O(N) time.
+     */
+    export function retainAll(a: MutableISet, b: ISet): void {
+        if(a.length < b.length) { throw new Error(); }
+        for(let i = 0; i < b.length; ++i) {
+            a[i] &= b[i];
         }
     }
     
@@ -95,12 +105,30 @@ namespace ISet {
     }
     
     /**
-     * Removes all elements from the set.
+     * Removes all elements from the set, in O(N) time.
      */
     export function clear(a: MutableISet): void {
         for(let i = 0; i < a.length; ++i) {
             a[i] = 0;
         }
+    }
+    
+    /**
+     * Returns a new set which is the union of `a` and `b`, in O(N) time.
+     */
+    export function union(a: ISet, b: ISet): MutableISet {
+        const out = new Uint32Array(a);
+        addAll(out, b);
+        return out;
+    }
+    
+    /**
+     * Returns a new set which is the intersection of `a` and `b`, in O(N) time.
+     */
+    export function intersection(a: ISet, b: ISet): MutableISet {
+        const out = new Uint32Array(a);
+        retainAll(out, b);
+        return out;
     }
     
     /**
@@ -111,6 +139,17 @@ namespace ISet {
         if(a.length < b.length) { throw new Error(); }
         for(let i = 0; i < b.length; ++i) {
             if((a[i] & b[i]) !== 0) { return false; }
+        }
+        return true;
+    }
+    
+    /**
+     * Determines whether `a` is a subset of `b`, in O(N) time.
+     */
+    export function isSubset(a: ISet, b: ISet): boolean {
+        if(a.length > b.length) { throw new Error(); }
+        for(let i = 0; i < a.length; ++i) {
+            if((a[i] & ~b[i]) !== 0) { return false; }
         }
         return true;
     }

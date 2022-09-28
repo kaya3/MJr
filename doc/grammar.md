@@ -34,9 +34,9 @@ Char    = PATTERN_CHAR
 ```
 Declaration = LegendDecl | LetDecl | SymmetryDecl | UnionDecl
 
-LegendDecl   = 'legend' Expression
+LegendDecl   = 'legend' PatternLiteralExpr
 LetDecl      = 'let' 'param'? SimpleNameExpr '=' Expression
-SymmetryDecl = 'symmetry' Expression
+SymmetryDecl = 'symmetry' StrLiteralExpr
 UnionDecl    = 'union' PatternLiteralExpr '=' Expression
 ```
 

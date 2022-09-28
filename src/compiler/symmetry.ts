@@ -57,7 +57,7 @@ namespace Symmetry {
                 newMasks.push(masks[index]);
             }
         }
-        return new Pattern(newWidth, newHeight, newData, newMasks, p.hasUnions);
+        return new Pattern(newWidth, newHeight, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     
     export function generate<T>(original: T, groupName: SymmetryName, rotate: (x: T) => T, reflect: (x: T) => T, keyFunc?: (x: T) => PrimitiveKey): T[] {

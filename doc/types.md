@@ -28,9 +28,9 @@ Note that a `dict` type with *more* keys than another `dict` type is *not* a sub
 
 ## Pattern types
 
-A `pattern` type represents an immutable rectangular pattern which may occur in a grid. A pattern type consists of an alphabet, a pattern width, a pattern type, and whether the pattern is an input (i.e. can be matched in a grid) or output (i.e. can be written to a grid).
+A `pattern.in` or `pattern.out` type represents an immutable rectangular pattern which may occur in a grid, or which may be written to a grid, respectively. A pattern type consists of an alphabet, a pattern width, a pattern height.
 
-A pattern type P1 is a subtype of a pattern type P2 if P1 and P2 are equal, or if they have the same alphabet, width and height but P1 is an "output" and P2 is an "input".
+A pattern type P1 is a subtype of a pattern type P2 if P1 and P2 are equal, or if P1 is a `pattern.out` type with the same alphabet, width and height as P2.
 
 
 ## Position types

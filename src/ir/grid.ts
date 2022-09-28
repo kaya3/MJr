@@ -43,10 +43,10 @@ namespace IR {
             return this.grid.scaleX * this.grid.scaleY * this.scale;
         }
         
-        public makeCounter(patterns: readonly Pattern[]): Expr {
+        public makeCounter(patterns: readonly PatternTree[]): Expr {
             const {counters, samplers, matcher} = this;
             
-            const key = patterns.map(Pattern.key).join('\n');
+            const key = patterns.map(PatternTree.key).join('\n');
             
             // TODO: this is order-dependent, a matching sampler might be declared later
             const sampler = samplers.get(key);
@@ -61,12 +61,12 @@ namespace IR {
             });
         }
         
-        public makeSampler(patterns: readonly Pattern[]): AbstractSampler {
+        public makeSampler(patterns: readonly PatternTree[]): AbstractSampler {
             const {samplers, matcher} = this;
             
-            const key = patterns.map(Pattern.key).join('\n');
+            const key = patterns.map(PatternTree.key).join('\n');
             return getOrCompute(samplers, key, () => {
-                if(patterns.length === 1 && patterns[0].isTrivial()) {
+                if(patterns.length === 1 && patterns[0].kind === 'top') {
                     const {width, height} = patterns[0];
                     return new TrivialSampler(this, width, height);
                 }
@@ -149,6 +149,14 @@ namespace IR {
                 declVars(vars, true),
                 ...Array.from(this.samplers.values(), sampler => sampler.declare()),
             ];
+        }
+        
+        public attr(attr: Type.GridAttribute): Expr {
+            switch(attr) {
+                case 'area': return this.n;
+                case 'width': return this.width;
+                case 'height': return this.height;
+            }
         }
         
         /**

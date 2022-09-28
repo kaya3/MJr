@@ -28,7 +28,7 @@ namespace Resolver {
         },
         
         'stmt.convchain': {
-            sample: 'const pattern.in',
+            sample: 'const pattern.out',
             n: 'const int',
             temperature: 'float?',
             on: 'charset.in',
@@ -155,7 +155,7 @@ namespace Resolver {
         public kernel: Convolution.Kernel | undefined = undefined;
         
         public grid: FormalGrid | undefined = undefined;
-        public inputPattern: Pattern | undefined = undefined;
+        public inputPattern: Readonly<{width: number, height: number}> | undefined = undefined;
         public isRuleContext = false;
         public rewriteScaleX = FRACTION_ONE;
         public rewriteScaleY = FRACTION_ONE;
@@ -304,8 +304,8 @@ namespace Resolver {
             const oldLegend = alphabet.legend;
             if(oldLegend !== undefined) { this.error(`'legend' already declared`, decl.pos); }
             
-            const legend = _resolveProp(decl, 'expr', 'const pattern.in', this);
-            if(legend === PROP_ERROR) { return f(); }
+            const legend = _resolvePatternLiteralExpr(decl.expr, this);
+            if(legend === undefined) { return f(); }
             if(legend.height !== 1) { this.error(`'legend' pattern cannot have multiple rows`, decl.expr.pos); }
             
             alphabet.legend = legend;
@@ -359,7 +359,23 @@ namespace Resolver {
             const charset = _resolveProp(decl, 'chars', 'const charset.in', this);
             if(charset === PROP_ERROR) { return undefined; }
             
-            return alphabet.withUnion(label.s, charset.masks[0], f);
+            let mask: ISet | undefined = undefined;
+            switch(charset.kind) {
+                case 'leaf':
+                    mask = charset.masks[0];
+                    break;
+                case 'top':
+                    mask = alphabet.wildcard;
+                    break;
+                case 'bottom':
+                    this.error(`empty charset`, decl.chars.pos); 
+                    break;
+                default:
+                    this.error(`union must be a constant charset`, decl.chars.pos); 
+                    break;
+            }
+            
+            return mask && alphabet.withUnion(label.s, mask, f);
         }
         
         withVariable<T>(variable: ASG.FormalVariable, f: () => T): T {
@@ -452,9 +468,9 @@ namespace Resolver {
         
         switch(typeSpec) {
             case 'charset.in':
-                return {kind: 'pattern', width: 1, height: 1, alphabetKey, hasUnions: true};
+                return {kind: 'pattern.in', width: 1, height: 1, alphabetKey};
             case 'charset.out':
-                return {kind: 'pattern', width: 1, height: 1, alphabetKey, hasUnions: false};
+                return {kind: 'pattern.out', width: 1, height: 1, alphabetKey};
             case 'position':
                 return {kind: 'position', inGrid: grid.id};
             
@@ -464,7 +480,7 @@ namespace Resolver {
                     return {kind: 'any_pattern', alphabetKey, allowUnions: true};
                 } else {
                     const {width, height} = inputPattern;
-                    return {kind: 'pattern', alphabetKey, width, height, hasUnions: true};
+                    return {kind: 'pattern.in', alphabetKey, width, height};
                 }
             case 'pattern.out': {
                 const {inputPattern, rewriteScaleX, rewriteScaleY} = ctx;
@@ -477,7 +493,7 @@ namespace Resolver {
                     // ensure integer results
                     if(w.q !== 1 || h.q !== 1) { throw new Error(); }
                     
-                    return {kind: 'pattern', alphabetKey, width: w.p, height: h.p, hasUnions: false};
+                    return {kind: 'pattern.out', alphabetKey, width: w.p, height: h.p};
                 }
             }
         }
@@ -590,18 +606,21 @@ namespace Resolver {
         out.observations?.sort((a, b) => _cmpPatternKey(a.from, b.from));
         return out;
     }
-    function _cmpPatternKey(a: Pattern, b: Pattern): number {
-        const aKey = Pattern.key(a), bKey = Pattern.key(b);
+    function _cmpPatternKey(a: PatternTree, b: PatternTree): number {
+        const aKey = PatternTree.key(a), bKey = PatternTree.key(b);
         return aKey < bKey ? -1 : aKey === bKey ? 0 : 1;
     }
     
+    /**
+     * Conservatively estimates whether the given rewrite rules commute.
+     */
     function _rewritesCommute(rewrites: readonly ASG.RewriteRule[]): boolean {
         if(rewrites.length === 0) { return true; }
         
         const mapping = emptyArray(rewrites[0].to.type.alphabetKey.length, -1);
         
         return rewrites.every(({from, to}) =>
-            to.kind === 'expr.constant' && to.constant.value.every((x, y, toColour) => ISet.every(
+            to.kind === 'expr.constant' && from.kind === 'leaf' && to.constant.value.every((x, y, toColour) => ISet.every(
                 from.masks[x + y * from.width],
                 fromColour => {
                     if(mapping[fromColour] >= 0 && mapping[fromColour] !== toColour) { return false; }
@@ -618,7 +637,7 @@ namespace Resolver {
         const kind = expr.kind.replace(/^expr\.literal\./, '') as Type.PrimitiveKind;
         return _makeConstantExpr(Type.PRIMITIVES[kind], expr.value, expr.pos);
     }
-    function _resolvePatternLiteralExpr(expr: AST.PatternLiteralExpr, ctx: Context): ASG.ConstantExpr | undefined {
+    function _resolvePatternLiteralExpr(expr: AST.PatternLiteralExpr, ctx: Context): Pattern | undefined {
         if(!ctx.expectGrid(expr.pos)) { return undefined; }
         const {alphabet} = ctx.grid;
         
@@ -636,8 +655,9 @@ namespace Resolver {
                     const size = ISet.size(mask);
                     if(size === 0) {
                         ctx.error('empty charset', c.pos);
+                        ok = false;
                     } else if(size === 1) {
-                        [charID] = ISet.toArray(mask);
+                        charID = ISet.toArray(mask)[0];
                     } else {
                         isUnion = size < alphabet.key.length;
                     }
@@ -658,10 +678,8 @@ namespace Resolver {
                 ok = false;
             }
         }
-        if(!ok) { return undefined; }
         
-        const type: Type.Type = {kind: 'pattern', alphabetKey: alphabet.key, width, height, hasUnions};
-        return _makeConstantExpr(type, new Pattern(width, height, pattern, masks, hasUnions), expr.pos);
+        return ok ? new Pattern(width, height, alphabet.key, pattern, masks, hasUnions) : undefined;
     }
     
     function _resolveCountExpr(expr: AST.UnaryOpExpr, ctx: Context): ASG.CountExpr | undefined {
@@ -671,7 +689,7 @@ namespace Resolver {
         const pattern = _resolveProp(expr, 'child', 'const pattern.in', ctx);
         if(pattern === PROP_ERROR) { return undefined; }
         
-        const patterns = Symmetry.generate(pattern, ctx.symmetryName, Pattern.rotate, Pattern.reflect, Pattern.key);
+        const patterns = Symmetry.generate(pattern, ctx.symmetryName, PatternTree.rotate, PatternTree.reflect, PatternTree.key);
         
         // sorting makes it more likely that samplers can be reused
         patterns.sort(_cmpPatternKey);
@@ -691,7 +709,7 @@ namespace Resolver {
         
         const width = -1, height = -1, hasUnions = legend.hasUnions;
         
-        const type: Type.Type = {kind: 'pattern', alphabetKey, width, height, hasUnions};
+        const type: Type.Type = {kind: hasUnions ? 'pattern.in' : 'pattern.out', alphabetKey, width, height};
         // TODO
         ctx.error(`'load' expression is currently unsupported`, expr.pos);
         return undefined;
@@ -708,7 +726,7 @@ namespace Resolver {
         const flags = ExprFlags.GRID_INDEPENDENT | ExprFlags.POSITION_INDEPENDENT;
         return {kind: 'expr.randint', type: Type.INT, flags, max, pos};
     }
-    function _resolveSumExpr(expr: AST.UnaryOpExpr, ctx: Context): ASG.SumExpr | undefined {
+    function _resolveSumExpr(expr: AST.UnaryOpExpr, ctx: Context): ASG.Expression | undefined {
         const {pos} = expr;
         if(!ctx.expectGrid(expr.pos)) { return undefined; }
         
@@ -719,9 +737,24 @@ namespace Resolver {
         const chars = _resolveProp(expr, 'child', 'const charset.in', ctx);
         if(chars === PROP_ERROR) { return undefined; }
         
-        const patternID = grid.convPatterns.getOrCreateID({chars: chars.masks[0], kernel});
-        const flags = ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC;
-        return {kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos};
+        switch(chars.kind) {
+            case 'top': {
+                const flags = ExprFlags.CONSTANT;
+                return {kind: 'expr.attr.grid', type: Type.INT, flags, grid: grid.id, attr: 'area', pos};
+            }
+            case 'bottom': {
+                return _makeConstantExpr(Type.INT, 0, pos);
+            }
+            case 'leaf': {
+                const patternID = grid.convPatterns.getOrCreateID({chars: chars.masks[0], kernel});
+                const flags = ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC;
+                return {kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos};
+            }
+            default: {
+                // logical ops on const 1x1 patterns should already be folded
+                throw new Error();
+            }
+        }
     }
     function _checkZero(ctx: Context, child: ASG.Expression): ASG.Expression | undefined {
         if(child.kind !== 'expr.constant') {
@@ -735,40 +768,10 @@ namespace Resolver {
         }
     }
     
-    /**
-     * Returns either `undefined` if the rewrite definitely changes the grid in
-     * at least one cell, or otherwise an array of indices in the pattern at
-     * which a rewrite can possibly change the grid.
-     * 
-     * TODO: get rid of this entirely, replace with logical operations on patterns: `a -> b` becomes `a and not b -> b`
-     */
-    function _getOutputPatternUncertainties(ctx: GridContext, from: undefined, toExpr: ASG.Prop<'pattern.out'>): readonly number[];
-    function _getOutputPatternUncertainties(ctx: GridContext, from: Type.Value<'pattern'> | undefined, toExpr: ASG.Prop<'pattern.out'>): readonly number[] | undefined;
-    function _getOutputPatternUncertainties(ctx: GridContext, from: Type.Value<'pattern'> | undefined, toExpr: ASG.Prop<'pattern.out'>): readonly number[] | undefined {
-        if(toExpr.kind !== 'expr.constant') { return undefined; }
-        
-        const toPattern = toExpr.constant.value.pattern;
-        const uncertain: number[] = [];
-        for(let i = 0; i < toPattern.length; ++i) {
-            const toC = toPattern[i];
-            
-            // this cell definitely doesn't change the grid
-            if(toC < 0 || (from !== undefined && from.pattern[i] === toC)) { continue; }
-            
-            // this cell definitely does change the grid
-            if(from !== undefined && !ISet.has(from.masks[i], toC)) { return undefined; }
-            
-            uncertain.push(i);
-        }
-        
-        if(uncertain.length === 0) { ctx.error(`output pattern has no effect`, toExpr.pos); }
-        return uncertain;
-    }
-    
     function _resolveObserveOrRewriteRule(rule: AST.ObserveRule | AST.RewriteRule, ctx: GridContext, outGrid: FormalGrid): RuleResolveResult {
         const {pos} = rule;
         
-        const from = _resolveProp(rule, 'from', 'const pattern.in', ctx);
+        let from = _resolveProp(rule, 'from', 'const pattern.in', ctx);
         if(from === PROP_ERROR) { return undefined; }
         
         ctx.inputPattern = from;
@@ -780,31 +783,36 @@ namespace Resolver {
         ctx.isRuleContext = false;
         if(via === PROP_ERROR || to === undefined || to === PROP_ERROR || condition === PROP_ERROR) { return undefined; }
         
-        if(condition.kind === 'expr.constant' && !condition.constant.value) {
+        if(rule.kind === 'rule.rewrite' && to.kind === 'expr.constant') {
+            from = PatternTree.and(from, PatternTree.not(to.constant.value));
+        }
+        if(from.kind === 'bottom') {
+            ctx.error('rule has no effect', pos);
+            return {rules: []};
+        } else if(condition.kind === 'expr.constant' && !condition.constant.value) {
             // condition is constant `false` expression
             return {rules: []};
         }
         
         const rules: ASG.Rule[] = [];
         
-        const makeRule = (from: Pattern, via: ASG.Prop<'pattern.out?'>, to: ASG.Prop<'pattern.out'>): void => {
-            const toUncertainties = _getOutputPatternUncertainties(ctx, ctx.grid.id === outGrid.id ? from : undefined, to);
-            rules.push({kind: rule.kind, from, via, to, toUncertainties, condition, pos});
+        const makeRule = (from: PatternTree, via: ASG.Prop<'pattern.out?'>, to: ASG.Prop<'pattern.out'>): void => {
+            rules.push({kind: rule.kind, from, via, to, condition, pos});
         };
         
         if((via === undefined || via.kind === 'expr.constant') && to.kind === 'expr.constant') {
-            const symmetries = Symmetry.generate(
+            const symmetries = Symmetry.generate<{from: PatternTree, via?: Pattern, to: Pattern}>(
                 {from, via: via?.constant?.value, to: to.constant.value},
                 ctx.symmetryName,
-                s => ({from: Pattern.rotate(s.from), via: s.via && Pattern.rotate(s.via), to: Pattern.rotate(s.to)}),
-                s => ({from: Pattern.reflect(s.from), via: s.via && Pattern.reflect(s.via), to: Pattern.reflect(s.to)}),
-                s => `${Pattern.key(s.from)} -> ${s.via && Pattern.key(s.via)} -> ${Pattern.key(s.to)}`,
+                s => ({from: PatternTree.rotate(s.from), via: s.via && Pattern.rotate(s.via), to: Pattern.rotate(s.to)}),
+                s => ({from: PatternTree.reflect(s.from), via: s.via && Pattern.reflect(s.via), to: Pattern.reflect(s.to)}),
+                s => `${PatternTree.key(s.from)} -> ${s.via && Pattern.key(s.via)} -> ${Pattern.key(s.to)}`,
             );
             
             function makeExpr(p: Pattern, original: ASG.Prop<'pattern.out'>): ASG.Prop<'pattern.out'> {
                 const {width, height} = p;
-                const {alphabetKey, hasUnions} = original.type;
-                return _makeConstantExpr({kind: 'pattern', width, height, alphabetKey, hasUnions}, p, original.pos);
+                const {alphabetKey} = original.type;
+                return _makeConstantExpr({kind: 'pattern.out', width, height, alphabetKey}, p, original.pos);
             }
             
             for(const s of symmetries) {
@@ -946,7 +954,7 @@ namespace Resolver {
             if(kind === 'grid') {
                 const grid = _resolveProp(expr, 'left', 'const grid', ctx);
                 if(grid === PROP_ERROR) { return undefined; }
-                return {kind: 'expr.attr.grid', type, flags: left.flags, grid, attr: attr as Type.GridAttribute, pos};
+                return {kind: 'expr.attr.grid', type, flags: ExprFlags.CONSTANT, grid, attr: attr as Type.GridAttribute, pos};
             } else if(left.kind === 'expr.constant') {
                 if(kind === 'dict') {
                     const constant = (left.constant.value as Type.Value<'dict'>).get(attr);
@@ -1013,7 +1021,17 @@ namespace Resolver {
         'expr.literal.bool': _resolveSimpleLiteralExpr,
         'expr.literal.float': _resolveSimpleLiteralExpr,
         'expr.literal.int': _resolveSimpleLiteralExpr,
-        'expr.literal.pattern': _resolvePatternLiteralExpr,
+        'expr.literal.pattern': (expr, ctx) => {
+            const p = _resolvePatternLiteralExpr(expr, ctx);
+            if(p === undefined) { return undefined; }
+            
+            const {width, height, alphabetKey} = p;
+            return _makeConstantExpr(
+                {kind: p.hasUnions ? 'pattern.in' : 'pattern.out', alphabetKey, width, height},
+                p.isTop() ? PatternTree.top(width, height) : p,
+                expr.pos,
+            );
+        },
         'expr.literal.str': _resolveSimpleLiteralExpr,
         'expr.name.keyword': (expr, ctx) => {
             const {name, pos} = expr;
@@ -1057,6 +1075,21 @@ namespace Resolver {
             let left = ctx.resolveExpr(expr.left), right = ctx.resolveExpr(expr.right);
             if(left === undefined || right === undefined) { return undefined; }
             
+            const {pos} = expr;
+            
+            if((expr.op === 'and' || expr.op === 'or') && (left.type.kind === 'pattern.in' || left.type.kind === 'pattern.out')) {
+                const type: Type.OfKind<'pattern.in'> = {...left.type, kind: 'pattern.in'};
+                if(!ctx.checkType(type, right)) { return undefined; }
+                
+                if(left.kind !== 'expr.constant' || right.kind !== 'expr.constant') {
+                    // TODO?
+                    ctx.error(`'${expr.op}' may only be used on constant patterns`, pos);
+                    return undefined;
+                }
+                const value = PatternTree[expr.op](left.constant.value as PatternTree, right.constant.value as PatternTree);
+                return _makeConstantExpr(type, value, pos);
+            }
+            
             // type coercion, from int to float or fraction
             if(left.type.kind === 'int' && (right.type.kind === 'float' || right.type.kind === 'fraction')) {
                 left = _coerceFromInt(left, right.type);
@@ -1068,7 +1101,6 @@ namespace Resolver {
                 left = _coerceToStr(left);
             }
             
-            const {pos} = expr;
             const spec = Op.BINARY_OP_TYPES[expr.op];
             for(const [leftType, rightType, outType, op] of spec) {
                 // OK to only check `kind`, since it's a primitive type
@@ -1142,12 +1174,25 @@ namespace Resolver {
             const child = ctx.resolveExpr(expr.child);
             if(child === undefined) { return undefined; }
             
+            const {pos} = expr;
+            
+            if(expr.op === 'not' && (child.type.kind === 'pattern.in' || child.type.kind === 'pattern.out')) {
+                const type: Type.OfKind<'pattern.in'> = {...child.type, kind: 'pattern.in'};
+                
+                if(child.kind !== 'expr.constant') {
+                    // TODO?
+                    ctx.error(`'not' may only be used on constant patterns`, pos);
+                    return undefined;
+                }
+                const value = PatternTree.not(child.constant.value as PatternTree);
+                return _makeConstantExpr(type, value, pos);
+            }
+            
             // unary + is a NOOP
             if(expr.op === '+') {
                 return ctx.checkType(Type.NUMERIC, child) ? child : undefined;
             }
             
-            const {pos} = expr;
             const spec = Op.UNARY_OP_TYPES[expr.op];
             for(const [inType, outType, op] of spec) {
                 // OK to only check `kind`, since it's a primitive type
@@ -1243,7 +1288,8 @@ namespace Resolver {
         'stmt.path': _resolvePropsStmt,
         'stmt.pass': (stmt, ctx) => undefined,
         'stmt.put': (stmt, ctx) => {
-            if(!ctx.expectGrid(stmt.pos)) { return undefined; }
+            const {pos} = stmt;
+            if(!ctx.expectGrid(pos)) { return undefined; }
             
             const at = _resolveProp(stmt, 'at', 'position', ctx);
             ctx.isRuleContext = true;
@@ -1253,9 +1299,8 @@ namespace Resolver {
             if(at === PROP_ERROR || props === undefined) { return undefined; }
             
             const {pattern, condition} = props;
-            const uncertainties = _getOutputPatternUncertainties(ctx, undefined, pattern);
             const inGrid = ctx.grid.id;
-            return {kind: 'stmt', stmt: {kind: 'stmt.put', inGrid, at, pattern, uncertainties, condition, pos: stmt.pos}};
+            return {kind: 'stmt', stmt: {kind: 'stmt.put', inGrid, at, pattern, condition, pos}};
         },
         'stmt.rules.all': _resolveAllOnceOneStmt,
         'stmt.rules.convolution': (stmt, ctx) => ctx.withKernel(stmt, kernel => {
@@ -1269,7 +1314,12 @@ namespace Resolver {
             for(const rule of rewrites) {
                 if(rule.from.width !== 1 || rule.from.height !== 1) { ctx.error(`'convolution' rule patterns must be 1x1`, rule.pos); }
                 
-                const chars = rule.from.masks[0];
+                if(rule.from.kind === 'bottom') { continue; }
+                
+                // logical ops on const 1x1 patterns should already be folded
+                if(rule.from.kind !== 'leaf' && rule.from.kind !== 'top') { throw new Error(); }
+                
+                const chars = rule.from.kind === 'top' ? ctx.grid.alphabet.wildcard : rule.from.masks[0];
                 if(!ISet.isDisjoint(chars, charsUsed)) {
                     ctx.error(`'convolution' input patterns must be disjoint`, rule.pos);
                 }

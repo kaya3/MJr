@@ -176,17 +176,18 @@ namespace Parser {
             if(tok.kind === 'KEYWORD') {
                 switch(tok.s as Tokenizer.Keyword) {
                     case 'legend':
-                    case 'symmetry':
-                        return this.parseSimpleDecl();
-                    
+                        return this.parseLegendDecl();
                     case 'let':
                         return this.parseLetDecl();
+                    case 'symmetry':
+                        return this.parseSymmetryDecl();
                     case 'union':
                         return this.parseUnionDecl();
                 }
             }
             
             this.errorUnexpected('declaration');
+            this.q.skipLine();
             return undefined;
         };
         
@@ -199,16 +200,12 @@ namespace Parser {
             const tok = this.q.peek();
             if(tok.kind === 'KEYWORD') {
                 switch(tok.s as Tokenizer.Keyword) {
-                    //case 'grid':
                     case 'legend':
                     case 'let':
                     case 'symmetry':
                     case 'union':
                         const declaration = this.decl();
-                        if(declaration !== undefined) {
-                            return this.parseDeclChildren('rule', declaration);
-                        }
-                        break;
+                        return declaration && this.parseDeclChildren('rule', declaration);
                     
                     case 'field':
                         return this.parseFieldRule();
@@ -216,10 +213,10 @@ namespace Parser {
                     case 'observe':
                         return this.parseObserveRule();
                 }
-            } else {
-                const rule = this.parseRewriteRule();
-                if(rule !== undefined) { return rule; }
             }
+            
+            const rule = this.parseRewriteRule();
+            if(rule !== undefined) { return rule; }
             
             this.errorUnexpected('rule');
             this.q.skipLine();
@@ -389,7 +386,7 @@ namespace Parser {
         /**
          * ```none
          * PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr | '(' Expression ')'
-         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StringLiteralExpr
+         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StrLiteralExpr
          * ```
          */
         private parsePrimaryExpression(): AST.Expression | undefined {
@@ -419,7 +416,7 @@ namespace Parser {
                     return this.parseNameExpr();
                 
                 case 'QUOTE':
-                    return this.parseStringLiteralExpr();
+                    return this.parseStrLiteralExpr();
                 case 'PUNCTUATION':
                     switch(tok.s) {
                         case '(':
@@ -551,14 +548,14 @@ namespace Parser {
         
         /**
          * ```none
-         * LegendDecl = 'legend' Expression
-         * SymmetryDecl = 'symmetry' Expression
+         * LegendDecl = 'legend' PatternLiteralExpr
+         * SymmetryDecl = 'symmetry' StrLiteralExpr
          * ```
          */
-        private parseSimpleDecl(): AST.LegendDecl | AST.SymmetryDecl | undefined {
-            const {pos, s: kind} = this.assertPollS('legend', 'symmetry');
-            const expr = this.expr();
-            return expr && {kind: `decl.${kind}`, expr, pos};
+        private parseLegendDecl(): AST.LegendDecl | undefined {
+            const {pos} = this.assertPollS('legend', 'symmetry');
+            const expr = this.parsePatternLiteralExpr();
+            return expr && {kind: 'decl.legend', expr, pos};
         }
         
         /**
@@ -591,6 +588,18 @@ namespace Parser {
                 && this.expectPollS('=')
                 && (rhs = this.expr())
                 && {kind: 'decl.let', name, rhs, pos, isParam};
+        }
+        
+        /**
+         * ```none
+         * LegendDecl = 'legend' PatternLiteralExpr
+         * SymmetryDecl = 'symmetry' StrLiteralExpr
+         * ```
+         */
+        private parseSymmetryDecl(): AST.SymmetryDecl | undefined {
+            const {pos} = this.assertPollS('symmetry');
+            const expr = this.parseStrLiteralExpr();
+            return expr && {kind: 'decl.symmetry', expr, pos};
         }
         
         /**
@@ -920,10 +929,10 @@ namespace Parser {
         
         /**
          * ```none
-         * StringLiteralExpr = STRING
+         * StrLiteralExpr = STRING
          * ```
          */
-        private parseStringLiteralExpr(): AST.StringLiteralExpr | undefined {
+        private parseStrLiteralExpr(): AST.StrLiteralExpr | undefined {
             const {pos} = this.assertPoll('QUOTE');
             const s: string[] = [];
             while(!this.q.pollIf('QUOTE')) {

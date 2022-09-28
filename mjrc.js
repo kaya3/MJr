@@ -2088,7 +2088,7 @@ var Compiler;
             const f = EXPR_COMPILE_FUNCS[expr.kind];
             return f(this, expr);
         }
-        literal(c) {
+        literal(c, pos) {
             switch (c.kind) {
                 case 'bool': return c.value ? IR.TRUE : IR.FALSE;
                 case 'float': return IR.float(c.value);
@@ -2096,7 +2096,7 @@ var Compiler;
                 case 'str': return IR.str(c.value);
                 case 'dict': {
                     const type = this.dictType(c.type.entryTypes);
-                    const values = Array.from(type.keys, k => this.literal(c.value.get(k)));
+                    const values = Array.from(type.keys, k => this.literal(c.value.get(k), pos));
                     return this.internLiteral(IR.dict(type, values), type);
                 }
                 case 'fraction': {
@@ -2107,10 +2107,13 @@ var Compiler;
                 case 'grid': {
                     return this.grids[c.value].useObj();
                 }
-                case 'pattern': {
+                case 'pattern.in': {
+                    this.notSupported('input pattern in non-constant expression', pos);
+                    return IR.NULL;
+                }
+                case 'pattern.out': {
                     const { width, height, pattern } = c.value;
                     const patternExpr = IR.constArray(pattern, 256, width);
-                    // TODO: if masks are needed, flatten them into one array
                     return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), this.type(c.type));
                 }
                 case 'position': {
@@ -2121,6 +2124,9 @@ var Compiler;
             }
         }
         type(type) {
+            if (type.kind === 'pattern.in') {
+                throw new Error();
+            }
             return type.kind === 'dict'
                 ? this.dictType(type.entryTypes)
                 : TYPES_TO_IR[type.kind];
@@ -2192,13 +2198,13 @@ var Compiler;
         fraction: IR.FRACTION_TYPE,
         grid: IR.GRID_TYPE,
         int: IR.INT_TYPE,
-        pattern: IR.PATTERN_TYPE,
+        'pattern.out': IR.PATTERN_TYPE,
         position: IR.INT_TYPE,
         str: IR.STR_TYPE,
     };
     const EXPR_COMPILE_FUNCS = {
         'expr.attr.dict': (c, expr) => IR.attr(c.expr(expr.left), expr.attr),
-        'expr.attr.grid': (c, expr) => c.grids[expr.grid][expr.attr],
+        'expr.attr.grid': (c, expr) => c.grids[expr.grid].attr(expr.attr),
         'expr.attr.position': (c, expr) => {
             const g = c.grids[expr.left.type.inGrid];
             // optimise common cases
@@ -2218,7 +2224,7 @@ var Compiler;
             // exhaustivity check
             const _ = expr.attr;
         },
-        'expr.constant': (c, expr) => c.literal(expr.constant),
+        'expr.constant': (c, expr) => c.literal(expr.constant, expr.pos),
         'expr.count': (c, expr) => c.grids[expr.inGrid].makeCounter(expr.patterns),
         'expr.decl': (c, expr) => {
             // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
@@ -2300,11 +2306,25 @@ var Compiler;
         'stmt.put': (c, stmt) => {
             const g = c.grids[stmt.inGrid];
             const { pattern } = stmt;
+            // check whether pattern is effective
+            let isEffective;
+            if (pattern.kind === 'expr.constant') {
+                const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.access(g.relativeIndex(dx, dy)), IR.int(c)));
+                if (checks.length === 0) {
+                    throw new Error();
+                }
+                isEffective = checks.reduce(OP.or);
+            }
+            else {
+                // non-constant pattern will be checked in _writeCondition
+                isEffective = IR.TRUE;
+            }
             return IR.block([
-                // TODO: check bounds, given size of pattern
                 g.declareAtIndex(c.expr(stmt.at)),
+                // check bounds, given size of pattern
+                g.grid.periodic ? IR.PASS : IR.if_(OP.or(pattern.type.width > 1 ? OP.ge(OP.add(AT_X, IR.int(pattern.type.width - 1)), g.width) : IR.FALSE, pattern.type.height > 1 ? OP.ge(OP.add(AT_Y, IR.int(pattern.type.height - 1)), g.height) : IR.FALSE), IR.throw_('pattern would be out of bounds')),
                 pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
-                IR.if_(_writeCondition(c, g, pattern, P, stmt.uncertainties, stmt.condition), _doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
+                IR.if_(OP.and(isEffective, _writeCondition(c, g, pattern, P, stmt.condition)), _doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
             ]);
         },
         'stmt.use': (c, stmt) => {
@@ -2337,7 +2357,7 @@ var Compiler;
             const { value } = to.constant;
             let minX = value.width, maxX = 0, minY = value.height, maxY = 0;
             value.forEach((dx, dy, colour) => {
-                const ineffective = from !== undefined && from.pattern[dx + from.width * dy] === colour;
+                const ineffective = from !== undefined && from.kind === 'leaf' && from.pattern[dx + from.width * dy] === colour;
                 if (useMask || !ineffective) {
                     out.push(outGrid.write(outGrid.relativeIndex(dx, dy), colour, useMask ? c.mask : undefined));
                 }
@@ -2373,35 +2393,27 @@ var Compiler;
         }
         return IR.block(out);
     }
-    function _writeCondition(c, g, patternExpr, patternVar, uncertainties, conditionExpr) {
-        let out = [];
-        if (patternExpr !== undefined) {
-            if (patternExpr.kind !== 'expr.constant') {
-                if (patternVar === undefined) {
-                    throw new Error();
-                }
-                out.push(IR.libMethodCall('Pattern', 'hasEffect', patternVar, [g.useObj(), AT_X, AT_Y]));
+    function _writeCondition(c, g, patternExpr, patternVar, conditionExpr) {
+        let out;
+        if (patternExpr !== undefined && patternExpr.kind !== 'expr.constant') {
+            if (patternVar === undefined) {
+                throw new Error();
             }
-            else if (uncertainties !== undefined) {
-                // uncertainties array should be non-empty, so `reduce` doesn't need an initial value
-                if (uncertainties.length === 0) {
-                    throw new Error();
-                }
-                const { pattern, width } = patternExpr.constant.value;
-                const isEffective = uncertainties.map(i => OP.ne(g.access(g.relativeIndex(i % width, (i / width) | 0)), IR.int(pattern[i])));
-                out.push(isEffective.reduce(OP.or));
-            }
+            out = IR.libMethodCall('Pattern', 'hasEffect', patternVar, [g.useObj(), AT_X, AT_Y]);
+        }
+        else {
+            out = IR.TRUE;
         }
         if (conditionExpr !== undefined) {
-            out.push(c.expr(conditionExpr));
+            out = OP.and(out, c.expr(conditionExpr));
         }
-        return out.length > 0 ? out.reduce(OP.and) : IR.TRUE;
+        return out;
     }
     function _basicOne(c, stmt, ifChanged, then) {
         const { rewrites } = stmt;
         const g = c.grids[stmt.inGrid];
         const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-        const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.toUncertainties, rule.condition));
+        const writeConditions = rewrites.map(rule => _writeCondition(c, g, rule.to, P, rule.condition));
         // optimisation for common case: all rewrites are unconditional and definitely effective
         const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
         const cases = rewrites.map((rule, i) => IR.block([
@@ -2433,8 +2445,7 @@ var Compiler;
         const k = rewrites.length;
         const out = [];
         const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ExprFlags.SAME_EVERYWHERE */)
-            && rule.to.kind === 'expr.constant'
-            && rule.toUncertainties === undefined);
+            && rule.to.kind === 'expr.constant');
         const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
         const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ExprFlags.SAME_EVERYWHERE */));
         // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
@@ -2462,8 +2473,8 @@ var Compiler;
         out.push(IR.declVars(rewrites.flatMap((rule, i) => !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
             ? [{ name: IR.NAMES.tmpPattern(i), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to) }]
             : [])));
-        const firstPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? rule.to : undefined, IR.NAMES.tmpPattern(i), outPatternIsSameEverywhere[i] ? rule.toUncertainties : undefined, rule.condition));
-        const secondPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, outPatternIsSameEverywhere[i] ? undefined : rule.toUncertainties, undefined));
+        const firstPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? rule.to : undefined, IR.NAMES.tmpPattern(i), rule.condition));
+        const secondPassConditions = rewrites.map((rule, i) => _writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, undefined));
         // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
         // but no flag needed if this statement isn't branching anyway
         const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
@@ -2512,8 +2523,19 @@ var Compiler;
         const g = c.grids[stmt.inGrid];
         const cases = emptyArray(g.grid.alphabet.key.length, IR.PASS);
         for (const rule of stmt.rewrites) {
-            const caseHandler = IR.if_(_writeCondition(c, g, rule.to, undefined, rule.toUncertainties, rule.condition), _doWrite(c, g, rule.from, rule.to, false, ANY, false, false));
-            ISet.forEach(rule.from.masks[0], i => {
+            let mask;
+            switch (rule.from.kind) {
+                case 'leaf':
+                    mask = rule.from.masks[0];
+                    break;
+                case 'top':
+                    mask = g.grid.alphabet.wildcard;
+                    break;
+                default:
+                    throw new Error();
+            }
+            const caseHandler = IR.if_(_writeCondition(c, g, rule.to, undefined, rule.condition), _doWrite(c, g, rule.from, rule.to, false, ANY, false, false));
+            ISet.forEach(mask, i => {
                 if (cases[i] !== IR.PASS) {
                     throw new Error();
                 }
@@ -3109,15 +3131,17 @@ var Parser;
             if (tok.kind === 'KEYWORD') {
                 switch (tok.s) {
                     case 'legend':
-                    case 'symmetry':
-                        return this.parseSimpleDecl();
+                        return this.parseLegendDecl();
                     case 'let':
                         return this.parseLetDecl();
+                    case 'symmetry':
+                        return this.parseSymmetryDecl();
                     case 'union':
                         return this.parseUnionDecl();
                 }
             }
             this.errorUnexpected('declaration');
+            this.q.skipLine();
             return undefined;
         };
         /**
@@ -3129,27 +3153,21 @@ var Parser;
             const tok = this.q.peek();
             if (tok.kind === 'KEYWORD') {
                 switch (tok.s) {
-                    //case 'grid':
                     case 'legend':
                     case 'let':
                     case 'symmetry':
                     case 'union':
                         const declaration = this.decl();
-                        if (declaration !== undefined) {
-                            return this.parseDeclChildren('rule', declaration);
-                        }
-                        break;
+                        return declaration && this.parseDeclChildren('rule', declaration);
                     case 'field':
                         return this.parseFieldRule();
                     case 'observe':
                         return this.parseObserveRule();
                 }
             }
-            else {
-                const rule = this.parseRewriteRule();
-                if (rule !== undefined) {
-                    return rule;
-                }
+            const rule = this.parseRewriteRule();
+            if (rule !== undefined) {
+                return rule;
             }
             this.errorUnexpected('rule');
             this.q.skipLine();
@@ -3303,7 +3321,7 @@ var Parser;
         /**
          * ```none
          * PrimaryExpr = DictExpr | GridExpr | LiteralExpr | NameExpr | '(' Expression ')'
-         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StringLiteralExpr
+         * LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StrLiteralExpr
          * ```
          */
         parsePrimaryExpression() {
@@ -3329,7 +3347,7 @@ var Parser;
                 case 'NAME':
                     return this.parseNameExpr();
                 case 'QUOTE':
-                    return this.parseStringLiteralExpr();
+                    return this.parseStrLiteralExpr();
                 case 'PUNCTUATION':
                     switch (tok.s) {
                         case '(':
@@ -3462,14 +3480,14 @@ var Parser;
         // declarations
         /**
          * ```none
-         * LegendDecl = 'legend' Expression
-         * SymmetryDecl = 'symmetry' Expression
+         * LegendDecl = 'legend' PatternLiteralExpr
+         * SymmetryDecl = 'symmetry' StrLiteralExpr
          * ```
          */
-        parseSimpleDecl() {
-            const { pos, s: kind } = this.assertPollS('legend', 'symmetry');
-            const expr = this.expr();
-            return expr && { kind: `decl.${kind}`, expr, pos };
+        parseLegendDecl() {
+            const { pos } = this.assertPollS('legend', 'symmetry');
+            const expr = this.parsePatternLiteralExpr();
+            return expr && { kind: 'decl.legend', expr, pos };
         }
         /**
          * ```none
@@ -3499,6 +3517,17 @@ var Parser;
                 && this.expectPollS('=')
                 && (rhs = this.expr())
                 && { kind: 'decl.let', name, rhs, pos, isParam };
+        }
+        /**
+         * ```none
+         * LegendDecl = 'legend' PatternLiteralExpr
+         * SymmetryDecl = 'symmetry' StrLiteralExpr
+         * ```
+         */
+        parseSymmetryDecl() {
+            const { pos } = this.assertPollS('symmetry');
+            const expr = this.parseStrLiteralExpr();
+            return expr && { kind: 'decl.symmetry', expr, pos };
         }
         /**
          * ```none
@@ -3813,10 +3842,10 @@ var Parser;
         }
         /**
          * ```none
-         * StringLiteralExpr = STRING
+         * StrLiteralExpr = STRING
          * ```
          */
-        parseStringLiteralExpr() {
+        parseStrLiteralExpr() {
             const { pos } = this.assertPoll('QUOTE');
             const s = [];
             while (!this.q.pollIf('QUOTE')) {
@@ -3933,7 +3962,7 @@ var Resolver;
             recompute: 'const bool?',
         },
         'stmt.convchain': {
-            sample: 'const pattern.in',
+            sample: 'const pattern.out',
             n: 'const int',
             temperature: 'float?',
             on: 'charset.in',
@@ -4167,8 +4196,8 @@ var Resolver;
             if (oldLegend !== undefined) {
                 this.error(`'legend' already declared`, decl.pos);
             }
-            const legend = _resolveProp(decl, 'expr', 'const pattern.in', this);
-            if (legend === PROP_ERROR) {
+            const legend = _resolvePatternLiteralExpr(decl.expr, this);
+            if (legend === undefined) {
                 return f();
             }
             if (legend.height !== 1) {
@@ -4236,7 +4265,22 @@ var Resolver;
             if (charset === PROP_ERROR) {
                 return undefined;
             }
-            return alphabet.withUnion(label.s, charset.masks[0], f);
+            let mask = undefined;
+            switch (charset.kind) {
+                case 'leaf':
+                    mask = charset.masks[0];
+                    break;
+                case 'top':
+                    mask = alphabet.wildcard;
+                    break;
+                case 'bottom':
+                    this.error(`empty charset`, decl.chars.pos);
+                    break;
+                default:
+                    this.error(`union must be a constant charset`, decl.chars.pos);
+                    break;
+            }
+            return mask && alphabet.withUnion(label.s, mask, f);
         }
         withVariable(variable, f) {
             const { variables } = this;
@@ -4327,9 +4371,9 @@ var Resolver;
         const alphabetKey = grid.alphabet.key;
         switch (typeSpec) {
             case 'charset.in':
-                return { kind: 'pattern', width: 1, height: 1, alphabetKey, hasUnions: true };
+                return { kind: 'pattern.in', width: 1, height: 1, alphabetKey };
             case 'charset.out':
-                return { kind: 'pattern', width: 1, height: 1, alphabetKey, hasUnions: false };
+                return { kind: 'pattern.out', width: 1, height: 1, alphabetKey };
             case 'position':
                 return { kind: 'position', inGrid: grid.id };
             case 'pattern.in':
@@ -4339,7 +4383,7 @@ var Resolver;
                 }
                 else {
                     const { width, height } = inputPattern;
-                    return { kind: 'pattern', alphabetKey, width, height, hasUnions: true };
+                    return { kind: 'pattern.in', alphabetKey, width, height };
                 }
             case 'pattern.out': {
                 const { inputPattern, rewriteScaleX, rewriteScaleY } = ctx;
@@ -4353,7 +4397,7 @@ var Resolver;
                     if (w.q !== 1 || h.q !== 1) {
                         throw new Error();
                     }
-                    return { kind: 'pattern', alphabetKey, width: w.p, height: h.p, hasUnions: false };
+                    return { kind: 'pattern.out', alphabetKey, width: w.p, height: h.p };
                 }
             }
         }
@@ -4459,15 +4503,18 @@ var Resolver;
         return out;
     }
     function _cmpPatternKey(a, b) {
-        const aKey = Pattern.key(a), bKey = Pattern.key(b);
+        const aKey = PatternTree.key(a), bKey = PatternTree.key(b);
         return aKey < bKey ? -1 : aKey === bKey ? 0 : 1;
     }
+    /**
+     * Conservatively estimates whether the given rewrite rules commute.
+     */
     function _rewritesCommute(rewrites) {
         if (rewrites.length === 0) {
             return true;
         }
         const mapping = emptyArray(rewrites[0].to.type.alphabetKey.length, -1);
-        return rewrites.every(({ from, to }) => to.kind === 'expr.constant' && to.constant.value.every((x, y, toColour) => ISet.every(from.masks[x + y * from.width], fromColour => {
+        return rewrites.every(({ from, to }) => to.kind === 'expr.constant' && from.kind === 'leaf' && to.constant.value.every((x, y, toColour) => ISet.every(from.masks[x + y * from.width], fromColour => {
             if (mapping[fromColour] >= 0 && mapping[fromColour] !== toColour) {
                 return false;
             }
@@ -4498,9 +4545,10 @@ var Resolver;
                     const size = ISet.size(mask);
                     if (size === 0) {
                         ctx.error('empty charset', c.pos);
+                        ok = false;
                     }
                     else if (size === 1) {
-                        [charID] = ISet.toArray(mask);
+                        charID = ISet.toArray(mask)[0];
                     }
                     else {
                         isUnion = size < alphabet.key.length;
@@ -4523,11 +4571,7 @@ var Resolver;
                 ok = false;
             }
         }
-        if (!ok) {
-            return undefined;
-        }
-        const type = { kind: 'pattern', alphabetKey: alphabet.key, width, height, hasUnions };
-        return _makeConstantExpr(type, new Pattern(width, height, pattern, masks, hasUnions), expr.pos);
+        return ok ? new Pattern(width, height, alphabet.key, pattern, masks, hasUnions) : undefined;
     }
     function _resolveCountExpr(expr, ctx) {
         const { pos } = expr;
@@ -4538,7 +4582,7 @@ var Resolver;
         if (pattern === PROP_ERROR) {
             return undefined;
         }
-        const patterns = Symmetry.generate(pattern, ctx.symmetryName, Pattern.rotate, Pattern.reflect, Pattern.key);
+        const patterns = Symmetry.generate(pattern, ctx.symmetryName, PatternTree.rotate, PatternTree.reflect, PatternTree.key);
         // sorting makes it more likely that samplers can be reused
         patterns.sort(_cmpPatternKey);
         const inGrid = ctx.grid.id;
@@ -4559,7 +4603,7 @@ var Resolver;
             return undefined;
         }
         const width = -1, height = -1, hasUnions = legend.hasUnions;
-        const type = { kind: 'pattern', alphabetKey, width, height, hasUnions };
+        const type = { kind: hasUnions ? 'pattern.in' : 'pattern.out', alphabetKey, width, height };
         // TODO
         ctx.error(`'load' expression is currently unsupported`, expr.pos);
         return undefined;
@@ -4600,9 +4644,24 @@ var Resolver;
         if (chars === PROP_ERROR) {
             return undefined;
         }
-        const patternID = grid.convPatterns.getOrCreateID({ chars: chars.masks[0], kernel });
-        const flags = 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */;
-        return { kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos };
+        switch (chars.kind) {
+            case 'top': {
+                const flags = 31 /* ExprFlags.CONSTANT */;
+                return { kind: 'expr.attr.grid', type: Type.INT, flags, grid: grid.id, attr: 'area', pos };
+            }
+            case 'bottom': {
+                return _makeConstantExpr(Type.INT, 0, pos);
+            }
+            case 'leaf': {
+                const patternID = grid.convPatterns.getOrCreateID({ chars: chars.masks[0], kernel });
+                const flags = 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */;
+                return { kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos };
+            }
+            default: {
+                // logical ops on const 1x1 patterns should already be folded
+                throw new Error();
+            }
+        }
     }
     function _checkZero(ctx, child) {
         if (child.kind !== 'expr.constant') {
@@ -4617,32 +4676,9 @@ var Resolver;
             return undefined;
         }
     }
-    function _getOutputPatternUncertainties(ctx, from, toExpr) {
-        if (toExpr.kind !== 'expr.constant') {
-            return undefined;
-        }
-        const toPattern = toExpr.constant.value.pattern;
-        const uncertain = [];
-        for (let i = 0; i < toPattern.length; ++i) {
-            const toC = toPattern[i];
-            // this cell definitely doesn't change the grid
-            if (toC < 0 || (from !== undefined && from.pattern[i] === toC)) {
-                continue;
-            }
-            // this cell definitely does change the grid
-            if (from !== undefined && !ISet.has(from.masks[i], toC)) {
-                return undefined;
-            }
-            uncertain.push(i);
-        }
-        if (uncertain.length === 0) {
-            ctx.error(`output pattern has no effect`, toExpr.pos);
-        }
-        return uncertain;
-    }
     function _resolveObserveOrRewriteRule(rule, ctx, outGrid) {
         const { pos } = rule;
-        const from = _resolveProp(rule, 'from', 'const pattern.in', ctx);
+        let from = _resolveProp(rule, 'from', 'const pattern.in', ctx);
         if (from === PROP_ERROR) {
             return undefined;
         }
@@ -4656,21 +4692,27 @@ var Resolver;
         if (via === PROP_ERROR || to === undefined || to === PROP_ERROR || condition === PROP_ERROR) {
             return undefined;
         }
-        if (condition.kind === 'expr.constant' && !condition.constant.value) {
+        if (rule.kind === 'rule.rewrite' && to.kind === 'expr.constant') {
+            from = PatternTree.and(from, PatternTree.not(to.constant.value));
+        }
+        if (from.kind === 'bottom') {
+            ctx.error('rule has no effect', pos);
+            return { rules: [] };
+        }
+        else if (condition.kind === 'expr.constant' && !condition.constant.value) {
             // condition is constant `false` expression
             return { rules: [] };
         }
         const rules = [];
         const makeRule = (from, via, to) => {
-            const toUncertainties = _getOutputPatternUncertainties(ctx, ctx.grid.id === outGrid.id ? from : undefined, to);
-            rules.push({ kind: rule.kind, from, via, to, toUncertainties, condition, pos });
+            rules.push({ kind: rule.kind, from, via, to, condition, pos });
         };
         if ((via === undefined || via.kind === 'expr.constant') && to.kind === 'expr.constant') {
-            const symmetries = Symmetry.generate({ from, via: via?.constant?.value, to: to.constant.value }, ctx.symmetryName, s => ({ from: Pattern.rotate(s.from), via: s.via && Pattern.rotate(s.via), to: Pattern.rotate(s.to) }), s => ({ from: Pattern.reflect(s.from), via: s.via && Pattern.reflect(s.via), to: Pattern.reflect(s.to) }), s => `${Pattern.key(s.from)} -> ${s.via && Pattern.key(s.via)} -> ${Pattern.key(s.to)}`);
+            const symmetries = Symmetry.generate({ from, via: via?.constant?.value, to: to.constant.value }, ctx.symmetryName, s => ({ from: PatternTree.rotate(s.from), via: s.via && Pattern.rotate(s.via), to: Pattern.rotate(s.to) }), s => ({ from: PatternTree.reflect(s.from), via: s.via && Pattern.reflect(s.via), to: Pattern.reflect(s.to) }), s => `${PatternTree.key(s.from)} -> ${s.via && Pattern.key(s.via)} -> ${Pattern.key(s.to)}`);
             function makeExpr(p, original) {
                 const { width, height } = p;
-                const { alphabetKey, hasUnions } = original.type;
-                return _makeConstantExpr({ kind: 'pattern', width, height, alphabetKey, hasUnions }, p, original.pos);
+                const { alphabetKey } = original.type;
+                return _makeConstantExpr({ kind: 'pattern.out', width, height, alphabetKey }, p, original.pos);
             }
             for (const s of symmetries) {
                 makeRule(s.from, via && s.via && makeExpr(s.via, via), makeExpr(s.to, to));
@@ -4820,7 +4862,7 @@ var Resolver;
                 if (grid === PROP_ERROR) {
                     return undefined;
                 }
-                return { kind: 'expr.attr.grid', type, flags: left.flags, grid, attr: attr, pos };
+                return { kind: 'expr.attr.grid', type, flags: 31 /* ExprFlags.CONSTANT */, grid, attr: attr, pos };
             }
             else if (left.kind === 'expr.constant') {
                 if (kind === 'dict') {
@@ -4899,7 +4941,14 @@ var Resolver;
         'expr.literal.bool': _resolveSimpleLiteralExpr,
         'expr.literal.float': _resolveSimpleLiteralExpr,
         'expr.literal.int': _resolveSimpleLiteralExpr,
-        'expr.literal.pattern': _resolvePatternLiteralExpr,
+        'expr.literal.pattern': (expr, ctx) => {
+            const p = _resolvePatternLiteralExpr(expr, ctx);
+            if (p === undefined) {
+                return undefined;
+            }
+            const { width, height, alphabetKey } = p;
+            return _makeConstantExpr({ kind: p.hasUnions ? 'pattern.in' : 'pattern.out', alphabetKey, width, height }, p.isTop() ? PatternTree.top(width, height) : p, expr.pos);
+        },
         'expr.literal.str': _resolveSimpleLiteralExpr,
         'expr.name.keyword': (expr, ctx) => {
             const { name, pos } = expr;
@@ -4949,6 +4998,20 @@ var Resolver;
             if (left === undefined || right === undefined) {
                 return undefined;
             }
+            const { pos } = expr;
+            if ((expr.op === 'and' || expr.op === 'or') && (left.type.kind === 'pattern.in' || left.type.kind === 'pattern.out')) {
+                const type = { ...left.type, kind: 'pattern.in' };
+                if (!ctx.checkType(type, right)) {
+                    return undefined;
+                }
+                if (left.kind !== 'expr.constant' || right.kind !== 'expr.constant') {
+                    // TODO?
+                    ctx.error(`'${expr.op}' may only be used on constant patterns`, pos);
+                    return undefined;
+                }
+                const value = PatternTree[expr.op](left.constant.value, right.constant.value);
+                return _makeConstantExpr(type, value, pos);
+            }
             // type coercion, from int to float or fraction
             if (left.type.kind === 'int' && (right.type.kind === 'float' || right.type.kind === 'fraction')) {
                 left = _coerceFromInt(left, right.type);
@@ -4962,7 +5025,6 @@ var Resolver;
             else if (right.type.kind === 'str' && expr.op === '+') {
                 left = _coerceToStr(left);
             }
-            const { pos } = expr;
             const spec = Op.BINARY_OP_TYPES[expr.op];
             for (const [leftType, rightType, outType, op] of spec) {
                 // OK to only check `kind`, since it's a primitive type
@@ -5045,11 +5107,21 @@ var Resolver;
             if (child === undefined) {
                 return undefined;
             }
+            const { pos } = expr;
+            if (expr.op === 'not' && (child.type.kind === 'pattern.in' || child.type.kind === 'pattern.out')) {
+                const type = { ...child.type, kind: 'pattern.in' };
+                if (child.kind !== 'expr.constant') {
+                    // TODO?
+                    ctx.error(`'not' may only be used on constant patterns`, pos);
+                    return undefined;
+                }
+                const value = PatternTree.not(child.constant.value);
+                return _makeConstantExpr(type, value, pos);
+            }
             // unary + is a NOOP
             if (expr.op === '+') {
                 return ctx.checkType(Type.NUMERIC, child) ? child : undefined;
             }
-            const { pos } = expr;
             const spec = Op.UNARY_OP_TYPES[expr.op];
             for (const [inType, outType, op] of spec) {
                 // OK to only check `kind`, since it's a primitive type
@@ -5157,7 +5229,8 @@ var Resolver;
         'stmt.path': _resolvePropsStmt,
         'stmt.pass': (stmt, ctx) => undefined,
         'stmt.put': (stmt, ctx) => {
-            if (!ctx.expectGrid(stmt.pos)) {
+            const { pos } = stmt;
+            if (!ctx.expectGrid(pos)) {
                 return undefined;
             }
             const at = _resolveProp(stmt, 'at', 'position', ctx);
@@ -5168,9 +5241,8 @@ var Resolver;
                 return undefined;
             }
             const { pattern, condition } = props;
-            const uncertainties = _getOutputPatternUncertainties(ctx, undefined, pattern);
             const inGrid = ctx.grid.id;
-            return { kind: 'stmt', stmt: { kind: 'stmt.put', inGrid, at, pattern, uncertainties, condition, pos: stmt.pos } };
+            return { kind: 'stmt', stmt: { kind: 'stmt.put', inGrid, at, pattern, condition, pos } };
         },
         'stmt.rules.all': _resolveAllOnceOneStmt,
         'stmt.rules.convolution': (stmt, ctx) => ctx.withKernel(stmt, kernel => {
@@ -5187,7 +5259,14 @@ var Resolver;
                 if (rule.from.width !== 1 || rule.from.height !== 1) {
                     ctx.error(`'convolution' rule patterns must be 1x1`, rule.pos);
                 }
-                const chars = rule.from.masks[0];
+                if (rule.from.kind === 'bottom') {
+                    continue;
+                }
+                // logical ops on const 1x1 patterns should already be folded
+                if (rule.from.kind !== 'leaf' && rule.from.kind !== 'top') {
+                    throw new Error();
+                }
+                const chars = rule.from.kind === 'top' ? ctx.grid.alphabet.wildcard : rule.from.masks[0];
                 if (!ISet.isDisjoint(chars, charsUsed)) {
                     ctx.error(`'convolution' input patterns must be disjoint`, rule.pos);
                 }
@@ -5335,7 +5414,7 @@ var Symmetry;
                 newMasks.push(masks[index]);
             }
         }
-        return new Pattern(newWidth, newHeight, newData, newMasks, p.hasUnions);
+        return new Pattern(newWidth, newHeight, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     Symmetry.transform = transform;
     function generate(original, groupName, rotate, reflect, keyFunc) {
@@ -5671,6 +5750,7 @@ var Type;
     Type.GRID_ATTRS = new Map([
         ['width', Type.INT],
         ['height', Type.INT],
+        ['area', Type.INT],
     ]);
     Type.POSITION_ATTRS = new Map([
         ['x', Type.INT],
@@ -5695,8 +5775,9 @@ var Type;
                 return type.kind;
             case 'dict':
                 return `{${Array.from(type.entryTypes, ([k, t]) => `${k}: ${toStr(t)}`).join(', ')}}`;
-            case 'pattern':
-                return `pattern.${type.hasUnions ? 'in' : 'out'}.${type.width}x${type.height}[${type.alphabetKey}]`;
+            case 'pattern.in':
+            case 'pattern.out':
+                return `${type.kind}.${type.width}x${type.height}[${type.alphabetKey}]`;
             case 'position':
                 return `position.grid${type.inGrid}`;
         }
@@ -5716,8 +5797,10 @@ var Type;
                     const v2 = t2.entryTypes.get(k);
                     return v2 !== undefined && equals(v1, v2);
                 });
-            case 'pattern':
-                return t2.kind === 'pattern' && t1.alphabetKey === t2.alphabetKey && t1.hasUnions === t2.hasUnions
+            case 'pattern.in':
+            case 'pattern.out':
+                return t1.kind === t2.kind
+                    && t1.alphabetKey === t2.alphabetKey
                     && t1.width === t2.width && t1.height === t2.height;
             case 'position':
                 return t2.kind === 'position' && t1.inGrid === t2.inGrid;
@@ -5729,7 +5812,8 @@ var Type;
             case 'any_dict':
                 return t1.kind === 'dict';
             case 'any_pattern':
-                return t1.kind === 'pattern' && t1.alphabetKey === t2.alphabetKey;
+                return (t1.kind === 'pattern.out' || (t1.kind === 'pattern.in' && t2.allowUnions))
+                    && t1.alphabetKey === t2.alphabetKey;
             case 'any_position':
                 return t1.kind === 'position';
             case 'union':
@@ -5739,10 +5823,12 @@ var Type;
                     const v2 = t2.entryTypes.get(k);
                     return v2 !== undefined && isSubtype(v1, v2);
                 });
-            case 'pattern':
-                return t1.kind === 'pattern' && t1.alphabetKey === t2.alphabetKey
+            case 'pattern.in':
+            case 'pattern.out':
+                return (t1.kind === 'pattern.in' || t1.kind === 'pattern.out')
+                    && t1.alphabetKey === t2.alphabetKey
                     && t1.width === t2.width && t1.height === t2.height
-                    && (!t1.hasUnions || t2.hasUnions);
+                    && (t1.kind === 'pattern.out' || t2.kind === 'pattern.in');
             default:
                 return equals(t1, t2);
         }
@@ -5772,8 +5858,8 @@ var IR;
             const n = this.n = IR.NAMES.convBufferN(g, id);
             const name = this.name = IR.NAMES.convBufferArray(g, id);
             // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
-            const alphabetSize = g.grid.alphabet.key.length;
-            const alphabetPartition = new Partition(alphabetSize);
+            const alphabetKey = g.grid.alphabet.key;
+            const alphabetPartition = new Partition(alphabetKey.length);
             charsets.forEach(set => alphabetPartition.refine(set));
             const repMap = IDMap.withKey(i => alphabetPartition.getRepresentative(i));
             const mappedBuffers = charsets.map(chars => {
@@ -5783,7 +5869,7 @@ var IR;
             });
             repMap.forEach((rep, i) => {
                 const chars = alphabetPartition.getSet(rep);
-                const pattern = new Pattern(1, 1, [-2], [chars], true);
+                const pattern = new Pattern(1, 1, alphabetKey, [-2], [chars], true);
                 g.matcher.addMatchHandler({ kind: 'convolution', buffer: this, pattern, i });
             });
             this.k = repMap.size();
@@ -5913,7 +5999,7 @@ var IR;
         }
         makeCounter(patterns) {
             const { counters, samplers, matcher } = this;
-            const key = patterns.map(Pattern.key).join('\n');
+            const key = patterns.map(PatternTree.key).join('\n');
             // TODO: this is order-dependent, a matching sampler might be declared later
             const sampler = samplers.get(key);
             if (sampler !== undefined) {
@@ -5929,9 +6015,9 @@ var IR;
         }
         makeSampler(patterns) {
             const { samplers, matcher } = this;
-            const key = patterns.map(Pattern.key).join('\n');
+            const key = patterns.map(PatternTree.key).join('\n');
             return getOrCompute(samplers, key, () => {
-                if (patterns.length === 1 && patterns[0].isTrivial()) {
+                if (patterns.length === 1 && patterns[0].kind === 'top') {
                     const { width, height } = patterns[0];
                     return new IR.TrivialSampler(this, width, height);
                 }
@@ -6002,6 +6088,13 @@ var IR;
                 IR.declVars(vars, true),
                 ...Array.from(this.samplers.values(), sampler => sampler.declare()),
             ];
+        }
+        attr(attr) {
+            switch (attr) {
+                case 'area': return this.n;
+                case 'width': return this.width;
+                case 'height': return this.height;
+            }
         }
         /**
          * Used internally for indices which are known to be in-bounds.
@@ -6193,18 +6286,18 @@ var IR;
             const rowsToCols = IR.NAMES.matcherVar(g, id, 'rowsToCols');
             const rowStates = IR.NAMES.matcherVar(g, id, 'rowStates');
             const colStates = IR.NAMES.matcherVar(g, id, 'colStates');
-            const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), Pattern.key);
+            const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), PatternTree.key);
             const dfas = makePatternMatcherDFAs(alphabet.key.length, patternMap);
             const handlersByPattern = new Map();
             for (const handler of this.matchHandlers) {
-                const key = Pattern.key(handler.pattern);
+                const key = PatternTree.key(handler.pattern);
                 getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
             const makeStateChangeHandlers = (acceptSetMap, f) => acceptSetMap.map(accepts => {
                 const out = [];
                 for (const pattern of accepts) {
-                    const handlers = handlersByPattern.get(Pattern.key(pattern));
+                    const handlers = handlersByPattern.get(PatternTree.key(pattern));
                     if (handlers !== undefined) {
                         for (const h of handlers) {
                             out.push(this.makeMatchHandler(h, f));
@@ -6283,46 +6376,63 @@ var IR;
      * matches are reported where the patterns start rather than where they end.
      */
     function makePatternMatcherDFAs(alphabetSize, patterns) {
-        const allRows = IDMap.withKey(Pattern.key);
-        const rowMap = patterns.map(pattern => Pattern.rowsOf(pattern).map(row => allRows.getOrCreateID(row)));
-        const rowRegex = _makeRegex(allRows.map(pattern => ({
-            pattern,
-            seq: pattern.masks.map(ISet.toArray),
-        })));
-        const rowDFA = Regex.compile(alphabetSize, rowRegex, Pattern.key);
-        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(row => patterns.has(row));
-        // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
-        const keepRows = ISet.empty(allRows.size());
-        for (const rowIDs of rowMap) {
+        const allLeaves = IDMap.ofWithKey(patterns.flatMap(PatternTree.getLeaves), PatternTree.key);
+        const allLeafRows = IDMap.withKey(Pattern.key);
+        const leafRowMap = allLeaves.map(pattern => Pattern.rowsOf(pattern).map(row => allLeafRows.getOrCreateID(row)));
+        const rowAcceptMap = IDMap.withKey(PatternTree.key);
+        // the IDs of the leaf rows which must be distinguished by `colDFA`
+        const keepRows = ISet.empty(allLeafRows.size());
+        for (const rowIDs of leafRowMap) {
             if (rowIDs.length === 1) {
                 continue;
             }
             for (const rowID of rowIDs) {
                 ISet.add(keepRows, rowID);
+                rowAcceptMap.getOrCreateID(allLeafRows.getByID(rowID));
             }
         }
-        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(row => ISet.has(keepRows, allRows.getID(row)));
-        const acceptingSets = makeArray(allRows.size(), () => []);
-        rowsToColsMap.forEach((patterns, id) => {
-            for (const pattern of patterns) {
-                const patternID = allRows.getID(pattern);
-                acceptingSets[patternID].push(id);
+        // single-row patterns will be recognised by the row DFA
+        rowAcceptMap.addAll(patterns.filter(p => p.height === 1));
+        const rowDFA = Regex.compile(alphabetSize, _makeRegex(allLeafRows.map(pattern => ({
+            pattern,
+            seq: pattern.kind === 'top'
+                ? emptyArray(pattern.width, Regex.WILDCARD)
+                : pattern.masks.map(ISet.toArray).map(Regex.letters),
+        }))))
+            .map(literalRows => {
+            const acceptSet = new Set(literalRows.map(Pattern.key));
+            return rowAcceptMap.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
+        })
+            .minimise(PatternTree.key);
+        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowAcceptMap, row => patterns.has(row));
+        // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
+        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(rowAcceptMap, (row) => (row.kind === 'leaf' || row.kind === 'top') && ISet.has(keepRows, allLeafRows.getID(row)));
+        const acceptingSetIDs = makeArray(allLeafRows.size(), () => []);
+        rowsToColsMap.forEach((rowSet, rowSetID) => {
+            for (const row of rowSet) {
+                const rowID = allLeafRows.getID(row);
+                acceptingSetIDs[rowID].push(rowSetID);
             }
         });
+        const colRegexLetters = acceptingSetIDs.map(Regex.letters);
         const colRegexPatterns = [];
-        patterns.forEach((pattern, i) => {
+        allLeaves.forEach((pattern, i) => {
             // patterns with only one row will be matched by the rowDFA directly
             if (pattern.height === 1) {
                 return;
             }
             colRegexPatterns.push({
                 pattern,
-                seq: rowMap[i].map(rowID => acceptingSets[rowID]),
+                seq: leafRowMap[i].map(rowID => colRegexLetters[rowID]),
             });
         });
-        const colRegex = _makeRegex(colRegexPatterns);
-        const colDFA = Regex.compile(rowsToColsMap.size(), colRegex, Pattern.key);
-        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap();
+        const colDFA = Regex.compile(rowsToColsMap.size(), _makeRegex(colRegexPatterns))
+            .map(literals => {
+            const acceptSet = new Set(literals.map(Pattern.key));
+            return patterns.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
+        })
+            .minimise(PatternTree.key);
+        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap(patterns);
         return {
             rowDFA,
             rowsAcceptSetIDs,
@@ -6337,9 +6447,9 @@ var IR;
         return Regex.concat([
             Regex.DOT_STAR,
             Regex.union(patterns.map(p => Regex.concat([
-                ...p.seq.map(Regex.letters).reverse(),
                 Regex.accept(p.pattern),
-            ]))),
+                ...p.seq,
+            ].reverse()))),
         ]);
     }
 })(IR || (IR = {}));
@@ -6821,8 +6931,8 @@ var Regex;
     }
     Regex.accept = accept;
     Regex.DOT_STAR = kleeneStar(Regex.WILDCARD);
-    function compile(alphabetSize, regex, keyFunc) {
-        return new NFA(alphabetSize, regex).toDFA(keyFunc).minimise();
+    function compile(alphabetSize, regex) {
+        return new NFA(alphabetSize, regex).toDFA();
     }
     Regex.compile = compile;
 })(Regex || (Regex = {}));
@@ -6899,7 +7009,7 @@ class NFA {
         nodes[nodeID].epsilonClosure = out;
         return out;
     }
-    toDFA(keyFunc) {
+    toDFA() {
         // https://en.wikipedia.org/wiki/Powerset_construction
         const { alphabetSize, nodes } = this;
         const nfaStates = IDMap.withKey(ISet.key);
@@ -6948,17 +7058,15 @@ class NFA {
                 accepts,
             });
         }
-        return new DFA(alphabetSize, dfaNodes, keyFunc);
+        return new DFA(alphabetSize, dfaNodes);
     }
 }
 class DFA {
     alphabetSize;
     nodes;
-    keyFunc;
-    constructor(alphabetSize, nodes, keyFunc) {
+    constructor(alphabetSize, nodes) {
         this.alphabetSize = alphabetSize;
         this.nodes = nodes;
-        this.keyFunc = keyFunc;
         //console.log(`DFA with ${nodes.length} nodes on alphabet of size ${alphabetSize} and ${acceptSetMap.size()} accept sets`);
     }
     /**
@@ -6970,15 +7078,14 @@ class DFA {
     toFlatArray() {
         return this.nodes.flatMap(node => node.transitions);
     }
-    getAcceptSetMap(predicate) {
+    getAcceptSetMap(acceptMap, predicate) {
         const { nodes } = this;
         const acceptSets = nodes.map(predicate !== undefined
             ? node => node.accepts.filter(predicate)
             : node => node.accepts);
-        const acceptMap = IDMap.withKey(this.keyFunc);
-        const acceptSetMap = IDMap.ofWithKey(acceptSets, set => ISet.arrayToKey(set.map(accept => acceptMap.getOrCreateID(accept))));
+        const acceptSetMap = IDMap.ofWithKey(acceptSets, set => ISet.key(acceptMap.getIDSet(set)));
         return [
-            acceptSets.map(set => acceptSetMap.getID(set)),
+            acceptSetMap.getIDs(acceptSets),
             acceptSetMap,
         ];
     }
@@ -6986,8 +7093,8 @@ class DFA {
      * Returns an iterable mapping each accept to the set of node IDs which
      * accept it.
      */
-    computeAcceptingStates() {
-        const { nodes, keyFunc } = this;
+    computeAcceptingStates(keyFunc) {
+        const { nodes } = this;
         const n = nodes.length;
         const map = new Map();
         for (let id = 0; id < n; ++id) {
@@ -7002,7 +7109,7 @@ class DFA {
     /**
      * Returns an equivalent DFA with the minimum possible number of states.
      */
-    minimise() {
+    minimise(keyFunc) {
         // https://en.wikipedia.org/wiki/DFA_minimization#Hopcroft's_algorithm
         const { alphabetSize, nodes } = this;
         const n = nodes.length;
@@ -7014,7 +7121,7 @@ class DFA {
             }
         }
         const partition = new Partition(n);
-        for (const d of this.computeAcceptingStates()) {
+        for (const d of this.computeAcceptingStates(keyFunc)) {
             partition.refine(d);
         }
         // pre-allocate
@@ -7049,11 +7156,24 @@ class DFA {
         const repNodes = reps.map(rep => {
             const { transitions, accepts } = this.nodes[rep];
             return {
-                transitions: transitions.map(nodeID => reps.getID(nodeID)),
+                transitions: reps.getIDs(transitions),
                 accepts,
             };
         });
-        return new DFA(alphabetSize, repNodes, this.keyFunc);
+        return new DFA(alphabetSize, repNodes);
+    }
+    /**
+     * Returns a new DFA, with the accept sets replaced using the function `f`.
+     */
+    map(f) {
+        const mappedNodes = this.nodes.map(node => {
+            const { transitions, accepts } = node;
+            return {
+                transitions,
+                accepts: f(accepts),
+            };
+        });
+        return new DFA(this.alphabetSize, mappedNodes);
     }
 }
 /**
@@ -7077,9 +7197,7 @@ class IDMap {
     }
     static ofWithKey(iterable, keyFunc) {
         const map = new IDMap(keyFunc);
-        for (const x of iterable) {
-            map.getOrCreateID(x);
-        }
+        map.addAll(iterable);
         return map;
     }
     /**
@@ -7128,6 +7246,11 @@ class IDMap {
             return id;
         });
     }
+    addAll(xs) {
+        for (const x of xs) {
+            this.getOrCreateID(x);
+        }
+    }
     /**
      * Indicates whether the given element is associated with an ID, in O(1)
      * time.
@@ -7145,6 +7268,16 @@ class IDMap {
             throw new Error();
         }
         return id;
+    }
+    getIDs(xs) {
+        return xs.map(x => this.getID(x));
+    }
+    getIDSet(xs) {
+        const set = ISet.empty(this.arr.length);
+        for (const x of xs) {
+            ISet.add(set, this.getID(x));
+        }
+        return set;
     }
     /**
      * Returns the ID of the given element, or -1 if the given element is not
@@ -7256,6 +7389,18 @@ var ISet;
     }
     ISet.addAll = addAll;
     /**
+     * Removes the members from the set `a` which are not in `b`, in O(N) time.
+     */
+    function retainAll(a, b) {
+        if (a.length < b.length) {
+            throw new Error();
+        }
+        for (let i = 0; i < b.length; ++i) {
+            a[i] &= b[i];
+        }
+    }
+    ISet.retainAll = retainAll;
+    /**
      * Removes all the members of the set `b` to the set `a`, in O(N) time.
      */
     function removeAll(a, b) {
@@ -7268,7 +7413,7 @@ var ISet;
     }
     ISet.removeAll = removeAll;
     /**
-     * Removes all elements from the set.
+     * Removes all elements from the set, in O(N) time.
      */
     function clear(a) {
         for (let i = 0; i < a.length; ++i) {
@@ -7276,6 +7421,24 @@ var ISet;
         }
     }
     ISet.clear = clear;
+    /**
+     * Returns a new set which is the union of `a` and `b`, in O(N) time.
+     */
+    function union(a, b) {
+        const out = new Uint32Array(a);
+        addAll(out, b);
+        return out;
+    }
+    ISet.union = union;
+    /**
+     * Returns a new set which is the intersection of `a` and `b`, in O(N) time.
+     */
+    function intersection(a, b) {
+        const out = new Uint32Array(a);
+        retainAll(out, b);
+        return out;
+    }
+    ISet.intersection = intersection;
     /**
      * Determines whether the two sets are disjoint (i.e. they have no elements
      * in common).
@@ -7292,6 +7455,21 @@ var ISet;
         return true;
     }
     ISet.isDisjoint = isDisjoint;
+    /**
+     * Determines whether `a` is a subset of `b`, in O(N) time.
+     */
+    function isSubset(a, b) {
+        if (a.length > b.length) {
+            throw new Error();
+        }
+        for (let i = 0; i < a.length; ++i) {
+            if ((a[i] & ~b[i]) !== 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+    ISet.isSubset = isSubset;
     /**
      * Converts an unordered array to a primitive type, suitable for use as a
      * Map key, in O(N) time.
@@ -7416,17 +7594,236 @@ function quoteJoin(hints, delimiter = ', ') {
     return hints.map(s => `'${s}'`).join(delimiter);
 }
 ///<reference path="../runtime/mjr.ts"/>
+var PatternTree;
+(function (PatternTree) {
+    /**
+     * Returns the intersection of two patterns, or `undefined` if they are
+     * mutually exclusive.
+     */
+    function _intersect(left, right) {
+        const { alphabetKey, masks: leftMasks } = left;
+        const pattern = [];
+        const masks = [];
+        for (let i = 0; i < leftMasks.length; ++i) {
+            const mask = ISet.intersection(leftMasks[i], right.masks[i]);
+            const maskSize = ISet.size(mask);
+            if (maskSize === 0) {
+                return undefined;
+            }
+            pattern.push(maskSize === 1 ? ISet.toArray(mask)[0]
+                : maskSize === alphabetKey.length ? -1
+                    : -2);
+            masks.push(mask);
+        }
+        return new Pattern(left.width, left.height, alphabetKey, pattern, masks, true);
+    }
+    /**
+     * Conservatively estimates of whether, if `left` matches, `right` must too.
+     */
+    function _entails(left, right) {
+        switch (left.kind) {
+            case 'leaf':
+                return left.masks.every((mask, i) => ISet.isSubset(mask, right.masks[i]));
+            case 'top':
+                return false;
+            case 'bottom':
+                return true;
+            case 'and':
+                return _entails(left.left, right) || _entails(left.right, right);
+            case 'or':
+                return _entails(left.left, right) && _entails(left.right, right);
+            case 'not':
+                return false;
+        }
+    }
+    function top(width, height) {
+        return { kind: 'top', width, height, _key: undefined };
+    }
+    PatternTree.top = top;
+    function bottom(width, height) {
+        return { kind: 'bottom', width, height, _key: undefined };
+    }
+    PatternTree.bottom = bottom;
+    function and(left, right) {
+        const { width, height } = left;
+        if (right.width !== width || right.height !== height) {
+            throw new Error();
+        }
+        if (left.kind === 'bottom' || right.kind === 'top') {
+            return left;
+        }
+        else if (left.kind === 'top' || right.kind === 'bottom') {
+            return right;
+        }
+        else if (left.kind === 'leaf' && right.kind === 'leaf') {
+            return _intersect(left, right) ?? bottom(width, height);
+        }
+        else if (left.kind === 'leaf' && right.kind === 'not' && _intersect(left, right.child) === undefined) {
+            return left;
+        }
+        else if (right.kind === 'leaf' && left.kind === 'not' && _intersect(left.child, right) === undefined) {
+            return right;
+        }
+        else if ((left.kind === 'not' && _entails(right, left.child)) || (right.kind === 'not' && _entails(left, right.child))) {
+            return bottom(width, height);
+        }
+        return { kind: 'and', left, right, width, height, _key: undefined };
+    }
+    PatternTree.and = and;
+    function or(left, right) {
+        const { width, height } = left;
+        if (right.width !== width || right.height !== height) {
+            throw new Error();
+        }
+        if (left.kind === 'top' || right.kind === 'bottom') {
+            return left;
+        }
+        else if (left.kind === 'bottom' || right.kind === 'top') {
+            return right;
+        }
+        else if (left.kind === 'leaf' && right.kind === 'leaf' && width === 1 && height === 1) {
+            const { alphabetKey } = left;
+            const mask = ISet.union(left.masks[0], right.masks[0]);
+            return ISet.size(mask) === alphabetKey.length
+                ? top(1, 1)
+                : new Pattern(1, 1, alphabetKey, [-2], [mask], true);
+        }
+        return { kind: 'or', left, right, width, height, _key: undefined };
+    }
+    PatternTree.or = or;
+    function not(child) {
+        const { width, height } = child;
+        switch (child.kind) {
+            case 'top':
+                return bottom(width, height);
+            case 'bottom':
+                return top(width, height);
+            case 'and':
+                return or(not(child.left), not(child.right));
+            case 'or':
+                return and(not(child.left), not(child.right));
+            case 'not':
+                return child.child;
+        }
+        // leaf
+        if (width === 1 && height === 1) {
+            const { alphabetKey } = child;
+            const mask = ISet.full(alphabetKey.length);
+            ISet.removeAll(mask, child.masks[0]);
+            return new Pattern(width, height, alphabetKey, [-2], [mask], true);
+        }
+        return { kind: 'not', child, width, height, _key: undefined };
+    }
+    PatternTree.not = not;
+    function rotate(p) {
+        switch (p.kind) {
+            case 'leaf':
+                return Pattern.rotate(p);
+            case 'top':
+                return top(p.height, p.width);
+            case 'bottom':
+                return bottom(p.height, p.width);
+            case 'and':
+                return and(rotate(p.left), rotate(p.right));
+            case 'or':
+                return or(rotate(p.left), rotate(p.right));
+            case 'not':
+                return not(Pattern.rotate(p.child));
+        }
+    }
+    PatternTree.rotate = rotate;
+    function reflect(p) {
+        switch (p.kind) {
+            case 'leaf':
+                return Pattern.reflect(p);
+            case 'top':
+            case 'bottom':
+                return p;
+            case 'and':
+                return and(reflect(p.left), reflect(p.right));
+            case 'or':
+                return or(reflect(p.left), reflect(p.right));
+            case 'not':
+                return not(Pattern.reflect(p.child));
+        }
+    }
+    PatternTree.reflect = reflect;
+    function getLeaves(p) {
+        switch (p.kind) {
+            case 'leaf':
+            case 'top':
+                return [p];
+            case 'bottom':
+                return [];
+            case 'and':
+            case 'or': {
+                const out = getLeaves(p.left);
+                out.push(...getLeaves(p.right));
+                return out;
+            }
+            case 'not': {
+                const out = getLeaves(p.child);
+                out.push(top(p.width, p.height));
+                return out;
+            }
+        }
+    }
+    PatternTree.getLeaves = getLeaves;
+    /**
+     * Evaluates a pattern tree as a boolean expression, using the given
+     * predicate to evaluate the leaf and top nodes.
+     */
+    function matches(p, predicate) {
+        switch (p.kind) {
+            case 'leaf':
+            case 'top':
+                return predicate(p);
+            case 'bottom':
+                return false;
+            case 'and':
+                return matches(p.left, predicate) && matches(p.right, predicate);
+            case 'or':
+                return matches(p.left, predicate) || matches(p.right, predicate);
+            case 'not':
+                return predicate(top(p.width, p.height)) && !matches(p.child, predicate);
+        }
+    }
+    PatternTree.matches = matches;
+    function key(p) {
+        switch (p.kind) {
+            case 'leaf':
+            case 'top':
+                return Pattern.key(p);
+            case 'bottom':
+                return p._key ??= `${p.width}x${p.height}:${p.kind}`;
+            case 'and':
+            case 'or':
+                return p._key ??= `(${key(p.left)}) ${p.kind} (${key(p.right)})`;
+            case 'not':
+                return p._key ??= `not (${key(p.child)})`;
+        }
+    }
+    PatternTree.key = key;
+})(PatternTree || (PatternTree = {}));
 class Pattern extends MJr.Pattern {
+    alphabetKey;
     masks;
     hasUnions;
     static rowsOf(p) {
-        const { width, height, pattern, masks } = p;
+        const { width, height } = p;
+        if (height === 1) {
+            return [p];
+        }
+        if (p.kind === 'top') {
+            return emptyArray(height, PatternTree.top(width, 1));
+        }
+        const { pattern, masks } = p;
         const out = [];
         const n = width * height;
         for (let offset = 0; offset < n; offset += width) {
             const row = pattern.slice(offset, offset + width);
             const rowMasks = masks.slice(offset, offset + width);
-            out.push(new Pattern(width, 1, row, rowMasks, p.hasUnions));
+            out.push(new Pattern(width, 1, p.alphabetKey, row, rowMasks, p.hasUnions));
         }
         return out;
     }
@@ -7441,7 +7838,7 @@ class Pattern extends MJr.Pattern {
                 newMasks.push(masks[index]);
             }
         }
-        return new Pattern(height, width, newData, newMasks, p.hasUnions);
+        return new Pattern(height, width, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     static reflect(p) {
         const { width, height, pattern, masks } = p;
@@ -7454,11 +7851,12 @@ class Pattern extends MJr.Pattern {
                 newMasks.push(masks[index]);
             }
         }
-        return new Pattern(width, height, newData, newMasks, p.hasUnions);
+        return new Pattern(width, height, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     static key(p) {
-        return p._key ??= `${p.width}x${p.height}:${p.masks.map(ISet.key).join(';')}`;
+        return p._key ??= `${p.width}x${p.height}:${p.kind === 'leaf' ? p.masks.map(ISet.key).join(';') : 'top'}`;
     }
+    kind = 'leaf';
     _key = undefined;
     constructor(
     /**
@@ -7468,7 +7866,7 @@ class Pattern extends MJr.Pattern {
     /**
      * The pattern's height.
      */
-    height, 
+    height, alphabetKey, 
     /**
      * The pattern, as a flat array. Wildcards are represented as -1, and
      * unions as -2.
@@ -7484,14 +7882,15 @@ class Pattern extends MJr.Pattern {
      */
     hasUnions) {
         super(width, height, pattern);
+        this.alphabetKey = alphabetKey;
         this.masks = masks;
         this.hasUnions = hasUnions;
     }
     /**
-     * Indicates whether this pattern is trivial, i.e. it always matches at any
-     * position.
+     * Indicates whether this pattern is tautological, i.e. it always matches
+     * at any position.
      */
-    isTrivial() {
+    isTop() {
         return this.pattern.every(p => p === -1);
     }
     /**

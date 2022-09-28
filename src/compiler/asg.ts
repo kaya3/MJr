@@ -69,16 +69,16 @@ namespace ASG {
     export type PropTypeSpec = keyof _PropTypeMap
     type _PropTypeMap = {
         'bool': 'bool',
-        'charset.in': 'pattern',
-        'charset.out': 'pattern',
+        'charset.in': 'pattern.in',
+        'charset.out': 'pattern.out',
         'dict': 'dict',
         'float': 'float',
         'fraction': 'fraction',
         'grid': 'grid',
         'int': 'int',
         'object': 'dict' | 'grid' | 'position',
-        'pattern.in': 'pattern',
-        'pattern.out': 'pattern',
+        'pattern.in': 'pattern.in',
+        'pattern.out': 'pattern.out',
         'position': 'position',
         'str': 'str',
         'str~': 'str',
@@ -104,7 +104,7 @@ namespace ASG {
     
     type OpExpr = BinaryOpExpr | CountExpr | RandIntExpr | SumExpr | TernaryExpr | UnaryOpExpr
     export interface BinaryOpExpr extends _ExprNode<'op.binary', {op: Op.BinaryOp, left: Expression, right: Expression}> {}
-    export interface CountExpr extends _ExprNode<'count', {inGrid: number, patterns: readonly Pattern[]}> {}
+    export interface CountExpr extends _ExprNode<'count', {inGrid: number, patterns: readonly PatternTree[]}> {}
     export interface RandIntExpr extends _ExprNode<'randint', {max: Prop<'int'>}> {}
     export interface SumExpr extends _ExprNode<'sum', {inGrid: number, patternID: number}> {}
     export interface TernaryExpr extends _ExprNode<'op.ternary', {condition: Prop<'bool'>, then: Expression, otherwise: Expression}> {}
@@ -122,8 +122,8 @@ namespace ASG {
     // rules
     type _RuleNode<K extends string, T> = _Node<`rule.${K}`, T>
     export interface FieldRule extends _RuleNode<'field', {potential: FormalPotential, for_: ASG.Prop<'charset.in'>, zero: ASG.Prop<'charset.in'>, on: ASG.Prop<'charset.in'>, inversed: boolean, essential: boolean, recompute: boolean}> {}
-    export interface ObserveRule extends _RuleNode<'observe', {from: Prop<'const pattern.in'>, via: Prop<'pattern.in?'>, to: Prop<'pattern.out'>, toUncertainties: readonly number[] | undefined, condition: Prop<'bool'>}> {}
-    export interface RewriteRule extends _RuleNode<'rewrite', {from: Prop<'const pattern.in'>, to: Prop<'pattern.out'>, toUncertainties: readonly number[] | undefined, condition: Prop<'bool'>}> {}
+    export interface ObserveRule extends _RuleNode<'observe', {from: Prop<'const pattern.in'>, via: Prop<'pattern.out?'>, to: Prop<'pattern.out'>, condition: Prop<'bool'>}> {}
+    export interface RewriteRule extends _RuleNode<'rewrite', {from: Prop<'const pattern.in'>, to: Prop<'pattern.out'>, condition: Prop<'bool'>}> {}
     
     // statements
     type _StmtNode<K extends string, T> = _Node<`stmt.${K}`, T>
@@ -149,14 +149,14 @@ namespace ASG {
     export interface ConvolutionStmt extends _RulesStmtNode<'convolution', {kernel: Convolution.Kernel}> {}
     export interface SearchRulesStmt extends _RulesStmtNode<'search.all' | 'search.one', {temperature: Prop<'float?'>, maxStates: Prop<'int?'>, depthCoefficient: Prop<'float?'>, observations: readonly ObserveRule[]}> {}
     
-    export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, sample: Type.Value<'pattern'>, n: number, temperature: Prop<'float?'>, on: Prop<'charset.in'>, periodic: boolean | undefined}> {}
+    export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, sample: Type.Value<'pattern.out'>, n: number, temperature: Prop<'float?'>, on: Prop<'charset.in'>, periodic: boolean | undefined}> {}
     export interface PathStmt extends _StmtNode<'path', {inGrid: number, from: Prop<'charset.in'>, to: Prop<'charset.in'>, input: Prop<'charset.in'>, output: Prop<'charset.out'>, longest: Prop<'bool?'>, inertia: Prop<'bool?'>}> {}
     
     export type NonBranchingStmt = AssignStmt | LogStmt | MapStmt | PutStmt | UseStmt
     export interface AssignStmt extends _StmtNode<'assign', {variable: FormalVariable, rhs: Expression}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Prop<'str'>}> {}
     export interface MapStmt extends _RulesStmtNode<'map', {outGrid: number}> {}
-    export interface PutStmt extends _StmtNode<'put', {inGrid: number, pattern: Prop<'pattern.out'>, at: Prop<'position'>, uncertainties: readonly number[], condition: Prop<'bool?'>}> {}
+    export interface PutStmt extends _StmtNode<'put', {inGrid: number, pattern: Prop<'pattern.out'>, at: Prop<'position'>, condition: Prop<'bool?'>}> {}
     export interface UseStmt extends _StmtNode<'use', {grid: number}> {}
 }
 

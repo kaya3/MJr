@@ -1,11 +1,10 @@
 ///<reference path="names.ts"/>
 
 namespace IR {
-    // TODO: more kinds of match handler (e.g. conditional on another pattern not being
-    // present, conditional on a boolean expression)
+    // TODO: more kinds of match handler (e.g. conditional on a boolean expression)
     export type MatchHandler = Readonly<
-        | {kind: 'sampler', pattern: Pattern, sampler: AbstractSampler, i: number}
-        | {kind: 'counter', pattern: Pattern, counter: NameExpr}
+        | {kind: 'sampler', pattern: PatternTree, sampler: AbstractSampler, i: number}
+        | {kind: 'counter', pattern: PatternTree, counter: NameExpr}
         | {kind: 'convolution', pattern: Pattern, buffer: ConvBuffer, i: number}
     >
     
@@ -56,20 +55,20 @@ namespace IR {
             const rowStates = NAMES.matcherVar(g, id, 'rowStates');
             const colStates = NAMES.matcherVar(g, id, 'colStates');
             
-            const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), Pattern.key);
+            const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), PatternTree.key);
             const dfas = makePatternMatcherDFAs(alphabet.key.length, patternMap);
             
             const handlersByPattern = new Map<string, MatchHandler[]>();
             for(const handler of this.matchHandlers) {
-                const key = Pattern.key(handler.pattern);
+                const key = PatternTree.key(handler.pattern);
                 getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             
             // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            const makeStateChangeHandlers = (acceptSetMap: ReadonlyIDMap<readonly Pattern[]>, f: 'add' | 'del'): Stmt[] => acceptSetMap.map(accepts => {
+            const makeStateChangeHandlers = (acceptSetMap: ReadonlyIDMap<readonly PatternTree[]>, f: 'add' | 'del'): Stmt[] => acceptSetMap.map(accepts => {
                 const out: Stmt[] = [];
                 for(const pattern of accepts) {
-                    const handlers = handlersByPattern.get(Pattern.key(pattern));
+                    const handlers = handlersByPattern.get(PatternTree.key(pattern));
                     if(handlers !== undefined) {
                         for(const h of handlers) {
                             out.push(this.makeMatchHandler(h, f));
@@ -78,7 +77,7 @@ namespace IR {
                 }
                 return block(out);
             });
-            const makeUpdateSamplers = (acceptSets: Expr, acceptSetMap: ReadonlyIDMap<readonly Pattern[]>): Stmt[] => acceptSetMap.size() > 1 ? [
+            const makeUpdateSamplers = (acceptSets: Expr, acceptSetMap: ReadonlyIDMap<readonly PatternTree[]>): Stmt[] => acceptSetMap.size() > 1 ? [
                 declVars([
                     {name: T, type: INT_TYPE, initialiser: access(acceptSets, S)},
                     {name: OLD_T, type: INT_TYPE, initialiser: access(acceptSets, OLD_S)},
@@ -170,13 +169,13 @@ namespace IR {
     }
     
     type MatcherDFAs = Readonly<{
-        rowDFA: DFA<Pattern>,
+        rowDFA: DFA<PatternTree>,
         rowsAcceptSetIDs: readonly number[],
-        rowsAcceptSetMap: ReadonlyIDMap<readonly Pattern[]>,
+        rowsAcceptSetMap: ReadonlyIDMap<readonly PatternTree[]>,
         rowsToCols: readonly number[],
-        colDFA: DFA<Pattern>,
+        colDFA: DFA<PatternTree>,
         colsAcceptSetIDs: readonly number[],
-        colsAcceptSetMap: ReadonlyIDMap<readonly Pattern[]>,
+        colsAcceptSetMap: ReadonlyIDMap<readonly PatternTree[]>,
     }>
     
     /**
@@ -187,47 +186,77 @@ namespace IR {
      * The DFAs recognise the patterns in reverse order, for convenience so that
      * matches are reported where the patterns start rather than where they end.
      */
-    function makePatternMatcherDFAs(alphabetSize: number, patterns: ReadonlyIDMap<Pattern>): MatcherDFAs {
-        const allRows = IDMap.withKey(Pattern.key);
-        const rowMap = patterns.map(pattern => Pattern.rowsOf(pattern).map(row => allRows.getOrCreateID(row)));
+    function makePatternMatcherDFAs(alphabetSize: number, patterns: ReadonlyIDMap<PatternTree>): MatcherDFAs {
+        const allLeaves = IDMap.ofWithKey(patterns.flatMap(PatternTree.getLeaves), PatternTree.key);
+        const allLeafRows = IDMap.withKey(Pattern.key);
+        const leafRowMap = allLeaves.map(pattern => Pattern.rowsOf(pattern).map(row => allLeafRows.getOrCreateID(row)));
+        const rowAcceptMap = IDMap.withKey(PatternTree.key);
         
-        const rowRegex = _makeRegex(allRows.map(pattern => ({
-            pattern,
-            seq: pattern.masks.map(ISet.toArray),
-        })));
-        const rowDFA = Regex.compile(alphabetSize, rowRegex, Pattern.key);
-        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(row => patterns.has(row));
+        // the IDs of the leaf rows which must be distinguished by `colDFA`
+        const keepRows = ISet.empty(allLeafRows.size());
         
-        // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
-        const keepRows = ISet.empty(allRows.size());
-        for(const rowIDs of rowMap) {
+        for(const rowIDs of leafRowMap) {
             if(rowIDs.length === 1) { continue; }
             for(const rowID of rowIDs) {
                 ISet.add(keepRows, rowID);
+                rowAcceptMap.getOrCreateID(allLeafRows.getByID(rowID));
             }
         }
-        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(row => ISet.has(keepRows, allRows.getID(row)));
+        // single-row patterns will be recognised by the row DFA
+        rowAcceptMap.addAll(patterns.filter(p => p.height === 1));
         
-        const acceptingSets: number[][] = makeArray(allRows.size(), () => []);
-        rowsToColsMap.forEach((patterns, id) => {
-            for(const pattern of patterns) {
-                const patternID = allRows.getID(pattern);
-                acceptingSets[patternID].push(id);
+        const rowDFA = Regex.compile(
+                alphabetSize,
+                _makeRegex(allLeafRows.map(pattern => ({
+                    pattern,
+                    seq: pattern.kind === 'top'
+                        ? emptyArray(pattern.width, Regex.WILDCARD)
+                        : pattern.masks.map(ISet.toArray).map(Regex.letters),
+                }))),
+            )
+            .map(literalRows => {
+                const acceptSet = new Set(literalRows.map(Pattern.key));
+                return rowAcceptMap.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
+            })
+            .minimise(PatternTree.key);
+        
+        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowAcceptMap, row => patterns.has(row));
+        
+        // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
+        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(
+            rowAcceptMap,
+            (row: PatternTree): row is PatternTree.LeafOrTop => (row.kind === 'leaf' || row.kind === 'top') && ISet.has(keepRows, allLeafRows.getID(row)),
+        );
+        
+        const acceptingSetIDs: number[][] = makeArray(allLeafRows.size(), () => []);
+        rowsToColsMap.forEach((rowSet, rowSetID) => {
+            for(const row of rowSet) {
+                const rowID = allLeafRows.getID(row);
+                acceptingSetIDs[rowID].push(rowSetID);
             }
         });
+        const colRegexLetters = acceptingSetIDs.map(Regex.letters);
         
         const colRegexPatterns: PatternSeq[] = [];
-        patterns.forEach((pattern, i) => {
+        allLeaves.forEach((pattern, i) => {
             // patterns with only one row will be matched by the rowDFA directly
             if(pattern.height === 1) { return; }
             colRegexPatterns.push({
                 pattern,
-                seq: rowMap[i].map(rowID => acceptingSets[rowID]),
+                seq: leafRowMap[i].map(rowID => colRegexLetters[rowID]),
             });
         });
-        const colRegex = _makeRegex(colRegexPatterns);
-        const colDFA = Regex.compile(rowsToColsMap.size(), colRegex, Pattern.key);
-        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap();
+        const colDFA = Regex.compile(
+                rowsToColsMap.size(),
+                _makeRegex(colRegexPatterns),
+            )
+            .map(literals => {
+                const acceptSet = new Set(literals.map(Pattern.key));
+                return patterns.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
+            })
+            .minimise(PatternTree.key);
+        
+        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap(patterns);
         
         return {
             rowDFA,
@@ -240,15 +269,15 @@ namespace IR {
         };
     }
     
-    type PatternSeq = Readonly<{pattern: Pattern, seq: readonly number[][]}>
-    function _makeRegex(patterns: PatternSeq[]): Regex.Node<Pattern> {
+    type PatternSeq = Readonly<{pattern: PatternTree.LeafOrTop, seq: readonly Regex.Node<PatternTree.LeafOrTop>[]}>
+    function _makeRegex(patterns: PatternSeq[]): Regex.Node<PatternTree.LeafOrTop> {
         return Regex.concat([
             Regex.DOT_STAR,
             Regex.union(
                 patterns.map(p => Regex.concat([
-                    ...p.seq.map(Regex.letters).reverse(),
                     Regex.accept(p.pattern),
-                ]))
+                    ...p.seq,
+                ].reverse()))
             ),
         ]);
     }

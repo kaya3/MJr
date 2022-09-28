@@ -19,8 +19,8 @@ namespace IR {
             const name = this.name = NAMES.convBufferArray(g, id);
             
             // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
-            const alphabetSize = g.grid.alphabet.key.length;
-            const alphabetPartition = new Partition(alphabetSize);
+            const alphabetKey = g.grid.alphabet.key;
+            const alphabetPartition = new Partition(alphabetKey.length);
             charsets.forEach(set => alphabetPartition.refine(set));
             
             const repMap = IDMap.withKey<number>(i => alphabetPartition.getRepresentative(i));
@@ -31,7 +31,7 @@ namespace IR {
             });
             repMap.forEach((rep, i) => {
                 const chars = alphabetPartition.getSet(rep);
-                const pattern = new Pattern(1, 1, [-2], [chars], true);
+                const pattern = new Pattern(1, 1, alphabetKey, [-2], [chars], true);
                 g.matcher.addMatchHandler({kind: 'convolution', buffer: this, pattern, i});
             });
             this.k = repMap.size();

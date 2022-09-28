@@ -16,21 +16,21 @@ namespace AST {
     
     // declarations
     type _DeclNode<K extends string, T> = _Node<`decl.${K}`, T>
-    export interface LegendDecl extends _DeclNode<'legend', {expr: Expression}> {}
+    export interface LegendDecl extends _DeclNode<'legend', {expr: PatternLiteralExpr}> {}
     export interface LetDecl extends _DeclNode<'let', {name: SimpleNameExpr, rhs: Expression, isParam: boolean}> {}
-    export interface SymmetryDecl extends _DeclNode<'symmetry', {expr: Expression}> {}
+    export interface SymmetryDecl extends _DeclNode<'symmetry', {expr: StrLiteralExpr}> {}
     export interface UnionDecl extends _DeclNode<'union', {label: PatternLiteralExpr, chars: Expression}> {}
     
     // expressions
     type _ExprNode<K extends string, T> = _Node<`expr.${K}`, T>
     
-    export type LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StringLiteralExpr
+    export type LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | PatternLiteralExpr | StrLiteralExpr
     type _LiteralNode<K extends string, T> = _ExprNode<`literal.${K}`, {value: T}>
     export interface BoolLiteralExpr extends _LiteralNode<'bool', boolean> {}
     export interface FloatLiteralExpr extends _LiteralNode<'float', number> {}
     export interface IntLiteralExpr extends _LiteralNode<'int', number> {}
     export interface PatternLiteralExpr extends _ExprNode<'literal.pattern', {width: number, height: number, value: readonly (Char | CharSet)[]}> {}
-    export interface StringLiteralExpr extends _LiteralNode<'str', string> {}
+    export interface StrLiteralExpr extends _LiteralNode<'str', string> {}
     
     export type NameExpr = AttributeExpr | KeywordNameExpr | SimpleNameExpr
     export type KeywordName = 'at' | 'origin' | 'random'

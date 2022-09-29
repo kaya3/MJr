@@ -43,7 +43,7 @@ namespace IR {
                     return access(name, index);
                 });
                 // sanity check
-                if(exprs.length === 0) { throw new Error(); }
+                if(exprs.length === 0) { fail(); }
                 values.set(ISet.key(chars), exprs.reduce(OP.add));
             });
         }
@@ -57,9 +57,7 @@ namespace IR {
         }
         
         public get(chars: ISet): Expr {
-            const expr = this.values.get(ISet.key(chars));
-            if(expr === undefined) { throw new Error(); }
-            return expr;
+            return this.values.get(ISet.key(chars)) ?? fail();
         }
         
         public update(i: number, xVar: NameExpr, yVar: NameExpr, op: '+=' | '-='): Stmt {

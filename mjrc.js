@@ -409,9 +409,7 @@ var CodeGen;
                     }, keys.length, 1);
                     out.write('}');
                 }],
-            'expr.letin': [18 /* Precedence.MAX */, (out, expr) => {
-                    throw new Error();
-                }],
+            'expr.letin': [0, fail],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
             'expr.literal.int': _literal,
@@ -875,9 +873,7 @@ var CodeGen;
                     }, keys.length, 1);
                     out.write('}');
                 }],
-            'expr.letin': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    throw new Error();
-                }],
+            'expr.letin': [0, fail],
             'expr.literal.bool': [18 /* Precedence.MAX */, (out, expr) => {
                     out.write(expr.value ? 'True' : 'False');
                 }],
@@ -1232,7 +1228,7 @@ var CFG;
         stopLabel.nodeID = builder.makeNode({ kind: 'stop' }).id;
         // sanity check
         if (rootNode.id !== 0) {
-            throw new Error();
+            fail();
         }
         return builder;
     }
@@ -1766,7 +1762,7 @@ var IR;
         return { kind: 'expr.op.unary', op, child };
     }
     function _isPowerOfTwo(x) {
-        return x !== 0 && (x & (x - 1)) === 0;
+        return x > 0 && (x & (x - 1)) === 0;
     }
     function _log2(x) {
         return IR.int(31 - Math.clz32(x));
@@ -1832,43 +1828,31 @@ var IR;
                 : _binOp('loose_int_mod', left, right);
         },
         multConstant(left, right) {
-            if (right < 0) {
-                throw new Error();
-            }
-            // special case for power of 2
             return right === 1 ? left
                 : right === 0 ? IR.ZERO
                     : _isPowerOfTwo(right) ? IR.OP.lshift(left, _log2(right))
-                        : _binOp('loose_int_mult', IR.int(right), left);
+                        : right > 0 ? _binOp('loose_int_mult', IR.int(right), left)
+                            : fail();
         },
         /**
          * For packing two numbers into one int; requires `0 <= y < scale`.
          */
         multAddConstant(x, scale, y) {
-            if (scale <= 0) {
-                throw new Error();
-            }
-            // special case for power of 2
             return _isPowerOfTwo(scale) ? IR.OP.bitwiseXor(IR.OP.lshift(x, _log2(scale)), y)
-                : IR.OP.add(IR.OP.multConstant(x, scale), y);
+                : scale > 0 ? IR.OP.add(IR.OP.multConstant(x, scale), y)
+                    : fail();
         },
         divConstant(left, right) {
-            if (right <= 0) {
-                throw new Error();
-            }
-            // special case for power of 2
             return right === 1 ? left
                 : _isPowerOfTwo(right) ? IR.OP.rshift(left, _log2(right))
-                    : _binOp('loose_int_floordiv', left, IR.int(right));
+                    : right > 0 ? _binOp('loose_int_floordiv', left, IR.int(right))
+                        : fail();
         },
         modConstant(left, right) {
-            if (right <= 0) {
-                throw new Error();
-            }
-            // special case for power of 2
             return right === 1 ? IR.ZERO
                 : _isPowerOfTwo(right) ? IR.OP.bitwiseAnd(left, IR.int(right - 1))
-                    : _binOp('loose_int_mod', left, IR.int(right));
+                    : right > 0 ? _binOp('loose_int_mod', left, IR.int(right))
+                        : fail();
         },
         lshift(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? left
@@ -2007,7 +1991,7 @@ var Compiler;
                 const thisState = this.stateIDs.getOrCreateID(node.id);
                 // sanity check
                 if (thisState !== switchCases.length) {
-                    throw new Error();
+                    fail();
                 }
                 switchCases.push(node.kind === 'stmt.branching' ? this.compileBranchingStmtNode(node)
                     : node.kind === 'stmt.nonbranching' ? this.compileNonBranchingStmtNode(node)
@@ -2113,7 +2097,7 @@ var Compiler;
                 case 'fraction': {
                     const expr = OP.fraction(IR.int(c.value.p), IR.int(c.value.q));
                     this.opsUsed.add(expr.op);
-                    return this.internLiteral(expr, this.type(c.type));
+                    return this.internLiteral(expr, IR.FRACTION_TYPE);
                 }
                 case 'grid': {
                     return this.grids[c.value].useObj();
@@ -2125,7 +2109,7 @@ var Compiler;
                 case 'pattern.out': {
                     const { width, height, pattern } = c.value;
                     const patternExpr = IR.constArray(pattern, 256, width);
-                    return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), this.type(c.type));
+                    return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
                 }
                 case 'position': {
                     const { x, y, inGrid } = c.value;
@@ -2135,12 +2119,9 @@ var Compiler;
             }
         }
         type(type) {
-            if (type.kind === 'pattern.in') {
-                throw new Error();
-            }
-            return type.kind === 'dict'
-                ? this.dictType(type.entryTypes)
-                : TYPES_TO_IR[type.kind];
+            return type.kind === 'dict' ? this.dictType(type.entryTypes)
+                : type.kind !== 'pattern.in' ? TYPES_TO_IR[type.kind]
+                    : fail();
         }
         dictType(entryTypes) {
             const keys = Array.from(entryTypes.keys()).sort();
@@ -2173,13 +2154,13 @@ var Compiler;
                 }
                 else if (cur.kind === 'decrementlimit') {
                     if (initial) {
-                        throw new Error();
+                        fail();
                     }
                     out.push(this.limits.decrement(cur.limitID));
                 }
                 else if (cur.kind === 'setflag') {
                     if (initial) {
-                        throw new Error();
+                        fail();
                     }
                     out.push(this.flags.set(cur.flagID));
                 }
@@ -2187,7 +2168,7 @@ var Compiler;
             }
             if (cur.kind === 'checkflag' || cur.kind === 'checklimit') {
                 if (initial) {
-                    throw new Error();
+                    fail();
                 }
                 out.push(IR.if_(cur.kind === 'checkflag' ? this.flags.check(cur.flagID) : this.limits.check(cur.limitID), IR.block(this.goto(fromNodeID, cur.ifTrue.nodeID)), IR.block(this.goto(fromNodeID, cur.then.nodeID))));
             }
@@ -2264,10 +2245,9 @@ var Compiler;
                 case 'at':
                     return AT;
                 case 'origin':
-                    if (expr.type.kind !== 'position') {
-                        throw new Error();
-                    }
-                    return c.grids[expr.type.inGrid].useOrigin();
+                    return expr.type.kind === 'position'
+                        ? c.grids[expr.type.inGrid].useOrigin()
+                        : fail();
                 case 'random':
                     return IR.libMethodCall('PRNG', 'nextDouble', RNG, []);
             }
@@ -2293,15 +2273,9 @@ var Compiler;
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            if (max.kind === 'expr.literal.int') {
-                if (max.value <= 0) {
-                    throw new Error();
-                }
-                return IR.libMethodCall('PRNG', 'nextInt', RNG, [max]);
-            }
-            else {
-                return IR.libFunctionCall('nextIntChecked', [RNG, max]);
-            }
+            return max.kind !== 'expr.literal.int' ? IR.libFunctionCall('nextIntChecked', [RNG, max])
+                : max.value > 0 ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
+                    : fail();
         },
         'expr.sum': (c, expr) => {
             const g = c.grids[expr.inGrid];
@@ -2321,10 +2295,7 @@ var Compiler;
             let isEffective;
             if (pattern.kind === 'expr.constant') {
                 const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.access(g.relativeIndex(dx, dy)), IR.int(c)));
-                if (checks.length === 0) {
-                    throw new Error();
-                }
-                isEffective = checks.reduce(OP.or);
+                isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
             }
             else {
                 // non-constant pattern will be checked in _writeCondition
@@ -2339,10 +2310,7 @@ var Compiler;
             ]);
         },
         'stmt.use': (c, stmt) => {
-            if (!c.config.animate) {
-                throw new Error();
-            }
-            return c.grids[stmt.grid].yield_();
+            return c.config.animate ? c.grids[stmt.grid].yield_() : fail();
         },
         // branching
         'stmt.convchain': _stmtNotSupported,
@@ -2380,7 +2348,7 @@ var Compiler;
                 }
             });
             if (minX > maxX || minY > maxY) {
-                throw new Error();
+                fail();
             }
             mX = IR.int(minX);
             mY = IR.int(minY);
@@ -2405,20 +2373,10 @@ var Compiler;
         return IR.block(out);
     }
     function _writeCondition(c, g, patternExpr, patternVar, conditionExpr) {
-        let out;
-        if (patternExpr !== undefined && patternExpr.kind !== 'expr.constant') {
-            if (patternVar === undefined) {
-                throw new Error();
-            }
-            out = IR.libMethodCall('Pattern', 'hasEffect', patternVar, [g.useObj(), AT_X, AT_Y]);
-        }
-        else {
-            out = IR.TRUE;
-        }
-        if (conditionExpr !== undefined) {
-            out = OP.and(out, c.expr(conditionExpr));
-        }
-        return out;
+        const hasEffect = patternExpr === undefined || patternExpr.kind === 'expr.constant'
+            ? IR.TRUE
+            : IR.libMethodCall('Pattern', 'hasEffect', patternVar ?? fail(), [g.useObj(), AT_X, AT_Y]);
+        return conditionExpr === undefined ? hasEffect : OP.and(hasEffect, c.expr(conditionExpr));
     }
     function _basicOne(c, stmt, ifChanged, then) {
         const { rewrites } = stmt;
@@ -2543,12 +2501,12 @@ var Compiler;
                     mask = g.grid.alphabet.wildcard;
                     break;
                 default:
-                    throw new Error();
+                    fail();
             }
             const caseHandler = IR.if_(_writeCondition(c, g, rule.to, undefined, rule.condition), _doWrite(c, g, rule.from, rule.to, false, ANY, false, false));
             ISet.forEach(mask, i => {
                 if (cases[i] !== IR.PASS) {
-                    throw new Error();
+                    fail();
                 }
                 cases[i] = caseHandler;
             });
@@ -3111,16 +3069,10 @@ var Parser;
             }
         }
         assertPoll(kind) {
-            if (!this.q.hasNext(kind)) {
-                throw new Error();
-            }
-            return this.q.poll();
+            return this.q.hasNext(kind) ? this.q.poll() : fail();
         }
         assertPollS(...strings) {
-            if (!this.q.hasNextS(...strings)) {
-                throw new Error();
-            }
-            return this.q.poll();
+            return this.q.hasNextS(...strings) ? this.q.poll() : fail();
         }
         // entry points
         /**
@@ -4085,20 +4037,16 @@ var Resolver;
             return f(node, this, canReset);
         }
         resolveChar(c) {
-            if (this.grid === undefined) {
-                throw new Error();
-            }
-            const set = this.grid.alphabet.charsets.get(c.s);
+            const grid = this.grid ?? fail();
+            const set = grid.alphabet.charsets.get(c.s);
             if (set === undefined) {
                 this.error(`'${c.s}' is not an alphabet symbol or union label`, c.pos);
             }
             return set;
         }
         resolveCharSet(charset) {
-            if (this.grid === undefined) {
-                throw new Error();
-            }
-            const k = this.grid.alphabet.key.length;
+            const grid = this.grid ?? fail();
+            const k = grid.alphabet.key.length;
             const mask = charset.inverted ? ISet.full(k) : ISet.empty(k);
             for (const c of charset.chars) {
                 const cMask = this.resolveChar(c);
@@ -4176,7 +4124,7 @@ var Resolver;
         withOutGrid(outGrid, inputPatternPos, f) {
             const { grid: inGrid, inputPattern } = this;
             if (inGrid === undefined || inputPattern === undefined) {
-                throw new Error();
+                fail();
             }
             if (outGrid.id === inGrid.id) {
                 return f();
@@ -4222,7 +4170,7 @@ var Resolver;
         }
         withKernel(stmt, f) {
             if (this.kernel !== undefined) {
-                throw new Error();
+                fail();
             }
             const kernel = _resolveProp(stmt, 'kernel', 'const str', this);
             if (objHasKey(Convolution.KERNELS, kernel)) {
@@ -4326,11 +4274,10 @@ var Resolver;
         return { kind: 'expr.constant', type, constant: _makeConstantValue(type, value), flags: 31 /* ExprFlags.CONSTANT */, pos };
     }
     function _coerceFromInt(expr, type) {
-        if (expr.type.kind !== 'int') {
-            throw new Error();
-        }
-        const op = `int_to_${type.kind}`;
-        const f = Op.UNARY_FUNCS[op];
+        const op = expr.type.kind === 'int'
+            ? `int_to_${type.kind}`
+            : fail();
+        const f = Op.UNARY_FUNCS[op] ?? fail();
         if (expr.kind === 'expr.constant') {
             const value = f(expr.constant.value);
             if (value !== undefined) {
@@ -4376,10 +4323,7 @@ var Resolver;
             case 'object':
                 return Type.OBJECT;
         }
-        const { grid } = ctx;
-        if (grid === undefined) {
-            throw new Error(`Prop type spec '${typeSpec}' not allowed when context has no grid`);
-        }
+        const grid = ctx.grid ?? fail();
         const alphabetKey = grid.alphabet.key;
         switch (typeSpec) {
             case 'charset.in':
@@ -4407,7 +4351,7 @@ var Resolver;
                     const h = MJr.fraction(inputPattern.height * rewriteScaleY.p, rewriteScaleY.q);
                     // ensure integer results
                     if (w.q !== 1 || h.q !== 1) {
-                        throw new Error();
+                        fail();
                     }
                     return { kind: 'pattern.out', alphabetKey, width: w.p, height: h.p };
                 }
@@ -4432,7 +4376,7 @@ var Resolver;
         const ast = node[propName];
         const { isConst, expectedType, coerceToStr, isRequired } = _parsePropSpec(spec, ctx);
         if (ast === undefined && isRequired) {
-            throw new Error(`Parser should ensure '${node.kind}' has property '${propName}'`);
+            fail();
         }
         let resolved = ast && ctx.resolveExpr(ast);
         if (resolved === undefined) {
@@ -4671,7 +4615,7 @@ var Resolver;
             }
             default: {
                 // logical ops on const 1x1 patterns should already be folded
-                throw new Error();
+                fail();
             }
         }
     }
@@ -4878,10 +4822,7 @@ var Resolver;
             }
             else if (left.kind === 'expr.constant') {
                 if (kind === 'dict') {
-                    const constant = left.constant.value.get(attr);
-                    if (constant === undefined) {
-                        throw new Error();
-                    }
+                    const constant = left.constant.value.get(attr) ?? fail();
                     return _makeConstantExpr(type, constant.value, pos);
                 }
                 else if (kind === 'position') {
@@ -5276,7 +5217,7 @@ var Resolver;
                 }
                 // logical ops on const 1x1 patterns should already be folded
                 if (rule.from.kind !== 'leaf' && rule.from.kind !== 'top') {
-                    throw new Error();
+                    fail();
                 }
                 const chars = rule.from.kind === 'top' ? ctx.grid.alphabet.wildcard : rule.from.masks[0];
                 if (!ISet.isDisjoint(chars, charsUsed)) {
@@ -5893,7 +5834,7 @@ var IR;
                 });
                 // sanity check
                 if (exprs.length === 0) {
-                    throw new Error();
+                    fail();
                 }
                 values.set(ISet.key(chars), exprs.reduce(IR.OP.add));
             });
@@ -5906,11 +5847,7 @@ var IR;
             ];
         }
         get(chars) {
-            const expr = this.values.get(ISet.key(chars));
-            if (expr === undefined) {
-                throw new Error();
-            }
-            return expr;
+            return this.values.get(ISet.key(chars)) ?? fail();
         }
         update(i, xVar, yVar, op) {
             const { name, width, n, kernel } = this;
@@ -6197,10 +6134,9 @@ var IR;
         }
         reset(limitID, c) {
             const limit = this.limits[limitID];
-            if (!limit.canReset) {
-                throw new Error();
-            }
-            return IR.assign(this.vars[limitID], '=', c.expr(limit.initialiser));
+            return limit.canReset
+                ? IR.assign(this.vars[limitID], '=', c.expr(limit.initialiser))
+                : fail();
         }
         check(limitID) {
             return this.checks[limitID];
@@ -6301,8 +6237,6 @@ var IR;
             const rowStates = IR.NAMES.matcherVar(g, id, 'rowStates');
             const colStates = IR.NAMES.matcherVar(g, id, 'colStates');
             const dfas = makePatternMatcherDFAs(alphabet.key.length, this.matchHandlers.map(h => h.pattern));
-            const rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]);
-            const colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
             const handlersByPattern = new Map();
             for (const handler of this.matchHandlers) {
                 const key = PatternTree.key(handler.pattern);
@@ -6321,19 +6255,17 @@ var IR;
                     const cases = [];
                     const minAcceptID = index << 5, maxAcceptID = Math.min((index + 1) << 5, acceptMap.size());
                     for (let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
-                        const pattern = acceptMap.getByID(acceptID);
-                        const handlers = handlersByPattern.get(PatternTree.key(pattern));
-                        if (handlers === undefined) {
-                            throw new Error();
-                        }
+                        const key = PatternTree.key(acceptMap.getByID(acceptID));
+                        const handlers = handlersByPattern.get(key) ?? fail();
                         cases.push(IR.block(handlers.map(h => this.makeMatchHandler(h, f))));
                     }
-                    out.push(IR.assign(U, '=', maskDiff(acceptSets, maskSize, t1, t2, index)), cases.length > 1
-                        ? IR.while_(IR.OP.ne(U, IR.ZERO), IR.block([
-                            IR.switch_(IR.OP.countTrailingZeros(U), cases),
+                    out.push(IR.assign(U, '=', maskDiff(acceptSets, maskSize, t1, t2, index)), cases.length === 1 ? IR.if_(IR.OP.ne(U, IR.ZERO), cases[0])
+                        : IR.while_(IR.OP.ne(U, IR.ZERO), IR.block([
+                            // special case, when there is no need for `countTrailingZeros`
+                            cases.length === 2 ? IR.switch_(IR.OP.bitwiseAnd(U, IR.ONE), cases.reverse())
+                                : IR.switch_(IR.OP.countTrailingZeros(U), cases),
                             IR.assign(U, '&=', IR.OP.minusOne(U)),
-                        ]))
-                        : IR.if_(IR.OP.ne(U, IR.ZERO), cases[0]));
+                        ])));
                 }
                 return out;
             };
@@ -6355,9 +6287,11 @@ var IR;
                 arrays.push(IR.constArrayDecl(rowDFA, dfas.rowDFA.toFlatArray(), rowDFASize, dfas.rowDFA.alphabetSize), IR.newArrayDecl(rowStates, g.n, rowDFASize));
             }
             if (numRowPatterns > 0) {
+                const rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]);
                 arrays.push(IR.constArrayDecl(rowAcceptSetIDs, dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()), IR.constArrayDecl(rowAcceptSets, rowAcceptSetMasks, numRowPatterns <= 16 ? 1 << numRowPatterns : IR.INT32_ARRAY_TYPE.domainSize, (numRowPatterns + 31) >> 5));
             }
             if (numColPatterns > 0) {
+                const colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
                 arrays.push(IR.constArrayDecl(rowsToCols, dfas.rowsToCols, dfas.colDFA.alphabetSize), IR.constArrayDecl(colDFA, dfas.colDFA.toFlatArray(), colDFASize, dfas.colDFA.alphabetSize), IR.constArrayDecl(colAcceptSetIDs, dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size()), IR.constArrayDecl(colAcceptSets, colAcceptSetMasks, numColPatterns <= 16 ? 1 << numColPatterns : IR.INT32_ARRAY_TYPE.domainSize, (numColPatterns + 31) >> 5), IR.newArrayDecl(colStates, g.n, colDFASize));
             }
             const recomputeRowStates = [
@@ -6371,7 +6305,7 @@ var IR;
                         IR.assign(S, '=', IR.access(rowDFA, IR.OP.multAddConstant(S, dfas.rowDFA.alphabetSize, g.access(AT)))),
                         IR.if_(IR.OP.eq(S, OLD_S), IR.if_(IR.OP.lt(AT_X, START_X), IR.BREAK, IR.CONTINUE)),
                         IR.assign(IR.access(rowStates, AT), '=', S),
-                        IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)),
+                        numColPatterns > 0 ? IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)) : IR.PASS,
                         // must occur last, since it uses `continue`
                         ...makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),
                     ]),
@@ -6597,13 +6531,12 @@ var IR;
             ];
         }
         forEach(then) {
-            if (this.numPatterns > 1) {
-                throw new Error();
-            }
-            return IR.forRange(I, IR.ZERO, this.count, [
-                this.g.declareAtIndex(IR.access(this.arr, I)),
-                ...then,
-            ]);
+            return this.numPatterns === 1
+                ? IR.forRange(I, IR.ZERO, this.count, [
+                    this.g.declareAtIndex(IR.access(this.arr, I)),
+                    ...then,
+                ])
+                : fail();
         }
     }
     IR.Sampler = Sampler;
@@ -6624,24 +6557,19 @@ var IR;
             return IR.PASS;
         }
         handleMatch(f, patternIndex) {
-            throw new Error();
+            fail();
         }
         sampleWithReplacement(cases) {
-            if (cases.length > 1) {
-                throw new Error();
-            }
-            const declAt = this.is1x1
-                ? this.g.declareAtIndex(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
-                : this.g.declareAtXY(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.width]), IR.libMethodCall('PRNG', 'nextInt', RNG, [this.height]));
-            return IR.block([declAt, cases[0]]);
+            return IR.block([
+                this.is1x1 ? this.g.declareAtIndex(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
+                    : this.g.declareAtXY(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.width]), IR.libMethodCall('PRNG', 'nextInt', RNG, [this.height])),
+                cases.length === 1 ? cases[0] : fail(),
+            ]);
         }
         beginSamplingWithoutReplacement() {
             return IR.declVar(S, IR.INT_TYPE, IR.OP.add(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]), IR.ONE), true);
         }
         sampleWithoutReplacement(cases, count) {
-            if (cases.length > 1) {
-                throw new Error();
-            }
             const declAt = this.is1x1
                 ? this.g.declareAtIndex(IR.OP.minusOne(S))
                 : this.g.declareAtXY(IR.OP.mod(S, this.width), IR.OP.floordiv(IR.OP.minusOne(S), this.width));
@@ -6651,14 +6579,13 @@ var IR;
                     IR.if_(IR.OP.le(S, this.count), IR.BREAK),
                 ])),
                 declAt,
-                cases[0],
+                cases.length === 1 ? cases[0] : fail(),
             ]);
         }
         copyInto(matches, shuffle) {
             return [
                 IR.declVar(matches.count, IR.INT_TYPE, IR.ZERO, true),
-                this.is1x1
-                    ? IR.forRange(AT, IR.ZERO, this.count, matches.add(AT, shuffle))
+                this.is1x1 ? IR.forRange(AT, IR.ZERO, this.count, matches.add(AT, shuffle))
                     : IR.forRange(AT_Y, IR.ZERO, this.height, [
                         IR.forRange(AT_X, IR.ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
                     ]),
@@ -6852,7 +6779,7 @@ class Partition {
     deleteSubset(subset) {
         // sanity check
         if (subset.start !== subset.end) {
-            throw new Error();
+            fail();
         }
         const { index } = subset;
         const removed = this.subsets.pop();
@@ -7086,7 +7013,7 @@ class NFA {
         const startID = getNodeID(ISet.of(nodes.length, [this.startID]));
         // sanity check
         if (startID !== 0) {
-            throw new Error();
+            fail();
         }
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for (let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {
@@ -7309,11 +7236,7 @@ class IDMap {
      * the element is not associated with an ID.
      */
     getID(x) {
-        const id = this.ids.get(this.keyFunc(x));
-        if (id === undefined) {
-            throw new Error();
-        }
-        return id;
+        return this.ids.get(this.keyFunc(x)) ?? fail();
     }
     getIDs(xs) {
         return xs.map(x => this.getID(x));
@@ -7337,10 +7260,7 @@ class IDMap {
      * is thrown if there is no element with the given ID.
      */
     getByID(id) {
-        if (id < 0 || id >= this.arr.length) {
-            throw new Error();
-        }
-        return this.arr[id];
+        return id >= 0 && id < this.arr.length ? this.arr[id] : fail();
     }
     forEach(f) {
         this.arr.forEach(f);
@@ -7427,7 +7347,7 @@ var ISet;
      */
     function addAll(a, b) {
         if (a.length < b.length) {
-            throw new Error();
+            fail();
         }
         for (let i = 0; i < b.length; ++i) {
             a[i] |= b[i];
@@ -7439,7 +7359,7 @@ var ISet;
      */
     function retainAll(a, b) {
         if (a.length < b.length) {
-            throw new Error();
+            fail();
         }
         for (let i = 0; i < b.length; ++i) {
             a[i] &= b[i];
@@ -7451,7 +7371,7 @@ var ISet;
      */
     function removeAll(a, b) {
         if (a.length < b.length) {
-            throw new Error();
+            fail();
         }
         for (let i = 0; i < b.length; ++i) {
             a[i] &= ~b[i];
@@ -7491,7 +7411,7 @@ var ISet;
      */
     function isDisjoint(a, b) {
         if (a.length < b.length) {
-            throw new Error();
+            fail();
         }
         for (let i = 0; i < b.length; ++i) {
             if ((a[i] & b[i]) !== 0) {
@@ -7506,7 +7426,7 @@ var ISet;
      */
     function isSubset(a, b) {
         if (a.length > b.length) {
-            throw new Error();
+            fail();
         }
         for (let i = 0; i < a.length; ++i) {
             if ((a[i] & ~b[i]) !== 0) {
@@ -7603,6 +7523,10 @@ var ISet;
     }
     ISet.some = some;
 })(ISet || (ISet = {}));
+function fail(...args) {
+    console.log(args.length > 0 ? 'Assertion failed with arguments:' : 'Assertion failed', ...args);
+    throw new Error('Internal compiler error: assertion failed');
+}
 function objHasKey(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
 }
@@ -7693,7 +7617,7 @@ var PatternTree;
     function and(left, right) {
         const { width, height } = left;
         if (right.width !== width || right.height !== height) {
-            throw new Error();
+            fail();
         }
         if (left.kind === 'bottom' || right.kind === 'top') {
             return left;
@@ -7719,7 +7643,7 @@ var PatternTree;
     function or(left, right) {
         const { width, height } = left;
         if (right.width !== width || right.height !== height) {
-            throw new Error();
+            fail();
         }
         if (left.kind === 'top' || right.kind === 'bottom') {
             return left;

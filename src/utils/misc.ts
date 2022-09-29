@@ -8,6 +8,11 @@ type Immutable<T> = {readonly [K in keyof T]:
     : Readonly<T[K]>
 }
 
+function fail(...args: unknown[]): never {
+    console.log(args.length > 0 ? 'Assertion failed with arguments:' : 'Assertion failed', ...args);
+    throw new Error('Internal compiler error: assertion failed');
+}
+
 function objHasKey<T extends object>(obj: T, key: PropertyKey): key is keyof T {
     return Object.prototype.hasOwnProperty.call(obj, key);
 }

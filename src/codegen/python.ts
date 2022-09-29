@@ -221,9 +221,7 @@ namespace CodeGen {
                 }, keys.length, 1);
                 out.write('}');
             }],
-            'expr.letin': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                throw new Error();
-            }],
+            'expr.letin': [0, fail],
             'expr.literal.bool': [Precedence.MAX, (out, expr) => {
                 out.write(expr.value ? 'True' : 'False');
             }],

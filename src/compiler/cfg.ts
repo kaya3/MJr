@@ -135,7 +135,7 @@ namespace CFG {
         stopLabel.nodeID = builder.makeNode({kind: 'stop'}).id;
         
         // sanity check
-        if(rootNode.id !== 0) { throw new Error(); }
+        if(rootNode.id !== 0) { fail(); }
         return builder;
     }
 }

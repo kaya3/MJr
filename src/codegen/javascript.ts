@@ -236,9 +236,7 @@ namespace CodeGen {
                 }, keys.length, 1);
                 out.write('}');
             }],
-            'expr.letin': [Precedence.MAX, (out, expr) => {
-               throw new Error();
-            }],
+            'expr.letin': [0, fail],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
             'expr.literal.int': _literal,

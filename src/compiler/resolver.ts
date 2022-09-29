@@ -188,16 +188,15 @@ namespace Resolver {
         }
         
         resolveChar(c: AST.Char): ISet | undefined {
-            if(this.grid === undefined) { throw new Error(); }
-            
-            const set = this.grid.alphabet.charsets.get(c.s);
+            const grid = this.grid ?? fail();
+            const set = grid.alphabet.charsets.get(c.s);
             if(set === undefined) { this.error(`'${c.s}' is not an alphabet symbol or union label`, c.pos); }
             return set;
         }
         
         resolveCharSet(charset: AST.CharSet): ISet | undefined {
-            if(this.grid === undefined) { throw new Error(); }
-            const k = this.grid.alphabet.key.length;
+            const grid = this.grid ?? fail();
+            const k = grid.alphabet.key.length;
             
             const mask = charset.inverted ? ISet.full(k) : ISet.empty(k);
             for(const c of charset.chars) {
@@ -277,7 +276,7 @@ namespace Resolver {
         
         withOutGrid<T>(outGrid: FormalGrid, inputPatternPos: SourcePosition, f: () => T): T | undefined {
             const {grid: inGrid, inputPattern} = this;
-            if(inGrid === undefined || inputPattern === undefined) { throw new Error(); }
+            if(inGrid === undefined || inputPattern === undefined) { fail(); }
             
             if(outGrid.id === inGrid.id) { return f(); }
             
@@ -315,7 +314,7 @@ namespace Resolver {
         }
         
         withKernel<T>(stmt: AST.ConvolutionStmt, f: (kernel: Convolution.Kernel) => T): T | undefined {
-            if(this.kernel !== undefined) { throw new Error(); }
+            if(this.kernel !== undefined) { fail(); }
             
             const kernel = _resolveProp(stmt, 'kernel', 'const str', this);
             if(objHasKey(Convolution.KERNELS, kernel)) {
@@ -414,10 +413,10 @@ namespace Resolver {
         return {kind: 'expr.constant', type, constant: _makeConstantValue(type, value), flags: ExprFlags.CONSTANT, pos} as ASG.ConstantExpr<K>;
     }
     function _coerceFromInt(expr: ASG.Expression, type: Type.OfKind<'float' | 'fraction'>): ASG.Expression {
-        if(expr.type.kind !== 'int') { throw new Error(); }
-        
-        const op = `int_to_${type.kind}` as const;
-        const f = Op.UNARY_FUNCS[op]!;
+        const op = expr.type.kind === 'int'
+            ? `int_to_${type.kind}` as const
+            : fail();
+        const f = Op.UNARY_FUNCS[op] ?? fail();
         if(expr.kind === 'expr.constant') {
             const value = f(expr.constant.value as number);
             if(value !== undefined) { return _makeConstantExpr(type, value, expr.pos); }
@@ -462,8 +461,7 @@ namespace Resolver {
                 return Type.OBJECT;
         }
         
-        const {grid} = ctx;
-        if(grid === undefined) { throw new Error(`Prop type spec '${typeSpec}' not allowed when context has no grid`); }
+        const grid = ctx.grid ?? fail();
         const alphabetKey = grid.alphabet.key;
         
         switch(typeSpec) {
@@ -491,7 +489,7 @@ namespace Resolver {
                     const h = MJr.fraction(inputPattern.height * rewriteScaleY.p, rewriteScaleY.q);
                     
                     // ensure integer results
-                    if(w.q !== 1 || h.q !== 1) { throw new Error(); }
+                    if(w.q !== 1 || h.q !== 1) { fail(); }
                     
                     return {kind: 'pattern.out', alphabetKey, width: w.p, height: h.p};
                 }
@@ -518,7 +516,7 @@ namespace Resolver {
         const ast: AST.Expression | undefined = node[propName];
         const {isConst, expectedType, coerceToStr, isRequired} = _parsePropSpec(spec, ctx);
         
-        if(ast === undefined && isRequired) { throw new Error(`Parser should ensure '${node.kind}' has property '${propName}'`); }
+        if(ast === undefined && isRequired) { fail(); }
         
         let resolved = ast && ctx.resolveExpr(ast);
         if(resolved === undefined) { return isRequired ? PROP_ERROR : undefined as ASG.Prop<S>; }
@@ -752,7 +750,7 @@ namespace Resolver {
             }
             default: {
                 // logical ops on const 1x1 patterns should already be folded
-                throw new Error();
+                fail();
             }
         }
     }
@@ -957,8 +955,7 @@ namespace Resolver {
                 return {kind: 'expr.attr.grid', type, flags: ExprFlags.CONSTANT, grid, attr: attr as Type.GridAttribute, pos};
             } else if(left.kind === 'expr.constant') {
                 if(kind === 'dict') {
-                    const constant = (left.constant.value as Type.Value<'dict'>).get(attr);
-                    if(constant === undefined) { throw new Error(); }
+                    const constant = (left.constant.value as Type.Value<'dict'>).get(attr) ?? fail();
                     return _makeConstantExpr(type, constant.value, pos);
                 } else if(kind === 'position') {
                     const value = (left.constant.value as Type.Value<'position'>)[attr as Type.PositionAttribute];
@@ -1317,7 +1314,7 @@ namespace Resolver {
                 if(rule.from.kind === 'bottom') { continue; }
                 
                 // logical ops on const 1x1 patterns should already be folded
-                if(rule.from.kind !== 'leaf' && rule.from.kind !== 'top') { throw new Error(); }
+                if(rule.from.kind !== 'leaf' && rule.from.kind !== 'top') { fail(); }
                 
                 const chars = rule.from.kind === 'top' ? ctx.grid.alphabet.wildcard : rule.from.masks[0];
                 if(!ISet.isDisjoint(chars, charsUsed)) {

@@ -87,7 +87,7 @@ namespace Compiler {
                 
                 const thisState = this.stateIDs.getOrCreateID(node.id);
                 // sanity check
-                if(thisState !== switchCases.length) { throw new Error(); }
+                if(thisState !== switchCases.length) { fail(); }
                 
                 switchCases.push(
                     node.kind === 'stmt.branching' ? this.compileBranchingStmtNode(node)
@@ -232,7 +232,7 @@ namespace Compiler {
                 case 'fraction': {
                     const expr = OP.fraction(IR.int(c.value.p), IR.int(c.value.q));
                     this.opsUsed.add(expr.op);
-                    return this.internLiteral(expr, this.type(c.type));
+                    return this.internLiteral(expr, IR.FRACTION_TYPE);
                 }
                 case 'grid': {
                     return this.grids[c.value].useObj();
@@ -244,7 +244,7 @@ namespace Compiler {
                 case 'pattern.out': {
                     const {width, height, pattern} = c.value;
                     const patternExpr = IR.constArray(pattern, 256, width);
-                    return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), this.type(c.type));
+                    return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
                 }
                 case 'position': {
                     const {x, y, inGrid} = c.value;
@@ -255,10 +255,9 @@ namespace Compiler {
         }
         
         type(type: Type.Type): IR.IRType {
-            if(type.kind === 'pattern.in') { throw new Error(); }
-            return type.kind === 'dict'
-                ? this.dictType(type.entryTypes)
-                : TYPES_TO_IR[type.kind];
+            return type.kind === 'dict' ? this.dictType(type.entryTypes)
+                : type.kind !== 'pattern.in' ? TYPES_TO_IR[type.kind]
+                : fail();
         }
         dictType(entryTypes: ReadonlyMap<string, Type.Type>): IR.DictType {
             const keys = Array.from(entryTypes.keys()).sort();
@@ -283,17 +282,17 @@ namespace Compiler {
                     if(initial) { toNodeID = cur.then.nodeID; continue; }
                     break;
                 } else if(cur.kind === 'decrementlimit') {
-                    if(initial) { throw new Error(); }
+                    if(initial) { fail(); }
                     out.push(this.limits.decrement(cur.limitID));
                 } else if(cur.kind === 'setflag') {
-                    if(initial) { throw new Error(); }
+                    if(initial) { fail(); }
                     out.push(this.flags.set(cur.flagID));
                 }
                 toNodeID = cur.then.nodeID;
             }
             
             if(cur.kind === 'checkflag' || cur.kind === 'checklimit') {
-                if(initial) { throw new Error(); }
+                if(initial) { fail(); }
                 
                 out.push(IR.if_(
                     cur.kind === 'checkflag' ? this.flags.check(cur.flagID) : this.limits.check(cur.limitID),
@@ -377,8 +376,9 @@ namespace Compiler {
                 case 'at':
                     return AT;
                 case 'origin':
-                    if(expr.type.kind !== 'position') { throw new Error(); }
-                    return c.grids[expr.type.inGrid].useOrigin();
+                    return expr.type.kind === 'position'
+                        ? c.grids[expr.type.inGrid].useOrigin()
+                        : fail();
                 case 'random':
                     return IR.libMethodCall('PRNG', 'nextDouble', RNG, []);
             }
@@ -400,12 +400,9 @@ namespace Compiler {
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            if(max.kind === 'expr.literal.int') {
-                if(max.value <= 0) { throw new Error(); }
-                return IR.libMethodCall('PRNG', 'nextInt', RNG, [max]);
-            } else {
-                return IR.libFunctionCall('nextIntChecked', [RNG, max]);
-            }
+            return max.kind !== 'expr.literal.int' ? IR.libFunctionCall('nextIntChecked', [RNG, max])
+                : max.value > 0 ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
+                : fail();
         },
         'expr.sum': (c, expr) => {
             const g = c.grids[expr.inGrid];
@@ -431,8 +428,7 @@ namespace Compiler {
             let isEffective: IR.Expr;
             if(pattern.kind === 'expr.constant') {
                 const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.access(g.relativeIndex(dx, dy)), IR.int(c)));
-                if(checks.length === 0) { throw new Error(); }
-                isEffective = checks.reduce(OP.or);
+                isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
             } else {
                 // non-constant pattern will be checked in _writeCondition
                 isEffective = IR.TRUE;
@@ -459,8 +455,7 @@ namespace Compiler {
             ]);
         },
         'stmt.use': (c, stmt) => {
-            if(!c.config.animate) { throw new Error(); }
-            return c.grids[stmt.grid].yield_();
+            return c.config.animate ? c.grids[stmt.grid].yield_() : fail();
         },
         
         // branching
@@ -507,7 +502,7 @@ namespace Compiler {
                 }
             });
             
-            if(minX > maxX || minY > maxY) { throw new Error(); }
+            if(minX > maxX || minY > maxY) { fail(); }
             
             mX = IR.int(minX);
             mY = IR.int(minY);
@@ -537,15 +532,11 @@ namespace Compiler {
     }
     
     function _writeCondition(c: Compiler, g: IR.Grid, patternExpr: ASG.Prop<'pattern.out'> | undefined, patternVar: IR.NameExpr | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
-        let out: IR.Expr;
-        if(patternExpr !== undefined && patternExpr.kind !== 'expr.constant') {
-            if(patternVar === undefined) { throw new Error(); }
-            out = IR.libMethodCall('Pattern', 'hasEffect', patternVar, [g.useObj(), AT_X, AT_Y]);
-        } else {
-            out = IR.TRUE;
-        }
-        if(conditionExpr !== undefined) { out = OP.and(out, c.expr(conditionExpr)); }
-        return out;
+        const hasEffect
+            = patternExpr === undefined || patternExpr.kind === 'expr.constant'
+            ? IR.TRUE
+            : IR.libMethodCall('Pattern', 'hasEffect', patternVar ?? fail(), [g.useObj(), AT_X, AT_Y]);
+        return conditionExpr === undefined ? hasEffect : OP.and(hasEffect, c.expr(conditionExpr));
     }
     
     function _basicOne(c: Compiler, stmt: ASG.BasicRulesStmt, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
@@ -730,7 +721,7 @@ namespace Compiler {
                     mask = g.grid.alphabet.wildcard;
                     break;
                 default:
-                    throw new Error();
+                    fail();
             }
             
             const caseHandler = IR.if_(
@@ -738,7 +729,7 @@ namespace Compiler {
                 _doWrite(c, g, rule.from, rule.to, false, ANY, false, false),
             );
             ISet.forEach(mask, i => {
-                if(cases[i] !== IR.PASS) { throw new Error(); }
+                if(cases[i] !== IR.PASS) { fail(); }
                 cases[i] = caseHandler;
             });
         }

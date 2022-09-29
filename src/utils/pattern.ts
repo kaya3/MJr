@@ -70,7 +70,7 @@ namespace PatternTree {
     
     export function and(left: PatternTree, right: PatternTree): PatternTree {
         const {width, height} = left;
-        if(right.width !== width || right.height !== height) { throw new Error(); }
+        if(right.width !== width || right.height !== height) { fail(); }
         
         if(left.kind === 'bottom' || right.kind === 'top') {
             return left;
@@ -91,7 +91,7 @@ namespace PatternTree {
     
     export function or(left: PatternTree, right: PatternTree): PatternTree {
         const {width, height} = left;
-        if(right.width !== width || right.height !== height) { throw new Error(); }
+        if(right.width !== width || right.height !== height) { fail(); }
         
         if(left.kind === 'top' || right.kind === 'bottom') {
             return left;

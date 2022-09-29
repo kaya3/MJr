@@ -78,7 +78,7 @@ namespace ISet {
      * Adds all the members of the set `b` to the set `a`, in O(N) time.
      */
     export function addAll(a: MutableISet, b: ISet): void {
-        if(a.length < b.length) { throw new Error(); }
+        if(a.length < b.length) { fail(); }
         for(let i = 0; i < b.length; ++i) {
             a[i] |= b[i];
         }
@@ -88,7 +88,7 @@ namespace ISet {
      * Removes the members from the set `a` which are not in `b`, in O(N) time.
      */
     export function retainAll(a: MutableISet, b: ISet): void {
-        if(a.length < b.length) { throw new Error(); }
+        if(a.length < b.length) { fail(); }
         for(let i = 0; i < b.length; ++i) {
             a[i] &= b[i];
         }
@@ -98,7 +98,7 @@ namespace ISet {
      * Removes all the members of the set `b` to the set `a`, in O(N) time.
      */
     export function removeAll(a: MutableISet, b: ISet): void {
-        if(a.length < b.length) { throw new Error(); }
+        if(a.length < b.length) { fail(); }
         for(let i = 0; i < b.length; ++i) {
             a[i] &= ~b[i];
         }
@@ -136,7 +136,7 @@ namespace ISet {
      * in common).
      */
     export function isDisjoint(a: ISet, b: ISet): boolean {
-        if(a.length < b.length) { throw new Error(); }
+        if(a.length < b.length) { fail(); }
         for(let i = 0; i < b.length; ++i) {
             if((a[i] & b[i]) !== 0) { return false; }
         }
@@ -147,7 +147,7 @@ namespace ISet {
      * Determines whether `a` is a subset of `b`, in O(N) time.
      */
     export function isSubset(a: ISet, b: ISet): boolean {
-        if(a.length > b.length) { throw new Error(); }
+        if(a.length > b.length) { fail(); }
         for(let i = 0; i < a.length; ++i) {
             if((a[i] & ~b[i]) !== 0) { return false; }
         }

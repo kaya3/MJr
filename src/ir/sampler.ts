@@ -82,11 +82,12 @@ namespace IR {
         }
         
         public forEach(then: readonly Stmt[]): Stmt {
-            if(this.numPatterns > 1) { throw new Error(); }
-            return forRange(I, ZERO, this.count, [
-                this.g.declareAtIndex(access(this.arr, I)),
-                ...then,
-            ]);
+            return this.numPatterns === 1
+                ? forRange(I, ZERO, this.count, [
+                    this.g.declareAtIndex(access(this.arr, I)),
+                    ...then,
+                ])
+                : fail();
         }
     }
     
@@ -112,15 +113,15 @@ namespace IR {
         }
         
         public handleMatch(f: "add" | "del", patternIndex: number): Stmt {
-            throw new Error();
+            fail();
         }
         
         public sampleWithReplacement(cases: readonly Stmt[]): Stmt {
-            if(cases.length > 1) { throw new Error(); }
-            const declAt = this.is1x1
-                ? this.g.declareAtIndex(libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
-                : this.g.declareAtXY(libMethodCall('PRNG', 'nextInt', RNG, [this.width]), libMethodCall('PRNG', 'nextInt', RNG, [this.height]));
-            return block([declAt, cases[0]]);
+            return block([
+                this.is1x1 ? this.g.declareAtIndex(libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
+                : this.g.declareAtXY(libMethodCall('PRNG', 'nextInt', RNG, [this.width]), libMethodCall('PRNG', 'nextInt', RNG, [this.height])),
+                cases.length === 1 ? cases[0] : fail(),
+            ]);
         }
         
         public beginSamplingWithoutReplacement(): Stmt {
@@ -128,7 +129,6 @@ namespace IR {
         }
         
         public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {
-            if(cases.length > 1) { throw new Error(); }
             const declAt = this.is1x1
                 ? this.g.declareAtIndex(OP.minusOne(S))
                 : this.g.declareAtXY(OP.mod(S, this.width), OP.floordiv(OP.minusOne(S), this.width));
@@ -145,18 +145,17 @@ namespace IR {
                     ]),
                 ),
                 declAt,
-                cases[0],
+                cases.length === 1 ? cases[0] : fail(),
             ]);
         }
         
         public copyInto(matches: MatchesArray, shuffle: boolean): Stmt[] {
             return [
                 declVar(matches.count, INT_TYPE, ZERO, true),
-                this.is1x1
-                    ? forRange(AT, ZERO, this.count, matches.add(AT, shuffle))
-                    : forRange(AT_Y, ZERO, this.height, [
-                        forRange(AT_X, ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
-                    ]),
+                this.is1x1 ? forRange(AT, ZERO, this.count, matches.add(AT, shuffle))
+                : forRange(AT_Y, ZERO, this.height, [
+                    forRange(AT_X, ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
+                ]),
             ];
         }
         

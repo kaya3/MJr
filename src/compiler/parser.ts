@@ -145,12 +145,10 @@ namespace Parser {
             }
         }
         private assertPoll<K extends Tokenizer.Kind>(kind: K): Tokenizer.Token<K> {
-            if(!this.q.hasNext(kind)) { throw new Error(); }
-            return this.q.poll() as Tokenizer.Token<K>;
+            return this.q.hasNext(kind) ? this.q.poll() as Tokenizer.Token<K> : fail();
         }
         private assertPollS<S extends string>(...strings: S[]): Tokenizer.Token & {s: S} {
-            if(!this.q.hasNextS(...strings)) { throw new Error(); }
-            return this.q.poll() as Tokenizer.Token & {s: S};
+            return this.q.hasNextS(...strings) ? this.q.poll() as Tokenizer.Token & {s: S} : fail();
         }
         
         // entry points

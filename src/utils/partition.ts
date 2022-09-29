@@ -109,7 +109,7 @@ class Partition {
     
     private deleteSubset(subset: PartitionSubset): void {
         // sanity check
-        if(subset.start !== subset.end) { throw new Error(); }
+        if(subset.start !== subset.end) { fail(); }
         
         const {index} = subset;
         const removed = this.subsets.pop()!;

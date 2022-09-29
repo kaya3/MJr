@@ -114,7 +114,7 @@ namespace IR {
     }
     
     function _isPowerOfTwo(x: number): boolean {
-        return x !== 0 && (x & (x - 1)) === 0;
+        return x > 0 && (x & (x - 1)) === 0;
     }
     
     function _log2(x: number): Expr {
@@ -186,35 +186,31 @@ namespace IR {
         },
         
         multConstant(left: Expr, right: number): Expr {
-            if(right < 0) { throw new Error(); }
-            // special case for power of 2
             return right === 1 ? left
                 : right === 0 ? ZERO
                 : _isPowerOfTwo(right) ? OP.lshift(left, _log2(right))
-                : _binOp('loose_int_mult', int(right), left);
+                : right > 0 ? _binOp('loose_int_mult', int(right), left)
+                : fail();
         },
         /**
          * For packing two numbers into one int; requires `0 <= y < scale`.
          */
         multAddConstant(x: Expr, scale: number, y: Expr): Expr {
-            if(scale <= 0) { throw new Error(); }
-            // special case for power of 2
             return _isPowerOfTwo(scale) ? OP.bitwiseXor(OP.lshift(x, _log2(scale)), y)
-                : OP.add(OP.multConstant(x, scale), y)
+                : scale > 0 ? OP.add(OP.multConstant(x, scale), y)
+                : fail();
         },
         divConstant(left: Expr, right: number): Expr {
-            if(right <= 0) { throw new Error(); }
-            // special case for power of 2
             return right === 1 ? left
                 : _isPowerOfTwo(right) ? OP.rshift(left, _log2(right))
-                : _binOp('loose_int_floordiv', left, int(right));
+                : right > 0 ? _binOp('loose_int_floordiv', left, int(right))
+                : fail();
         },
         modConstant(left: Expr, right: number): Expr {
-            if(right <= 0) { throw new Error(); }
-            // special case for power of 2
             return right === 1 ? ZERO
                 : _isPowerOfTwo(right) ? OP.bitwiseAnd(left, int(right - 1))
-                : _binOp('loose_int_mod', left, int(right));
+                : right > 0 ? _binOp('loose_int_mod', left, int(right))
+                : fail();
         },
         
         lshift(left: Expr, right: Expr): Expr {

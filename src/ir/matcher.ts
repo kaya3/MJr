@@ -59,9 +59,6 @@ namespace IR {
             
             const dfas = makePatternMatcherDFAs(alphabet.key.length, this.matchHandlers.map(h => h.pattern));
             
-            const rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]);
-            const colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
-            
             const handlersByPattern = new Map<string, MatchHandler[]>();
             for(const handler of this.matchHandlers) {
                 const key = PatternTree.key(handler.pattern);
@@ -87,26 +84,26 @@ namespace IR {
                     const minAcceptID = index << 5,
                         maxAcceptID = Math.min((index + 1) << 5, acceptMap.size());
                     for(let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
-                        const pattern = acceptMap.getByID(acceptID);
-                        const handlers = handlersByPattern.get(PatternTree.key(pattern));
-                        if(handlers === undefined) { throw new Error(); }
-                        
+                        const key = PatternTree.key(acceptMap.getByID(acceptID));
+                        const handlers = handlersByPattern.get(key) ?? fail();
                         cases.push(block(handlers.map(h => this.makeMatchHandler(h, f))));
                     }
                     
                     out.push(
                         assign(U, '=', maskDiff(acceptSets, maskSize, t1, t2, index)),
-                        cases.length > 1
-                        ? while_(OP.ne(U, ZERO), block([
-                            switch_(OP.countTrailingZeros(U), cases),
+                        cases.length === 1 ? if_(OP.ne(U, ZERO), cases[0])
+                        : while_(OP.ne(U, ZERO), block([
+                            // special case, when there is no need for `countTrailingZeros`
+                            cases.length === 2 ? switch_(OP.bitwiseAnd(U, ONE), cases.reverse())
+                            : switch_(OP.countTrailingZeros(U), cases),
                             assign(U, '&=', OP.minusOne(U)),
-                        ]))
-                        : if_(OP.ne(U, ZERO), cases[0]),
+                        ])),
                     );
                 }
                 
                 return out;
             };
+            
             const makeUpdateSamplers = (acceptSetIDs: Expr, acceptSets: NameExpr, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
                 return acceptMap.size() === 0 ? [] : [
                     declVars([
@@ -134,12 +131,14 @@ namespace IR {
                 );
             }
             if(numRowPatterns > 0) {
+                const rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]);
                 arrays.push(
                     constArrayDecl(rowAcceptSetIDs, dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()),
                     constArrayDecl(rowAcceptSets, rowAcceptSetMasks, numRowPatterns <= 16 ? 1 << numRowPatterns : INT32_ARRAY_TYPE.domainSize, (numRowPatterns + 31) >> 5),
                 );
             }
             if(numColPatterns > 0) {
+                const colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
                 arrays.push(
                     constArrayDecl(rowsToCols, dfas.rowsToCols, dfas.colDFA.alphabetSize),
                     constArrayDecl(colDFA, dfas.colDFA.toFlatArray(), colDFASize, dfas.colDFA.alphabetSize),
@@ -167,7 +166,7 @@ namespace IR {
                         )),
                         if_(OP.eq(S, OLD_S), if_(OP.lt(AT_X, START_X), BREAK, CONTINUE)),
                         assign(access(rowStates, AT), '=', S),
-                        if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
+                        numColPatterns > 0 ? if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)) : PASS,
                         
                         // must occur last, since it uses `continue`
                         ...makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),

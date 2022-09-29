@@ -161,7 +161,7 @@ class NFA<T> {
         
         const startID = getNodeID(ISet.of(nodes.length, [this.startID]));
         // sanity check
-        if(startID !== 0) { throw new Error(); }
+        if(startID !== 0) { fail(); }
         
         // this loop iterates over `nfaStates`, while adding to it via `getNodeID`
         for(let nfaStateID = 0; nfaStateID < nfaStates.size(); ++nfaStateID) {

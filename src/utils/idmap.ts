@@ -110,9 +110,7 @@ class IDMap<T> implements ReadonlyIDMap<T> {
      * the element is not associated with an ID.
      */
     public getID(x: T): number {
-        const id = this.ids.get(this.keyFunc(x));
-        if(id === undefined) { throw new Error(); }
-        return id;
+        return this.ids.get(this.keyFunc(x)) ?? fail();
     }
     
     public getIDs(xs: readonly T[]): number[] {
@@ -138,8 +136,7 @@ class IDMap<T> implements ReadonlyIDMap<T> {
      * is thrown if there is no element with the given ID.
      */
     public getByID(id: number): T {
-        if(id < 0 || id >= this.arr.length) { throw new Error(); }
-        return this.arr[id];
+        return id >= 0 && id < this.arr.length ? this.arr[id] : fail();
     }
     
     public forEach(f: (x: T, id: number) => void): void {

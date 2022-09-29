@@ -21,8 +21,9 @@ namespace IR {
         
         public reset(limitID: number, c: IRCompiler): Stmt {
             const limit = this.limits[limitID];
-            if(!limit.canReset) { throw new Error(); }
-            return assign(this.vars[limitID], '=', c.expr(limit.initialiser));
+            return limit.canReset
+                ? assign(this.vars[limitID], '=', c.expr(limit.initialiser))
+                : fail();
         }
         
         public check(limitID: number): Expr {

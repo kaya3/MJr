@@ -139,6 +139,7 @@ namespace CodeGen {
                 out.write(`import array`);
                 out.beginLine();
                 out.write(`int32 = ${RUNTIME_LIB_NAME}.int32`);
+                out.write(`int_ctz = ${RUNTIME_LIB_NAME}.int_ctz`);
                 if(stmt.opsUsed.includes('int_truediv') || stmt.opsUsed.includes('int_to_fraction')) {
                     out.beginLine();
                     out.write('from fractions import Fraction');
@@ -370,7 +371,7 @@ namespace CodeGen {
             function _intOp(p: Precedence, op: string): UnaryOpSpec {
                 return unaryOp(Precedence.ATTR_ACCESS_CALL, `int32(${op}`, p, ')');
             }
-            function _func(name: 'float' | 'Fraction' | 'str'): UnaryOpSpec {
+            function _func(name: 'float' | 'Fraction' | 'int_ctz' | 'str'): UnaryOpSpec {
                 return unaryOp(Precedence.ATTR_ACCESS_CALL, `${name}(`, Precedence.MIN, ')');
             }
             
@@ -390,6 +391,7 @@ namespace CodeGen {
                 int_uminus: _intOp(Precedence.UPLUS_UMINUS, '-'),
                 int_checkzero: NOOP,
                 int_not: prefixOp(Precedence.BITWISE_NOT, '~'),
+                int_ctz: _func('int_ctz'),
                 int_to_float: _func('float'),
                 int_to_fraction: _func('Fraction'),
                 

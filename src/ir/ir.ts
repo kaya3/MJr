@@ -30,7 +30,7 @@ namespace IR {
     
     export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
     export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
-    export type UnaryOp = Op.UnaryOp | 'int_not'
+    export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz'
     export type Op = BinaryOp | UnaryOp
     
     type LibClass = KeysMatching<typeof MJr, new (...args: never[]) => unknown>

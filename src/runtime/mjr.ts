@@ -42,6 +42,7 @@ namespace MJr {
         int_truediv: fraction,
         int_floordiv: (x: number, y: number): number => Math.floor(x / y) | 0,
         int_mod: (x: number, y: number): number => modulo(x, y) | 0,
+        int_ctz: (x: number): number => 31 - Math.clz32(x & -x),
         int_checkzero: checkZero,
         int_to_fraction: (x: number): Fraction => ({p: x, q: 1}),
     };

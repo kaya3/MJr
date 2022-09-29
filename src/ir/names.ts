@@ -28,6 +28,7 @@ namespace IR {
         OLD_S: nameExpr('oldS'),
         T: nameExpr('t'),
         OLD_T: nameExpr('oldT'),
+        U: nameExpr('u'),
         MASK: nameExpr('mask'),
         MASK_CLEAR: nameExpr('mask_clear'),
         MASK_SET: nameExpr('mask_set'),
@@ -62,11 +63,14 @@ namespace IR {
             return nameExpr(n > 0 ? `_${v}_${n}` : `_${v}`);
         },
         
-        gridVar(g: Grid, v: 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'lfsrFeedbackTerm'): NameExpr {
+        gridVar(g: Grid, v: GridVar): NameExpr {
             return nameExpr(`grid${g.grid.id}_${v}`);
         },
-        matcherVar(g: Grid, id: number, v: 'update' | 'rowDFA' | 'colDFA' | 'rowStates' | 'colStates' | 'rowAcceptSets' | 'colAcceptSets' | 'rowsToCols'): NameExpr {
+        matcherVar(g: Grid, id: number, v: MatcherVar): NameExpr {
             return nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
         },
     };
+    
+    type GridVar = 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'lfsrFeedbackTerm'
+    type MatcherVar = 'update' | 'rowsToCols' | `${'row' | 'col'}${'DFA' | 'States' | 'AcceptSetIDs' | 'AcceptSets'}`
 }

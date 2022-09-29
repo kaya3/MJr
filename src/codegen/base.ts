@@ -165,6 +165,8 @@ namespace CodeGen {
         }
         
         public writeLongStringLiteral(s: string, rowLength: number, concatOp: string = ' +'): void {
+            if(s.length === 0) { this.write(`""`); return; }
+            
             rowLength *= Math.ceil(4 * IR.DEFAULT_ROW_LENGTH / rowLength);
             this.writeList(i => {
                 const start = i * rowLength;

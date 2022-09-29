@@ -393,9 +393,10 @@ namespace CodeGen {
                 // need space to avoid incorrect parse of `- - x`
                 int_uminus: _intOp(Precedence.UPLUS_UMINUS, '- '),
                 int_checkzero: _func('int_checkzero'),
+                int_not: prefixOp(Precedence.BITWISE_NOT, '~'),
+                int_ctz: _func('int_ctz'),
                 int_to_float: NOOP,
                 int_to_fraction: _func('int_to_fraction'),
-                int_not: prefixOp(Precedence.BITWISE_NOT, '~'),
                 
                 bool_to_str: TO_STR,
                 float_to_str: TO_STR,

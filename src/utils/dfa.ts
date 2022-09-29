@@ -212,7 +212,7 @@ class DFA<T> {
     /**
      * Returns a pair `[acceptSetIDs, acceptSetMap]` where `acceptSetMap` is an
      * IDMap of all distinct accept sets recognised by this DFA, and `acceptSetIDs`
-     * maps each DFA state to its accept set's ID in `acceptSetMap`.
+     * maps each DFA state to the ID of its accept set in `acceptSetMap`.
      */
     public getAcceptSetMap<S extends T>(acceptMap: ReadonlyIDMap<T>, predicate: (accept: T) => accept is S): [readonly number[], ReadonlyIDMap<readonly S[]>];
     public getAcceptSetMap(acceptMap: ReadonlyIDMap<T>, predicate?: (accept: T) => boolean): [readonly number[], ReadonlyIDMap<readonly T[]>];

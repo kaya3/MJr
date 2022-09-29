@@ -243,6 +243,9 @@ namespace IR {
             return expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
                 : _unOp('int_not', expr);
         },
+        countTrailingZeros(expr: Expr): Expr {
+            return _unOp('int_ctz', expr);
+        },
         
         eq(left: Expr, right: Expr): Expr {
             if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {

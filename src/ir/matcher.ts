@@ -11,7 +11,7 @@ namespace IR {
     const {
         START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT,
         AT, AT_X, AT_Y,
-        S, OLD_S, T, OLD_T,
+        S, OLD_S, T, OLD_T, U,
     } = NAMES;
     
     export class Matcher {
@@ -49,14 +49,18 @@ namespace IR {
             
             const rowDFA = NAMES.matcherVar(g, id, 'rowDFA');
             const colDFA = NAMES.matcherVar(g, id, 'colDFA');
+            const rowAcceptSetIDs = NAMES.matcherVar(g, id, 'rowAcceptSetIDs');
+            const colAcceptSetIDs = NAMES.matcherVar(g, id, 'colAcceptSetIDs');
             const rowAcceptSets = NAMES.matcherVar(g, id, 'rowAcceptSets');
             const colAcceptSets = NAMES.matcherVar(g, id, 'colAcceptSets');
             const rowsToCols = NAMES.matcherVar(g, id, 'rowsToCols');
             const rowStates = NAMES.matcherVar(g, id, 'rowStates');
             const colStates = NAMES.matcherVar(g, id, 'colStates');
             
-            const patternMap = IDMap.ofWithKey(this.matchHandlers.map(h => h.pattern), PatternTree.key);
-            const dfas = makePatternMatcherDFAs(alphabet.key.length, patternMap);
+            const dfas = makePatternMatcherDFAs(alphabet.key.length, this.matchHandlers.map(h => h.pattern));
+            
+            const rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]);
+            const colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
             
             const handlersByPattern = new Map<string, MatchHandler[]>();
             for(const handler of this.matchHandlers) {
@@ -64,102 +68,153 @@ namespace IR {
                 getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             
-            // would be possible to compute a table of deltas for each pair of states, but this results in quadratic size code output
-            const makeStateChangeHandlers = (acceptSetMap: ReadonlyIDMap<readonly PatternTree[]>, f: 'add' | 'del'): Stmt[] => acceptSetMap.map(accepts => {
-                const out: Stmt[] = [];
-                for(const pattern of accepts) {
-                    const handlers = handlersByPattern.get(PatternTree.key(pattern));
-                    if(handlers !== undefined) {
-                        for(const h of handlers) {
-                            out.push(this.makeMatchHandler(h, f));
-                        }
-                    }
-                }
-                return block(out);
-            });
-            const makeUpdateSamplers = (acceptSets: Expr, acceptSetMap: ReadonlyIDMap<readonly PatternTree[]>): Stmt[] => acceptSetMap.size() > 1 ? [
-                declVars([
-                    {name: T, type: INT_TYPE, initialiser: access(acceptSets, S)},
-                    {name: OLD_T, type: INT_TYPE, initialiser: access(acceptSets, OLD_S)},
-                ]),
-                if_(OP.eq(T, OLD_T), CONTINUE),
+            const maskDiff = (acceptSets: NameExpr, maskSize: number, t1: NameExpr, t2: NameExpr, index: number): Expr => {
+                const indexExpr = IR.int(index);
+                return OP.bitwiseAnd(
+                    access(acceptSets, OP.multAddConstant(t1, maskSize, indexExpr)),
+                    OP.bitwiseNot(access(acceptSets, OP.multAddConstant(t2, maskSize, indexExpr))),
+                );
+            };
+            
+            const makeStateChangeHandlers = (acceptSets: NameExpr, acceptMap: ReadonlyIDMap<PatternTree>, f: 'add' | 'del'): Stmt[] => {
+                const t1 = f === 'add' ? T : OLD_T;
+                const t2 = f === 'add' ? OLD_T : T;
+                const maskSize = (acceptMap.size() + 31) >> 5;
                 
-                switch_(OLD_T, makeStateChangeHandlers(acceptSetMap, 'del')),
-                switch_(T, makeStateChangeHandlers(acceptSetMap, 'add')),
-            ] : [];
+                const out: Stmt[] = [];
+                for(let index = 0; index < maskSize; ++index) {
+                    const cases: Stmt[] = [];
+                    const minAcceptID = index << 5,
+                        maxAcceptID = Math.min((index + 1) << 5, acceptMap.size());
+                    for(let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
+                        const pattern = acceptMap.getByID(acceptID);
+                        const handlers = handlersByPattern.get(PatternTree.key(pattern));
+                        if(handlers === undefined) { throw new Error(); }
+                        
+                        cases.push(block(handlers.map(h => this.makeMatchHandler(h, f))));
+                    }
+                    
+                    out.push(
+                        assign(U, '=', maskDiff(acceptSets, maskSize, t1, t2, index)),
+                        cases.length > 1
+                        ? while_(OP.ne(U, ZERO), block([
+                            switch_(OP.countTrailingZeros(U), cases),
+                            assign(U, '&=', OP.minusOne(U)),
+                        ]))
+                        : if_(OP.ne(U, ZERO), cases[0]),
+                    );
+                }
+                
+                return out;
+            };
+            const makeUpdateSamplers = (acceptSetIDs: Expr, acceptSets: NameExpr, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
+                return acceptMap.size() === 0 ? [] : [
+                    declVars([
+                        {name: T, type: INT_TYPE, initialiser: access(acceptSetIDs, S)},
+                        {name: OLD_T, type: INT_TYPE, initialiser: access(acceptSetIDs, OLD_S)},
+                    ]),
+                    if_(OP.eq(T, OLD_T), CONTINUE),
+                    
+                    declVar(U, INT_TYPE, undefined, true),
+                    ...makeStateChangeHandlers(acceptSets, acceptMap, 'del'),
+                    ...makeStateChangeHandlers(acceptSets, acceptMap, 'add'),
+                ];
+            };
             
             const rowDFASize = dfas.rowDFA.size(),
-                colDFASize = dfas.colDFA.size();
+                colDFASize = dfas.colDFA.size(),
+                numRowPatterns = dfas.rowsAcceptMap.size(),
+                numColPatterns = dfas.colsAcceptMap.size();
             
-            return [
-                declVars([
+            const arrays: VarDeclWithInitialiser[] = [];
+            if(numRowPatterns > 0 || numColPatterns > 0) {
+                arrays.push(
                     constArrayDecl(rowDFA, dfas.rowDFA.toFlatArray(), rowDFASize, dfas.rowDFA.alphabetSize),
-                    constArrayDecl(rowAcceptSets, dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()),
+                    newArrayDecl(rowStates, g.n, rowDFASize),
+                );
+            }
+            if(numRowPatterns > 0) {
+                arrays.push(
+                    constArrayDecl(rowAcceptSetIDs, dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()),
+                    constArrayDecl(rowAcceptSets, rowAcceptSetMasks, numRowPatterns <= 16 ? 1 << numRowPatterns : INT32_ARRAY_TYPE.domainSize, (numRowPatterns + 31) >> 5),
+                );
+            }
+            if(numColPatterns > 0) {
+                arrays.push(
                     constArrayDecl(rowsToCols, dfas.rowsToCols, dfas.colDFA.alphabetSize),
                     constArrayDecl(colDFA, dfas.colDFA.toFlatArray(), colDFASize, dfas.colDFA.alphabetSize),
-                    constArrayDecl(colAcceptSets, dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size()),
-                    newArrayDecl(rowStates, g.n, rowDFASize),
+                    constArrayDecl(colAcceptSetIDs, dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size()),
+                    constArrayDecl(colAcceptSets, colAcceptSetMasks, numColPatterns <= 16 ? 1 << numColPatterns : INT32_ARRAY_TYPE.domainSize, (numColPatterns + 31) >> 5),
                     newArrayDecl(colStates, g.n, colDFASize),
+                );
+            }
+            
+            const recomputeRowStates = [
+                BLANK_LINE,
+                comment('recompute row states'),
+                forRange(AT_Y, START_Y, END_Y, [
+                    declVar(S, INT_TYPE, ternary(
+                        OP.lt(END_X, g.width),
+                        access(rowStates, g.index(END_X, AT_Y)),
+                        ZERO,
+                    ), true),
+                    forRangeReverse(AT_X, ZERO, END_X, [
+                        g.declareAtXY(AT_X, AT_Y),
+                        declVar(OLD_S, INT_TYPE, access(rowStates, AT)),
+                        assign(S, '=', access(
+                            rowDFA,
+                            OP.multAddConstant(S, dfas.rowDFA.alphabetSize, g.access(AT))
+                        )),
+                        if_(OP.eq(S, OLD_S), if_(OP.lt(AT_X, START_X), BREAK, CONTINUE)),
+                        assign(access(rowStates, AT), '=', S),
+                        if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
+                        
+                        // must occur last, since it uses `continue`
+                        ...makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),
+                    ]),
                 ]),
+            ];
+            const recomputeColStates = numColPatterns === 0 ? [] : [
+                BLANK_LINE,
+                comment('recompute col states'),
+                forRange(AT_X, START_X, END_X, [
+                    declVar(S, INT_TYPE, ternary(
+                        OP.lt(END_Y, g.height),
+                        access(colStates, g.index(AT_X, END_Y)),
+                        ZERO,
+                    ), true),
+                    forRangeReverse(AT_Y, ZERO, END_Y, [
+                        g.declareAtXY(AT_X, AT_Y),
+                        declVar(OLD_S, INT_TYPE, access(colStates, AT)),
+                        assign(S, '=', access(
+                            colDFA,
+                            OP.multAddConstant(S, dfas.colDFA.alphabetSize, access(rowsToCols, access(rowStates, AT))),
+                        )),
+                        if_(OP.eq(S, OLD_S), if_(OP.lt(AT_Y, START_Y), BREAK, CONTINUE)),
+                        
+                        assign(access(colStates, AT), '=', S),
+                        
+                        // must occur last, since it uses `continue`
+                        ...makeUpdateSamplers(colAcceptSetIDs, colAcceptSets, dfas.colsAcceptMap),
+                    ]),
+                ]),
+            ];
+            
+            return [
+                declVars(arrays),
                 declFunc(
                     updateFuncName,
                     undefined,
                     [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT],
                     [INT_TYPE, INT_TYPE, INT_TYPE, INT_TYPE],
                     VOID_TYPE,
-                    block([
+                    numRowPatterns === 0 && numColPatterns === 0 ? PASS : block([
                         declVars([
                             {name: END_X, type: INT_TYPE, initialiser: OP.add(START_X, EFFECTIVE_WIDTH)},
                             {name: END_Y, type: INT_TYPE, initialiser: OP.add(START_Y, EFFECTIVE_HEIGHT)},
                         ]),
-                        BLANK_LINE,
-                        
-                        comment('recompute row states'),
-                        forRange(AT_Y, START_Y, END_Y, [
-                            declVar(S, INT_TYPE, ternary(
-                                OP.lt(END_X, g.width),
-                                access(rowStates, g.index(END_X, AT_Y)),
-                                ZERO,
-                            ), true),
-                            forRangeReverse(AT_X, ZERO, END_X, [
-                                g.declareAtXY(AT_X, AT_Y),
-                                declVar(OLD_S, INT_TYPE, access(rowStates, AT)),
-                                assign(S, '=', access(
-                                    rowDFA,
-                                    OP.multAddConstant(S, dfas.rowDFA.alphabetSize, g.access(AT))
-                                )),
-                                if_(OP.eq(S, OLD_S), if_(OP.lt(AT_X, START_X), BREAK, CONTINUE)),
-                                assign(access(rowStates, AT), '=', S),
-                                if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
-                                
-                                // must occur last, since it uses `continue`
-                                ...makeUpdateSamplers(rowAcceptSets, dfas.rowsAcceptSetMap),
-                            ]),
-                        ]),
-                        BLANK_LINE,
-                        
-                        comment('recompute col states'),
-                        forRange(AT_X, START_X, END_X, [
-                            declVar(S, INT_TYPE, ternary(
-                                OP.lt(END_Y, g.height),
-                                access(colStates, g.index(AT_X, END_Y)),
-                                ZERO,
-                            ), true),
-                            forRangeReverse(AT_Y, ZERO, END_Y, [
-                                g.declareAtXY(AT_X, AT_Y),
-                                declVar(OLD_S, INT_TYPE, access(colStates, AT)),
-                                assign(S, '=', access(
-                                    colDFA,
-                                    OP.multAddConstant(S, dfas.colDFA.alphabetSize, access(rowsToCols, access(rowStates, AT))),
-                                )),
-                                if_(OP.eq(S, OLD_S), if_(OP.lt(AT_Y, START_Y), BREAK, CONTINUE)),
-                                
-                                assign(access(colStates, AT), '=', S),
-                                
-                                // must occur last, since it uses `continue`
-                                ...makeUpdateSamplers(colAcceptSets, dfas.colsAcceptSetMap),
-                            ]),
-                        ]),
+                        ...recomputeRowStates,
+                        ...recomputeColStates,
                     ]),
                 ),
                 localCallStmt(updateFuncName, [ZERO, ZERO, g.width, g.height]),
@@ -170,10 +225,12 @@ namespace IR {
     
     type MatcherDFAs = Readonly<{
         rowDFA: DFA<PatternTree>,
+        rowsAcceptMap: ReadonlyIDMap<PatternTree>,
         rowsAcceptSetIDs: readonly number[],
         rowsAcceptSetMap: ReadonlyIDMap<readonly PatternTree[]>,
         rowsToCols: readonly number[],
         colDFA: DFA<PatternTree>,
+        colsAcceptMap: ReadonlyIDMap<PatternTree>,
         colsAcceptSetIDs: readonly number[],
         colsAcceptSetMap: ReadonlyIDMap<readonly PatternTree[]>,
     }>
@@ -186,24 +243,29 @@ namespace IR {
      * The DFAs recognise the patterns in reverse order, for convenience so that
      * matches are reported where the patterns start rather than where they end.
      */
-    function makePatternMatcherDFAs(alphabetSize: number, patterns: ReadonlyIDMap<PatternTree>): MatcherDFAs {
-        const allLeaves = IDMap.ofWithKey(patterns.flatMap(PatternTree.getLeaves), PatternTree.key);
+    function makePatternMatcherDFAs(alphabetSize: number, allPatterns: readonly PatternTree[]): MatcherDFAs {
+        const rowPatterns = allPatterns.filter(p => p.height === 1);
+        const colPatterns = allPatterns.filter(p => p.height > 1);
+        
+        const rowsAcceptMap = IDMap.ofWithKey(rowPatterns, PatternTree.key);
+        const rowsKeepMap = IDMap.withKey(Pattern.key);
+        const rowsAcceptOrKeepMap = IDMap.ofWithKey(rowPatterns, PatternTree.key);
+        const colsAcceptMap = IDMap.ofWithKey(colPatterns, PatternTree.key);
+        
+        const allLeaves = IDMap.ofWithKey(allPatterns.flatMap(PatternTree.getLeaves), PatternTree.key);
         const allLeafRows = IDMap.withKey(Pattern.key);
-        const leafRowMap = allLeaves.map(pattern => Pattern.rowsOf(pattern).map(row => allLeafRows.getOrCreateID(row)));
-        const rowAcceptMap = IDMap.withKey(PatternTree.key);
+        const leafRowMap: number[][] = [];
         
-        // the IDs of the leaf rows which must be distinguished by `colDFA`
-        const keepRows = ISet.empty(allLeafRows.size());
-        
-        for(const rowIDs of leafRowMap) {
-            if(rowIDs.length === 1) { continue; }
-            for(const rowID of rowIDs) {
-                ISet.add(keepRows, rowID);
-                rowAcceptMap.getOrCreateID(allLeafRows.getByID(rowID));
+        allLeaves.forEach(pattern => {
+            const rows = Pattern.rowsOf(pattern);
+            // determine which rows to keep when mapping from rowDFA to colDFA
+            if(rows.length > 1) {
+                rowsAcceptOrKeepMap.addAll(rows);
+                rowsKeepMap.addAll(rows);
             }
-        }
-        // single-row patterns will be recognised by the row DFA
-        rowAcceptMap.addAll(patterns.filter(p => p.height === 1));
+            // associate this pattern with the IDs of its rows in `allLeafRows`
+            leafRowMap.push(rows.map(row => allLeafRows.getOrCreateID(row)));
+        });
         
         const rowDFA = Regex.compile(
                 alphabetSize,
@@ -216,16 +278,16 @@ namespace IR {
             )
             .map(literalRows => {
                 const acceptSet = new Set(literalRows.map(Pattern.key));
-                return rowAcceptMap.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
+                return rowsAcceptOrKeepMap.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
             })
             .minimise(PatternTree.key);
         
-        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowAcceptMap, row => patterns.has(row));
+        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, row => rowsAcceptMap.has(row));
         
         // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
         const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(
-            rowAcceptMap,
-            (row: PatternTree): row is PatternTree.LeafOrTop => (row.kind === 'leaf' || row.kind === 'top') && ISet.has(keepRows, allLeafRows.getID(row)),
+            rowsAcceptOrKeepMap,
+            (row: PatternTree): row is PatternTree.LeafOrTop => rowsKeepMap.has(row as PatternTree.LeafOrTop),
         );
         
         const acceptingSetIDs: number[][] = makeArray(allLeafRows.size(), () => []);
@@ -252,18 +314,20 @@ namespace IR {
             )
             .map(literals => {
                 const acceptSet = new Set(literals.map(Pattern.key));
-                return patterns.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
+                return allPatterns.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
             })
             .minimise(PatternTree.key);
         
-        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap(patterns);
+        const [colsAcceptSetIDs, colsAcceptSetMap] = colDFA.getAcceptSetMap(colsAcceptMap);
         
         return {
             rowDFA,
+            rowsAcceptMap,
             rowsAcceptSetIDs,
             rowsAcceptSetMap,
             rowsToCols,
             colDFA,
+            colsAcceptMap,
             colsAcceptSetIDs,
             colsAcceptSetMap,
         };

@@ -20,7 +20,7 @@ namespace Compiler {
     const ALWAYS_USED_OPS: readonly IR.Op[] = [
         'bool_and', 'bool_or', 'bool_not',
         'int_eq', 'int_ne', 'int_lt', 'int_le', 'int_gt', 'int_ge',
-        'int_and', 'int_or', 'int_not', 'int_lshift', 'int_rshift',
+        'int_and', 'int_or', 'int_xor', 'int_not', 'int_lshift', 'int_rshift', 'int_ctz',
         'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
     ];
     

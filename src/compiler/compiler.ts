@@ -427,7 +427,7 @@ namespace Compiler {
             // check whether pattern is effective
             let isEffective: IR.Expr;
             if(pattern.kind === 'expr.constant') {
-                const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.access(g.relativeIndex(dx, dy)), IR.int(c)));
+                const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
                 isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
             } else {
                 // non-constant pattern will be checked in _writeCondition
@@ -486,15 +486,15 @@ namespace Compiler {
             
             let minX = value.width, maxX = 0, minY = value.height, maxY = 0;
             value.forEach((dx, dy, colour) => {
-                const ineffective = from !== undefined && from.kind === 'leaf' && from.pattern[dx + from.width * dy] === colour;
-                if(useMask || !ineffective) {
+                const maybeEffective = from === undefined || from.kind !== 'leaf' || from.pattern[dx + from.width * dy] !== colour;
+                if(useMask || maybeEffective) {
                     out.push(outGrid.write(
                         outGrid.relativeIndex(dx, dy),
                         colour,
                         useMask ? c.mask : undefined,
                     ));
                 }
-                if(!ineffective) {
+                if(maybeEffective) {
                     minX = Math.min(minX, dx);
                     maxX = Math.max(maxX, dx + 1);
                     minY = Math.min(minY, dy);
@@ -746,7 +746,7 @@ namespace Compiler {
             IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
                 g.declareAtXY(AT_X, AT_Y),
                 IR.declVar(AT_CONV, IR.INT_TYPE, atConvInitialiser),
-                IR.switch_(g.access(AT), cases),
+                IR.switch_(g.data.get(AT), cases),
             ])]),
             IR.if_(
                 ANY,

@@ -34,13 +34,6 @@ namespace IR {
         MASK_SET: nameExpr('mask_set'),
         MASK_HASNT: nameExpr('mask_hasnt'),
         
-        convBufferN(g: Grid, id: number): NameExpr {
-            return nameExpr(`grid${g.grid.id}_conv${id}_n`);
-        },
-        convBufferArray(g: Grid, id: number): NameExpr {
-            return nameExpr(`grid${g.grid.id}_conv${id}`);
-        },
-        
         constant(id: number): NameExpr {
             return nameExpr(`constant${id}`);
         },
@@ -63,6 +56,9 @@ namespace IR {
             return nameExpr(n > 0 ? `_${v}_${n}` : `_${v}`);
         },
         
+        convBufferVar(g: Grid, id: number, v: ConvBufferVar): NameExpr {
+            return nameExpr(`grid${g.grid.id}_conv${id}_${v}`);
+        },
         gridVar(g: Grid, v: GridVar): NameExpr {
             return nameExpr(`grid${g.grid.id}_${v}`);
         },
@@ -71,6 +67,7 @@ namespace IR {
         },
     };
     
-    type GridVar = 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'lfsrFeedbackTerm'
+    type ConvBufferVar = 'width' | 'n' | 'buffer'
+    type GridVar = 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'buffer' | 'lfsrFeedbackTerm'
     type MatcherVar = 'update' | 'rowsToCols' | `${'row' | 'col'}${'DFA' | 'States' | 'AcceptSetIDs' | 'AcceptSets'}`
 }

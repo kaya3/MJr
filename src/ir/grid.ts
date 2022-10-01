@@ -10,8 +10,9 @@ namespace IR {
         public readonly width: NameExpr;
         public readonly height: NameExpr;
         public readonly n: NameExpr;
-        public readonly data: NameExpr;
+        public readonly data: MutableArray;
         private obj: NameExpr | undefined = undefined;
+        private buffer: MutableArray | undefined = undefined;
         private origin: NameExpr | undefined = undefined;
         private lfsrFeedbackTerm: NameExpr | undefined = undefined;
         public readonly originX: Expr;
@@ -23,14 +24,14 @@ namespace IR {
         public readonly matcher: Matcher;
         
         private scale: number = 1;
-
+        
         public constructor(public readonly grid: ASG.FormalGrid) {
             const {scaleX, scaleY} = grid;
             
             this.width = scaleX === 1 ? WIDTH : NAMES.gridVar(this, 'width');
             this.height = scaleY === 1 ? HEIGHT : NAMES.gridVar(this, 'height');
             this.n = NAMES.gridVar(this, 'n');
-            this.data = NAMES.gridVar(this, 'data');
+            this.data = makeMutableArray(NAMES.gridVar(this, 'data'), this.n, GRID_DATA_ARRAY_TYPE.domainSize);
             
             this.originX = scaleX % 2 === 0 ? OP.multConstant(WIDTH, scaleX >> 1) : OP.divConstant(this.width, 2);
             this.originY = scaleY % 2 === 0 ? OP.multConstant(HEIGHT, scaleY >> 1) : OP.divConstant(this.height, 2);
@@ -103,12 +104,20 @@ namespace IR {
             return this.obj ??= NAMES.gridVar(this, 'obj');
         }
         
+        public useBuffer(): MutableArray {
+            return this.buffer ??= makeMutableArray(
+                NAMES.gridVar(this, 'buffer'),
+                this.n,
+                GRID_DATA_ARRAY_TYPE.domainSize,
+            );
+        }
+        
         public useLsfrFeedbackTerm(): NameExpr {
             return this.lfsrFeedbackTerm ??= NAMES.gridVar(this, 'lfsrFeedbackTerm');
         }
         
         public declareVars(): Stmt[] {
-            const {width, height, n, data, obj, origin, lfsrFeedbackTerm, grid} = this;
+            const {width, height, n, data, obj, buffer, origin, lfsrFeedbackTerm, grid} = this;
             const alphabetKey = grid.alphabet.key;
             const consts: VarDeclWithInitialiser[] = [];
             const vars: VarDeclWithInitialiser[] = [];
@@ -121,11 +130,14 @@ namespace IR {
             }
             consts.push(
                 {name: n, type: INT_TYPE, initialiser: OP.mult(width, height)},
-                {name: data, type: GRID_DATA_ARRAY_TYPE, initialiser: newGridDataArray(n)},
+                ...data.decl,
             );
             if(obj !== undefined) {
-                const initialiser = libConstructorCall('Grid', [width, height, data, str(alphabetKey)]);
+                const initialiser = libConstructorCall('Grid', [width, height, data.name, str(alphabetKey)]);
                 consts.push({name: obj, type: GRID_TYPE, initialiser});
+            }
+            if(buffer !== undefined) {
+                consts.push(...buffer.decl);
             }
             if(origin !== undefined) {
                 consts.push({name: origin, type: INT_TYPE, initialiser: OP.add(this.originX, OP.mult(this.originY, width))});
@@ -204,18 +216,14 @@ namespace IR {
             return declVars(decls);
         }
         
-        public access(index: Expr): ArrayAccessExpr {
-            return access(this.data, index);
-        }
-        
         public write(index: Expr, colour: number, mask?: Mask): Stmt {
             return mask !== undefined ? mask.set(this, index, colour)
-                : assign(this.access(index), '=', int(colour));
+                : this.data.set(index, '=', int(colour));
         }
         
         public update(x: Expr, y: Expr, w: Expr, h: Expr, doYield: boolean): Stmt[] {
             return [
-                localCallStmt(this.matcher.updateFuncName, [x, y, w, h]),
+                this.matcher.update(x, y, w, h),
                 doYield ? this.yieldRewriteInfo(x, y, w, h) : PASS,
             ];
         }

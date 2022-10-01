@@ -16,8 +16,7 @@ namespace IR {
     
     export class Matcher {
         private readonly matchHandlers: MatchHandler[] = [];
-        
-        public readonly updateFuncName: NameExpr;
+        private readonly updateFuncName: NameExpr;
         
         public constructor(
             public readonly g: Grid,
@@ -43,21 +42,32 @@ namespace IR {
             }
         }
         
+        public update(x: Expr, y: Expr, w: Expr, h: Expr): Stmt {
+            return localCallStmt(this.updateFuncName, [x, y, w, h]);
+        }
+        
         public declareUpdateFunc(): Stmt[] {
-            const {g, id, updateFuncName} = this;
-            const {alphabet} = g.grid;
+            const {g, id} = this;
             
-            const rowDFA = NAMES.matcherVar(g, id, 'rowDFA');
-            const colDFA = NAMES.matcherVar(g, id, 'colDFA');
-            const rowAcceptSetIDs = NAMES.matcherVar(g, id, 'rowAcceptSetIDs');
-            const colAcceptSetIDs = NAMES.matcherVar(g, id, 'colAcceptSetIDs');
-            const rowAcceptSets = NAMES.matcherVar(g, id, 'rowAcceptSets');
-            const colAcceptSets = NAMES.matcherVar(g, id, 'colAcceptSets');
-            const rowsToCols = NAMES.matcherVar(g, id, 'rowsToCols');
-            const rowStates = NAMES.matcherVar(g, id, 'rowStates');
-            const colStates = NAMES.matcherVar(g, id, 'colStates');
+            const gridAlphabetSize = g.grid.alphabet.key.length;
+            const dfas = makePatternMatcherDFAs(gridAlphabetSize, this.matchHandlers.map(h => h.pattern));
+            const colsAlphabetSize = dfas.colDFA.alphabetSize,
+                rowDFASize = dfas.rowDFA.size(),
+                colDFASize = dfas.colDFA.size(),
+                numRowPatterns = dfas.rowsAcceptMap.size(),
+                numColPatterns = dfas.colsAcceptMap.size(),
+                rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]),
+                colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
             
-            const dfas = makePatternMatcherDFAs(alphabet.key.length, this.matchHandlers.map(h => h.pattern));
+            const rowDFA = makeConstArray2D(NAMES.matcherVar(g, id, 'rowDFA'), dfas.rowDFA.toFlatArray(), gridAlphabetSize, rowDFASize);
+            const rowAcceptSetIDs = makeConstArray(NAMES.matcherVar(g, id, 'rowAcceptSetIDs'), dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size());
+            const rowAcceptSets = makeConstArray2D(NAMES.matcherVar(g, id, 'rowAcceptSets'), rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 16 ? 1 << numRowPatterns : INT32_ARRAY_TYPE.domainSize);
+            const rowsToCols = makeConstArray(NAMES.matcherVar(g, id, 'rowsToCols'), dfas.rowsToCols, colsAlphabetSize);
+            const colDFA = makeConstArray2D(NAMES.matcherVar(g, id, 'colDFA'), dfas.colDFA.toFlatArray(), colsAlphabetSize, colDFASize);
+            const colAcceptSetIDs = makeConstArray(NAMES.matcherVar(g, id, 'colAcceptSetIDs'), dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size());
+            const colAcceptSets = makeConstArray2D(NAMES.matcherVar(g, id, 'colAcceptSets'), colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 16 ? 1 << numColPatterns : INT32_ARRAY_TYPE.domainSize);
+            const rowStates = makeMutableArray(NAMES.matcherVar(g, id, 'rowStates'), g.n, rowDFASize);
+            const colStates = makeMutableArray(NAMES.matcherVar(g, id, 'colStates'), g.n, colDFASize);
             
             const handlersByPattern = new Map<string, MatchHandler[]>();
             for(const handler of this.matchHandlers) {
@@ -65,24 +75,22 @@ namespace IR {
                 getOrCompute(handlersByPattern, key, () => []).push(handler);
             }
             
-            const maskDiff = (acceptSets: NameExpr, maskSize: number, t1: NameExpr, t2: NameExpr, index: number): Expr => {
-                const indexExpr = IR.int(index);
+            const maskDiff = (acceptSets: ConstArray2D, t1: Expr, t2: Expr, index: number): Expr => {
+                const indexExpr = int(index);
                 return OP.bitwiseAnd(
-                    access(acceptSets, OP.multAddConstant(t1, maskSize, indexExpr)),
-                    OP.bitwiseNot(access(acceptSets, OP.multAddConstant(t2, maskSize, indexExpr))),
+                    acceptSets.get(t1, indexExpr),
+                    OP.bitwiseNot(acceptSets.get(t2, indexExpr)),
                 );
             };
             
-            const makeStateChangeHandlers = (acceptSets: NameExpr, acceptMap: ReadonlyIDMap<PatternTree>, f: 'add' | 'del'): Stmt[] => {
-                const t1 = f === 'add' ? T : OLD_T;
-                const t2 = f === 'add' ? OLD_T : T;
+            const makeStateChangeHandlers = (t1: Expr, t2: Expr, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>, f: 'add' | 'del'): Stmt[] => {
                 const maskSize = (acceptMap.size() + 31) >> 5;
                 
                 const out: Stmt[] = [];
                 for(let index = 0; index < maskSize; ++index) {
                     const cases: Stmt[] = [];
                     const minAcceptID = index << 5,
-                        maxAcceptID = Math.min((index + 1) << 5, acceptMap.size());
+                        maxAcceptID = Math.min(minAcceptID + 32, acceptMap.size());
                     for(let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
                         const key = PatternTree.key(acceptMap.getByID(acceptID));
                         const handlers = handlersByPattern.get(key) ?? fail();
@@ -90,12 +98,12 @@ namespace IR {
                     }
                     
                     out.push(
-                        assign(U, '=', maskDiff(acceptSets, maskSize, t1, t2, index)),
+                        assign(U, '=', maskDiff(acceptSets, t1, t2, index)),
+                        // special cases for short switches, when there is no need for `countTrailingZeros`
                         cases.length === 1 ? if_(OP.ne(U, ZERO), cases[0])
+                        : cases.length === 2 ? block(cases.map((c, i) => if_(OP.ne(OP.bitwiseAnd(U, int(1 << i)), ZERO), c)))
                         : while_(OP.ne(U, ZERO), block([
-                            // special case, when there is no need for `countTrailingZeros`
-                            cases.length === 2 ? switch_(OP.bitwiseAnd(U, ONE), cases.reverse())
-                            : switch_(OP.countTrailingZeros(U), cases),
+                            switch_(OP.countTrailingZeros(U), cases),
                             assign(U, '&=', OP.minusOne(U)),
                         ])),
                     );
@@ -104,49 +112,32 @@ namespace IR {
                 return out;
             };
             
-            const makeUpdateSamplers = (acceptSetIDs: Expr, acceptSets: NameExpr, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
-                return acceptMap.size() === 0 ? [] : [
-                    declVars([
-                        {name: T, type: INT_TYPE, initialiser: access(acceptSetIDs, S)},
-                        {name: OLD_T, type: INT_TYPE, initialiser: access(acceptSetIDs, OLD_S)},
-                    ]),
-                    if_(OP.eq(T, OLD_T), CONTINUE),
-                    
+            const makeUpdateSamplers = (acceptSetIDs: ConstArray, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
+                let t = acceptSetIDs.get(S), oldT = acceptSetIDs.get(OLD_S);
+                if(t.kind === 'expr.literal.int' && oldT.kind === 'expr.literal.int') {
+                    return t.value === oldT.value ? [] : fail();
+                }
+                
+                const out: Stmt[] = [];
+                if(t !== S || oldT !== OLD_S) {
+                    out.push(
+                        declVars([
+                            {name: T, type: INT_TYPE, initialiser: acceptSetIDs.get(S)},
+                            {name: OLD_T, type: INT_TYPE, initialiser: acceptSetIDs.get(OLD_S)},
+                        ]),
+                        if_(OP.eq(T, OLD_T), CONTINUE),
+                    );
+                    t = T;
+                    oldT = OLD_T;
+                }
+                
+                out.push(
                     declVar(U, INT_TYPE, undefined, true),
-                    ...makeStateChangeHandlers(acceptSets, acceptMap, 'del'),
-                    ...makeStateChangeHandlers(acceptSets, acceptMap, 'add'),
-                ];
+                    ...makeStateChangeHandlers(oldT, t, acceptSets, acceptMap, 'del'),
+                    ...makeStateChangeHandlers(t, oldT, acceptSets, acceptMap, 'add'),
+                );
+                return out;
             };
-            
-            const rowDFASize = dfas.rowDFA.size(),
-                colDFASize = dfas.colDFA.size(),
-                numRowPatterns = dfas.rowsAcceptMap.size(),
-                numColPatterns = dfas.colsAcceptMap.size();
-            
-            const arrays: VarDeclWithInitialiser[] = [];
-            if(numRowPatterns > 0 || numColPatterns > 0) {
-                arrays.push(
-                    constArrayDecl(rowDFA, dfas.rowDFA.toFlatArray(), rowDFASize, dfas.rowDFA.alphabetSize),
-                    newArrayDecl(rowStates, g.n, rowDFASize),
-                );
-            }
-            if(numRowPatterns > 0) {
-                const rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]);
-                arrays.push(
-                    constArrayDecl(rowAcceptSetIDs, dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()),
-                    constArrayDecl(rowAcceptSets, rowAcceptSetMasks, numRowPatterns <= 16 ? 1 << numRowPatterns : INT32_ARRAY_TYPE.domainSize, (numRowPatterns + 31) >> 5),
-                );
-            }
-            if(numColPatterns > 0) {
-                const colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
-                arrays.push(
-                    constArrayDecl(rowsToCols, dfas.rowsToCols, dfas.colDFA.alphabetSize),
-                    constArrayDecl(colDFA, dfas.colDFA.toFlatArray(), colDFASize, dfas.colDFA.alphabetSize),
-                    constArrayDecl(colAcceptSetIDs, dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size()),
-                    constArrayDecl(colAcceptSets, colAcceptSetMasks, numColPatterns <= 16 ? 1 << numColPatterns : INT32_ARRAY_TYPE.domainSize, (numColPatterns + 31) >> 5),
-                    newArrayDecl(colStates, g.n, colDFASize),
-                );
-            }
             
             const recomputeRowStates = [
                 BLANK_LINE,
@@ -154,18 +145,16 @@ namespace IR {
                 forRange(AT_Y, START_Y, END_Y, [
                     declVar(S, INT_TYPE, ternary(
                         OP.lt(END_X, g.width),
-                        access(rowStates, g.index(END_X, AT_Y)),
+                        rowStates.get(g.index(END_X, AT_Y)),
                         ZERO,
                     ), true),
                     forRangeReverse(AT_X, ZERO, END_X, [
                         g.declareAtXY(AT_X, AT_Y),
-                        declVar(OLD_S, INT_TYPE, access(rowStates, AT)),
-                        assign(S, '=', access(
-                            rowDFA,
-                            OP.multAddConstant(S, dfas.rowDFA.alphabetSize, g.access(AT))
-                        )),
+                        declVar(OLD_S, INT_TYPE, rowStates.get(AT)),
+                        assign(S, '=', rowDFA.get(S, g.data.get(AT))),
                         if_(OP.eq(S, OLD_S), if_(OP.lt(AT_X, START_X), BREAK, CONTINUE)),
-                        assign(access(rowStates, AT), '=', S),
+                        
+                        rowStates.set(AT, '=', S),
                         numColPatterns > 0 ? if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)) : PASS,
                         
                         // must occur last, since it uses `continue`
@@ -179,19 +168,16 @@ namespace IR {
                 forRange(AT_X, START_X, END_X, [
                     declVar(S, INT_TYPE, ternary(
                         OP.lt(END_Y, g.height),
-                        access(colStates, g.index(AT_X, END_Y)),
+                        colStates.get(g.index(AT_X, END_Y)),
                         ZERO,
                     ), true),
                     forRangeReverse(AT_Y, ZERO, END_Y, [
                         g.declareAtXY(AT_X, AT_Y),
-                        declVar(OLD_S, INT_TYPE, access(colStates, AT)),
-                        assign(S, '=', access(
-                            colDFA,
-                            OP.multAddConstant(S, dfas.colDFA.alphabetSize, access(rowsToCols, access(rowStates, AT))),
-                        )),
+                        declVar(OLD_S, INT_TYPE, colStates.get(AT)),
+                        assign(S, '=', colDFA.get(S, rowsToCols.get(rowStates.get(AT)))),
                         if_(OP.eq(S, OLD_S), if_(OP.lt(AT_Y, START_Y), BREAK, CONTINUE)),
                         
-                        assign(access(colStates, AT), '=', S),
+                        colStates.set(AT, '=', S),
                         
                         // must occur last, since it uses `continue`
                         ...makeUpdateSamplers(colAcceptSetIDs, colAcceptSets, dfas.colsAcceptMap),
@@ -200,9 +186,19 @@ namespace IR {
             ];
             
             return [
-                declVars(arrays),
+                declVars([
+                    rowDFA,
+                    rowAcceptSetIDs,
+                    rowAcceptSets,
+                    rowsToCols,
+                    colDFA,
+                    colAcceptSetIDs,
+                    colAcceptSets,
+                    rowStates,
+                    colStates
+                ].flatMap(arr => arr.decl)),
                 declFunc(
-                    updateFuncName,
+                    this.updateFuncName,
                     undefined,
                     [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT],
                     [INT_TYPE, INT_TYPE, INT_TYPE, INT_TYPE],
@@ -216,7 +212,7 @@ namespace IR {
                         ...recomputeColStates,
                     ]),
                 ),
-                localCallStmt(updateFuncName, [ZERO, ZERO, g.width, g.height]),
+                this.update(ZERO, ZERO, g.width, g.height),
                 BLANK_LINE,
             ];
         }

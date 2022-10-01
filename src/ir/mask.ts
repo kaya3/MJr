@@ -24,14 +24,16 @@ namespace IR {
         public declare(): Stmt[] {
             if(this.scale === 0) { return []; }
             
-            const arrayComponent = access(this.name, OP.divConstant(I, 32));
+            const {name} = this;
+            const arr = makeMutableArray(
+                name,
+                this.maskN(OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale)),
+                INT32_ARRAY_TYPE.domainSize,
+            );
+            const index = OP.divConstant(I, 32);
             const bit = OP.lshift(ONE, OP.modConstant(I, 32));
             return [
-                declVar(
-                    this.name,
-                    INT32_ARRAY_TYPE,
-                    newInt32Array(this.maskN(OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale))),
-                ),
+                declVars(arr.decl),
                 declFunc(
                     MASK_CLEAR,
                     undefined,
@@ -40,7 +42,7 @@ namespace IR {
                     VOID_TYPE,
                     block([
                         assign(N, '=', this.maskN(N)),
-                        forRange(I, ZERO, N, [assign(access(this.name, I), '=', ZERO)]),
+                        forRange(I, ZERO, N, [arr.set(I, '=', ZERO)]),
                     ]),
                 ),
                 declFunc(
@@ -51,7 +53,7 @@ namespace IR {
                     VOID_TYPE,
                     block([
                         assign(access(G, I), '=', S),
-                        assign(arrayComponent, '|=', bit),
+                        arr.set(index, '|=', bit),
                     ]),
                 ),
                 declFunc(
@@ -60,7 +62,7 @@ namespace IR {
                     [I],
                     [INT_TYPE],
                     BOOL_TYPE,
-                    return_(OP.eq(OP.bitwiseAnd(arrayComponent, bit), ZERO)),
+                    return_(OP.eq(OP.bitwiseAnd(arr.get(index), bit), ZERO)),
                 ),
                 BLANK_LINE,
             ];
@@ -71,7 +73,7 @@ namespace IR {
         }
         
         public set(g: Grid, index: Expr, colour: number): Stmt {
-            return localCallStmt(MASK_SET, [g.data, index, int(colour)]);
+            return localCallStmt(MASK_SET, [g.data.name, index, int(colour)]);
         }
         
         public hasnt(index: Expr): Expr {

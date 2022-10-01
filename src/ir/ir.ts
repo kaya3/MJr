@@ -144,10 +144,10 @@ namespace IR {
         return {kind: 'expr.array.new', length, domainSize};
     }
     export function newGridDataArray(length: Expr): NewArrayExpr {
-        return newArray(length, 128);
+        return newArray(length, GRID_DATA_ARRAY_TYPE.domainSize);
     }
     export function newInt32Array(length: Expr): NewArrayExpr {
-        return newArray(length, 2 ** 32);
+        return newArray(length, INT32_ARRAY_TYPE.domainSize);
     }
     export function constArray(from: readonly number[], domainSize: number, rowLength: number = DEFAULT_ROW_LENGTH): ConstArrayExpr {
         return {kind: 'expr.array.const', from, domainSize, rowLength};

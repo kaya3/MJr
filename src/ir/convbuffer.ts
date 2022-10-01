@@ -1,22 +1,18 @@
 namespace IR {
     export class ConvBuffer {
-        private readonly name: NameExpr;
-        private readonly width: Expr;
-        private readonly height: Expr;
+        private readonly buffer: MutableArray2D;
+        private readonly width: NameExpr;
         private readonly n: NameExpr;
-        private readonly k: number;
         private readonly values: ReadonlyMap<PrimitiveKey, Expr>;
         
         public constructor(
             id: number,
-            g: Grid,
+            private readonly g: Grid,
             charsets: readonly ISet[],
             private readonly kernel: Convolution.Kernel,
         ) {
-            this.width = OP.add(g.width, int(kernel.width - 1));
-            this.height = OP.add(g.height, int(kernel.height - 1));
-            const n = this.n = NAMES.convBufferN(g, id);
-            const name = this.name = NAMES.convBufferArray(g, id);
+            this.width = kernel.width === 1 ? g.width : NAMES.convBufferVar(g, id, 'width');
+            const n = this.n = kernel.width === 1 && kernel.height === 1 ? g.n : NAMES.convBufferVar(g, id, 'n');
             
             // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
             const alphabetKey = g.grid.alphabet.key;
@@ -34,14 +30,20 @@ namespace IR {
                 const pattern = new Pattern(1, 1, alphabetKey, [-2], [chars], true);
                 g.matcher.addMatchHandler({kind: 'convolution', buffer: this, pattern, i});
             });
-            this.k = repMap.size();
+            
+            const buffer = this.buffer = makeMutableArray2D(
+                NAMES.convBufferVar(g, id, 'buffer'),
+                int(repMap.size()),
+                n,
+                kernel.width * kernel.height,
+            );
             
             const values = this.values = new Map<PrimitiveKey, Expr>();
             charsets.forEach((chars, i) => {
-                const exprs: Expr[] = Array.from(mappedBuffers[i], j => {
-                    const index = OP.add(OP.multConstant(n, j), NAMES.AT_CONV);
-                    return access(name, index);
-                });
+                const exprs: Expr[] = Array.from(
+                    mappedBuffers[i],
+                    j => buffer.get(int(j), NAMES.AT_CONV),
+                );
                 // sanity check
                 if(exprs.length === 0) { fail(); }
                 values.set(ISet.key(chars), exprs.reduce(OP.add));
@@ -49,11 +51,20 @@ namespace IR {
         }
         
         public declare(): VarDeclWithInitialiser[] {
-            const {n, name, k, width, height} = this;
-            return [
-                {name: n, type: INT_TYPE, initialiser: OP.mult(width, height)},
-                {name, type: GRID_DATA_ARRAY_TYPE, initialiser: newGridDataArray(OP.multConstant(n, k))},
-            ];
+            const {g, kernel, n, width, buffer} = this;
+            
+            const out: VarDeclWithInitialiser[] = []
+            if(width !== g.width) {
+                const w = OP.add(g.width, int(kernel.width - 1));
+                out.push({name: width, type: INT_TYPE, initialiser: w});
+            }
+            
+            const h = OP.add(g.height, int(kernel.height - 1));
+            out.push(
+                {name: n, type: INT_TYPE, initialiser: OP.mult(width, h)},
+                ...buffer.decl
+            );
+            return out;
         }
         
         public get(chars: ISet): Expr {
@@ -61,20 +72,17 @@ namespace IR {
         }
         
         public update(i: number, xVar: NameExpr, yVar: NameExpr, op: '+=' | '-='): Stmt {
-            const {name, width, n, kernel} = this;
+            const {buffer, width, kernel} = this;
             const out: Stmt[] = [];
             for(let dy = 0; dy < kernel.height; ++dy) {
                 for(let dx = 0; dx < kernel.width; ++dx) {
                     const delta = kernel.data[dx + kernel.width * dy];
                     if(delta !== 0) {
                         const index = OP.add(
-                            OP.multConstant(n, i),
-                            OP.add(
-                                OP.add(xVar, int(dx)),
-                                OP.mult(OP.add(yVar, int(dy)), width),
-                            ),
+                            OP.add(xVar, int(dx)),
+                            OP.mult(OP.add(yVar, int(dy)), width),
                         );
-                        out.push(assign(access(name, index), op, int(delta)));
+                        out.push(buffer.set(int(i), index, op, int(delta)));
                     }
                 }
             }

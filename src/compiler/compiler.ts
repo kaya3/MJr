@@ -43,7 +43,7 @@ namespace Compiler {
         readonly diagnostics = new Diagnostics();
         
         private readonly cfg: CFG.CFG;
-        private readonly stateIDs = IDMap.empty<number>();
+        private readonly switchNodes: ReadonlyIDMap<CFG.SwitchNode>;
         readonly opsUsed = new Set(ALWAYS_USED_OPS);
         private readonly internedLiterals = IDMap.withKey<{expr: IR.Expr, type: IR.IRType}>(entry => IR.key(entry.expr));
         
@@ -53,12 +53,13 @@ namespace Compiler {
         private readonly limits: IR.Limits;
         readonly matches = new IR.MatchesArray();
         readonly variables: IR.Variables;
-
+        
         constructor(
             readonly asg: ASG.ASG,
             readonly config: Readonly<Config>,
         ) {
             this.cfg = CFG.build(asg.root, config.animate);
+            this.switchNodes = IDMap.ofWithKey(this.cfg.nodes.filter(CFG.isSwitchNode), node => node.id);
             this.grids = asg.grids.map(g => new IR.Grid(g));
             this.flags = new IR.Flags(this.cfg.numFlags);
             this.limits = new IR.Limits(asg.limits);
@@ -80,21 +81,12 @@ namespace Compiler {
             
             const {params, endGridID} = this.asg;
             
-            const switchCases: IR.Stmt[] = [];
-            for(const node of this.cfg.nodes) {
-                // only `stmt` and `reset` nodes can be jumped to
-                if(node.kind !== 'stmt.branching' && node.kind !== 'stmt.nonbranching' && node.kind !== 'reset') { continue; }
-                
-                const thisState = this.stateIDs.getOrCreateID(node.id);
-                // sanity check
-                if(thisState !== switchCases.length) { fail(); }
-                
-                switchCases.push(
-                    node.kind === 'stmt.branching' ? this.compileBranchingStmtNode(node)
-                    : node.kind === 'stmt.nonbranching' ? this.compileNonBranchingStmtNode(node)
-                    : this.compileResetNode(node)
-                );
-            }
+            const switchCases = this.switchNodes.map(node =>
+                node.kind === 'stmt.branching' ? this.compileBranchingStmtNode(node)
+                : node.kind === 'stmt.nonbranching' ? this.compileNonBranchingStmtNode(node)
+                : node.kind === 'reset' ? this.compileResetNode(node)
+                : fail()
+            );
             
             // TODO: potentials
             
@@ -300,7 +292,7 @@ namespace Compiler {
                     IR.block(this.goto(fromNodeID, cur.then.nodeID)),
                 ));
             } else {
-                const nextState = IR.int(cur.kind === 'stop' ? -1 : this.stateIDs.getOrCreateID(toNodeID));
+                const nextState = IR.int(cur.kind === 'stop' ? -1 : this.switchNodes.getID(cur));
                 if(initial) {
                     out.push(IR.declVar(STATE, IR.INT_TYPE, nextState, true));
                 } else if(fromNodeID !== toNodeID) {
@@ -440,8 +432,8 @@ namespace Compiler {
                 // check bounds, given size of pattern
                 g.grid.periodic ? IR.PASS : IR.if_(
                     OP.or(
-                        pattern.type.width > 1 ? OP.ge(OP.add(AT_X, IR.int(pattern.type.width - 1)), g.width) : IR.FALSE,
-                        pattern.type.height > 1 ? OP.ge(OP.add(AT_Y, IR.int(pattern.type.height - 1)), g.height) : IR.FALSE,
+                        pattern.type.width > 1 ? OP.ge(OP.addConstant(AT_X, pattern.type.width - 1), g.width) : IR.FALSE,
+                        pattern.type.height > 1 ? OP.ge(OP.addConstant(AT_Y, pattern.type.height - 1), g.height) : IR.FALSE,
                     ),
                     IR.throw_('pattern would be out of bounds'),
                 ),
@@ -642,7 +634,7 @@ namespace Compiler {
         
         // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
         // but no flag needed if this statement isn't branching anyway
-        const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false)
+        const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
         
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if(firstPassConditions.every(c => c === IR.TRUE)) {
@@ -712,17 +704,10 @@ namespace Compiler {
         
         const cases: IR.Stmt[] = emptyArray(g.grid.alphabet.key.length, IR.PASS);
         for(const rule of stmt.rewrites) {
-            let mask: ISet;
-            switch(rule.from.kind) {
-                case 'leaf':
-                    mask = rule.from.masks[0];
-                    break;
-                case 'top':
-                    mask = g.grid.alphabet.wildcard;
-                    break;
-                default:
-                    fail();
-            }
+            const mask
+                = rule.from.kind === 'leaf' ? rule.from.masks[0]
+                : rule.from.kind === 'top' ? g.grid.alphabet.wildcard
+                : fail();
             
             const caseHandler = IR.if_(
                 _writeCondition(c, g, rule.to, undefined, rule.condition),
@@ -734,10 +719,10 @@ namespace Compiler {
             });
         }
         
-        const bufferWidth = OP.add(g.width, IR.int(kernel.width - 1)),
+        const bufferWidth = OP.addConstant(g.width, kernel.width - 1),
             atConvInitialiser = OP.add(
-                OP.add(AT_X, IR.int(kernel.centreX)),
-                OP.mult(OP.add(AT_Y, IR.int(kernel.centreY)), bufferWidth),
+                OP.addConstant(AT_X, kernel.centreX),
+                OP.mult(OP.addConstant(AT_Y, kernel.centreY), bufferWidth),
             );
         
         // TODO: different strategy if rules don't cover the whole alphabet?

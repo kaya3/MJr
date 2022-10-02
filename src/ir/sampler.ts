@@ -102,8 +102,8 @@ namespace IR {
             patternWidth: number,
             patternHeight: number,
         ) {
-            this.width = OP.minus(g.width, int(patternWidth - 1));
-            this.height = OP.minus(g.height, int(patternHeight - 1));
+            this.width = OP.minusConstant(g.width, patternWidth - 1);
+            this.height = OP.minusConstant(g.height, patternHeight - 1);
             this.is1x1 = patternWidth === 1 && patternHeight === 1;
             this.count = this.is1x1 ? g.n : OP.mult(this.width, this.height);
         }
@@ -125,7 +125,7 @@ namespace IR {
         }
         
         public beginSamplingWithoutReplacement(): Stmt {
-            return IR.declVar(S, INT_TYPE, OP.add(libMethodCall('PRNG', 'nextInt', RNG, [this.count]), ONE), true);
+            return IR.declVar(S, INT_TYPE, OP.addOne(libMethodCall('PRNG', 'nextInt', RNG, [this.count])), true);
         }
         
         public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {

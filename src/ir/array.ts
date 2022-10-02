@@ -47,12 +47,12 @@ namespace IR {
     
     export function makeConstArray2D(name: NameExpr, from: readonly number[], rowLength: number, domainSize: number): ConstArray2D {
         if(from.every((x, i) => x === from[i % rowLength])) {
-            const col = from.slice(0, rowLength);
-            const table = makeConstArray(name, col, domainSize);
+            const row = from.slice(0, rowLength);
+            const table = makeConstArray(name, row, domainSize);
             return {decl: [], get: (j, i) => table.get(i)};
         } else if(from.every((x, i) => x === from[i - i % rowLength])) {
-            const row = makeArray((from.length / rowLength) | 0, i => from[i * rowLength]);
-            return makeConstArray(name, row, domainSize);
+            const col = makeArray((from.length / rowLength) | 0, i => from[i * rowLength]);
+            return makeConstArray(name, col, domainSize);
         }
         
         return {

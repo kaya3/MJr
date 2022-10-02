@@ -186,11 +186,11 @@ namespace IR {
          */
         public relativeIndex(dx: number, dy: number): Expr {
             if(this.grid.periodic) {
-                const x = OP.mod(OP.add(AT_X, int(dx)), this.width);
-                const y = OP.mod(OP.add(AT_Y, int(dy)), this.height);
+                const x = OP.mod(OP.addConstant(AT_X, dx), this.width);
+                const y = OP.mod(OP.addConstant(AT_Y, dy), this.height);
                 return OP.add(x, OP.mult(y, this.width));
             } else {
-                return OP.add(OP.add(AT, int(dx)), OP.multConstant(this.width, dy));
+                return OP.add(OP.addConstant(AT, dx), OP.multConstant(this.width, dy));
             }
         }
         

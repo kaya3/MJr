@@ -55,11 +55,11 @@ namespace IR {
             
             const out: VarDeclWithInitialiser[] = []
             if(width !== g.width) {
-                const w = OP.add(g.width, int(kernel.width - 1));
+                const w = OP.addConstant(g.width, kernel.width - 1);
                 out.push({name: width, type: INT_TYPE, initialiser: w});
             }
             
-            const h = OP.add(g.height, int(kernel.height - 1));
+            const h = OP.addConstant(g.height, kernel.height - 1);
             out.push(
                 {name: n, type: INT_TYPE, initialiser: OP.mult(width, h)},
                 ...buffer.decl
@@ -79,8 +79,8 @@ namespace IR {
                     const delta = kernel.data[dx + kernel.width * dy];
                     if(delta !== 0) {
                         const index = OP.add(
-                            OP.add(xVar, int(dx)),
-                            OP.mult(OP.add(yVar, int(dy)), width),
+                            OP.addConstant(xVar, dx),
+                            OP.mult(OP.addConstant(yVar, dy), width),
                         );
                         out.push(buffer.set(int(i), index, op, int(delta)));
                     }

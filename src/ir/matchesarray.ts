@@ -39,7 +39,7 @@ namespace IR {
         
         public add(match: Expr, shuffle: boolean): Stmt[] {
             return shuffle ? [
-                declVar(J, INT_TYPE, libMethodCall('PRNG', 'nextInt', RNG, [OP.add(this.count, ONE)])),
+                declVar(J, INT_TYPE, libMethodCall('PRNG', 'nextInt', RNG, [OP.addOne(this.count)])),
                 assign(this.getAtCount, '=', this.get(J)),
                 assign(this.get(J), '=', match),
                 this.incrementCount,

@@ -155,7 +155,7 @@ namespace IR {
                         if_(OP.eq(S, OLD_S), if_(OP.lt(AT_X, START_X), BREAK, CONTINUE)),
                         
                         rowStates.set(AT, '=', S),
-                        numColPatterns > 0 ? if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)) : PASS,
+                        numColPatterns === 0 ? PASS : if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
                         
                         // must occur last, since it uses `continue`
                         ...makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),

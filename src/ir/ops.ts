@@ -155,9 +155,19 @@ namespace IR {
         },
         
         add(left: Expr, right: Expr): Expr {
-            return left === ZERO ? right
+            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? int(left.value + right.value)
+                : left === ZERO ? right
                 : right === ZERO ? left
                 : _binOp('loose_int_plus', left, right);
+        },
+        addOne(expr: Expr): Expr {
+            return OP.addConstant(expr, 1);
+        },
+        addConstant(left: Expr, right: number): Expr {
+            return right === 0 ? left
+                : left.kind === 'expr.literal.int' ? int(left.value + right)
+                : right > 0 ? OP.add(left, int(right))
+                : OP.minus(left, int(-right));
         },
         minus(left: Expr, right: Expr): Expr {
             return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? int(left.value - right.value)
@@ -165,7 +175,10 @@ namespace IR {
                 : _binOp('loose_int_minus', left, right);
         },
         minusOne(expr: Expr): Expr {
-            return OP.minus(expr, ONE);
+            return OP.addConstant(expr, -1);
+        },
+        minusConstant(left: Expr, right: number): Expr {
+            return OP.addConstant(left, -right);
         },
         mult(left: Expr, right: Expr): Expr {
             return left.kind === 'expr.literal.int' ? OP.multConstant(right, left.value)

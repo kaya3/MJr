@@ -4,7 +4,16 @@ namespace CFG {
         numFlags: number;
     }> {}
     
-    export type Node = BranchingStmtNode | CheckFlagNode | CheckLimitNode | DecrementLimitNode | NonBranchingStmtNode | PassNode | ResetNode | SetFlagNode | StopNode
+    export type Node = CheckFlagNode | CheckLimitNode | DecrementLimitNode | PassNode | SetFlagNode | StopNode | SwitchNode
+    export type SwitchNode = BranchingStmtNode | NonBranchingStmtNode | ResetNode
+    
+    // only `stmt` and `reset` nodes will be compiled to cases in the main `switch` statement
+    export function isSwitchNode(node: Node): node is SwitchNode {
+        return node.kind === 'stmt.branching'
+            || node.kind === 'stmt.nonbranching'
+            || node.kind === 'reset';
+    }
+    
     type Kind = Node['kind']
     type NodeOfKind<K extends Kind> = Extract<Node, {kind: K}>
     

@@ -14,7 +14,7 @@ namespace IR {
         public readonly name = MASK;
         
         private maskN(length: Expr): Expr {
-            return OP.divConstant(OP.add(length, int(31)), 32);
+            return OP.divConstant(OP.addConstant(length, 31), 32);
         }
         
         public use(g: Grid) {

@@ -1,25 +1,32 @@
 ///<reference path="../framework.ts"/>
 
-runTests('Basic', {
-    blank: T(`grid [BW]`, 3, 3, [
-        A.equals('BBB\nBBB\nBBB'),
+Test.add('Basic', {
+    blank: Test(`grid [BW]`, 3, 3, [
+        Assert.equals('BBB\nBBB\nBBB'),
     ]),
     
-    put: T(`
+    put: Test(`
 grid [BW]
 put [W] at origin`, 3, 3, [
-        A.equals('BBB\nBWB\nBBB'),
+        Assert.equals('BBB\nBWB\nBBB'),
     ]),
     
-    one: T(`
+    one: Test(`
 grid [BW]
 one: [B] -> [W]`, 3, 3, [
-        A.equals('WWW\nWWW\nWWW'),
+        Assert.equals('WWW\nWWW\nWWW'),
     ]),
     
-    all: T(`
+    all: Test(`
 grid [BW]
 all: [B] -> [W]`, 3, 3, [
-        A.equals('WWW\nWWW\nWWW'),
+        Assert.equals('WWW\nWWW\nWWW'),
+    ]),
+    
+    neighbours: Test(`
+grid [BWR]
+put [W] at origin
+one: [WB] -> [.R]`, 3, 3, [
+        Assert.equals('BRB\nRWR\nBRB'),
     ]),
 });

@@ -7,9 +7,16 @@ class Diagnostics {
         if(this.errors.length > 0) { throw this; }
     }
     
-    private error(prefix: string, msg: string, pos: SourcePosition): void {
-        this.errors.push(`${prefix}: ${msg} at line ${pos.line}, col ${pos.col}`);
+    private error(prefix: string, msg: string, pos?: SourcePosition): void {
+        if(pos !== undefined) {
+            msg += ` at line ${pos.line}, col ${pos.col}`;
+        }
+        this.errors.push(`${prefix}: ${msg}`);
         if(this.errors.length >= Diagnostics.MAX_ERRORS) { throw this; }
+    }
+    
+    public configError(msg: string): void {
+        this.error('Configuration error', msg);
     }
     
     public syntaxError(msg: string, pos: SourcePosition): void {

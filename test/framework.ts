@@ -17,7 +17,16 @@ type TestResult = Readonly<
     | {result: 'fail.ice' | 'fail.runtime', msg: string}
 >
 
-const A = {
+interface Benchmark extends Readonly<{
+    src: string,
+    baseline: BenchmarkResult,
+}> {}
+
+interface BenchmarkResult extends Readonly<{
+    codeSize: number,
+}> {}
+
+const Assert = {
     equals(expected: string): Assertion {
         expected = expected.trim();
         return {kind: 'equals', expected};
@@ -27,11 +36,90 @@ const A = {
     },
 };
 
-function T(src: string, width: number, height: number, assertions: readonly Assertion[]): TestCase {
+const Benchmark = {
+    _all: new Map<string, string>(),
+    _baselines: new Map<string, BenchmarkResult>(),
+    add(benchmarks: Record<string, string>): void {
+        for(const [name, src] of Object.entries(benchmarks)) {
+            if(Benchmark._all.has(name)) { throw new Error(`Benchmark '${name}' already exists`); }
+            Benchmark._all.set(name, src);
+        }
+    },
+    setBaselines(baselines: Record<string, BenchmarkResult>): void {
+        for(const [name, baseline] of Object.entries(baselines)) {
+            Benchmark._baselines.set(name, baseline);
+        }
+    },
+    
+    _run(src: string): BenchmarkResult {
+        const result = Compiler.compile(src, 'JavaScript', {indentSpaces: 0});
+        return {
+            codeSize: result.length,
+        };
+    },
+    _runAll(sectionElem: HTMLElement): void {
+        const SMALL_CHANGE_PERCENT = 2;
+        
+        const titleElem = document.createElement('h3');
+        const improvementsElem = document.createElement('span');
+        const regressionsElem = document.createElement('span');
+        titleElem.appendChild(document.createTextNode('Benchmarks ('));
+        titleElem.appendChild(improvementsElem);
+        titleElem.appendChild(document.createTextNode(', '));
+        titleElem.appendChild(regressionsElem);
+        titleElem.appendChild(document.createTextNode(')'));
+        sectionElem.appendChild(titleElem);
+        
+        const allResults: Record<string, BenchmarkResult> = {};
+        let improvements = 0, regressions = 0;
+        
+        for(const [name, src] of Benchmark._all.entries()) {
+            const baseline = Benchmark._baselines.get(name);
+            const result = Benchmark._run(src);
+            allResults[name] = result;
+            
+            const resultElem = document.createElement('div');
+            const changeElem = document.createElement('span');
+            
+            resultElem.appendChild(document.createTextNode(`${name}: ${(result.codeSize / 1024).toFixed(1)} KiB (`));
+            resultElem.appendChild(changeElem);
+            resultElem.appendChild(document.createTextNode(')'));
+            if(baseline === undefined) {
+                changeElem.innerText = 'no baseline';
+            } else {
+                const changePercent = ((result.codeSize / baseline.codeSize) - 1) * 100;
+                changeElem.innerText = `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(1)}%`;
+                if(changePercent > SMALL_CHANGE_PERCENT) {
+                    ++regressions;
+                    changeElem.className = 'fail';
+                } else if(changePercent < -SMALL_CHANGE_PERCENT) {
+                    ++improvements;
+                    changeElem.className = 'pass';
+                }
+            }
+            sectionElem.appendChild(resultElem);
+        }
+        
+        improvementsElem.innerText = `${improvements} improvement${improvements === 1 ? '' : 's'}`;
+        if(improvements > 0) { improvementsElem.className = 'pass'; }
+        regressionsElem.innerText = `${regressions} regression${regressions === 1 ? '' : 's'}`;
+        regressionsElem.className = regressions === 0 ? 'pass' : 'fail';
+        
+        console.log('Benchmark.setBaselines(' + JSON.stringify(allResults, undefined, 4) + ');');
+    }
+};
+
+function Test(src: string, width: number, height: number, assertions: readonly Assertion[]): TestCase {
     return {src, width, height, assertions};
 }
 
-function runTest(test: TestCase): TestResult {
+Test._all = [] as Readonly<{title: string, tests: IRecord<string, TestCase>}>[];
+
+Test.add = (title: string, tests: IRecord<string, TestCase>): void => {
+    Test._all.push({title, tests});
+};
+
+Test._run = (test: TestCase): TestResult => {
     let compiled: string | undefined = undefined;
     try {
         compiled = Compiler.compile(test.src, 'JavaScript');
@@ -64,65 +152,86 @@ function runTest(test: TestCase): TestResult {
             };
         }
     }
-}
+};
 
-function runTests(title: string, tests: IRecord<string, TestCase>): void {
-    const sectionElem = document.createElement('div');
-    const titleElem = document.createElement('h2');
-    const summaryElem = document.createElement('span');
-    titleElem.appendChild(document.createTextNode(`${title} (`));
-    titleElem.appendChild(summaryElem);
-    titleElem.appendChild(document.createTextNode(`)`));
-    sectionElem.appendChild(titleElem);
-    document.body.appendChild(sectionElem);
+Test.runAll = (): void => {
+    let totalRun = 0, totalPassed = 0;
+    const totalSectionElem = document.createElement('h2');
+    const totalSummaryElem = document.createElement('span');
+    totalSectionElem.appendChild(document.createTextNode('Tests ('));
+    totalSectionElem.appendChild(totalSummaryElem);
+    totalSectionElem.appendChild(document.createTextNode(')'));
+    document.body.appendChild(totalSectionElem);
     
-    function _assertionToString(a: Assertion): string {
-        switch(a.kind) {
-            case 'count':
-                return `Expected count [${a.colour}] == ${a.expected}`;
-            case 'equals':
-                return `Expected:\n${a.expected}`;
-        }
-    }
+    const benchmarkSectionElem = document.createElement('div');
+    document.body.appendChild(benchmarkSectionElem);
     
-    let passes = 0, total = 0;
-    for(const [name, test] of Object.entries(tests) as [string, TestCase][]) {
-        ++total;
-        const r = runTest(test);
-        const rowElem = document.createElement('div');
-        const passFailElem = document.createElement('span');
-        passFailElem.className = r.result === 'pass' ? 'pass' : 'fail';
-        passFailElem.innerText = r.result;
-        rowElem.appendChild(document.createTextNode(`${title}.${name}: `));
-        rowElem.appendChild(passFailElem);
-        sectionElem.appendChild(rowElem);
+    for(const {title, tests} of Test._all) {
+        const sectionElem = document.createElement('div');
+        const titleElem = document.createElement('h3');
+        const summaryElem = document.createElement('span');
+        titleElem.appendChild(document.createTextNode(`${title} (`));
+        titleElem.appendChild(summaryElem);
+        titleElem.appendChild(document.createTextNode(`)`));
+        sectionElem.appendChild(titleElem);
+        document.body.appendChild(sectionElem);
         
-        if(r.result === 'pass') {
-            ++passes;
-            continue;
+        function _assertionToString(a: Assertion): string {
+            switch(a.kind) {
+                case 'count':
+                    return `Expected count [${a.colour}] == ${a.expected}`;
+                case 'equals':
+                    return `Expected:\n${a.expected}`;
+            }
         }
         
-        const failInfoElem = document.createElement('pre');
-        rowElem.appendChild(failInfoElem);
-        switch(r.result) {
-            case 'fail.assert':
-                failInfoElem.appendChild(document.createTextNode(`${r.actual}\n\n`));
-                for(const a of r.failures.map(_assertionToString)) {
-                    failInfoElem.appendChild(document.createTextNode(`${a}\n`));
-                }
-                break;
-            case 'fail.diagnostics':
-                for(const d of r.diagnostics.errors) {
-                    failInfoElem.appendChild(document.createTextNode(`${d}\n`));
-                }
-                break;
-            case 'fail.ice':
-            case 'fail.runtime':
-                failInfoElem.innerText = r.msg;
-                break;
+        let passes = 0, total = 0;
+        for(const [name, test] of Object.entries(tests) as [string, TestCase][]) {
+            ++total;
+            const r = Test._run(test);
+            const rowElem = document.createElement('div');
+            const passFailElem = document.createElement('span');
+            passFailElem.className = r.result === 'pass' ? 'pass' : 'fail';
+            passFailElem.innerText = r.result;
+            rowElem.appendChild(document.createTextNode(`${title}.${name}: `));
+            rowElem.appendChild(passFailElem);
+            sectionElem.appendChild(rowElem);
+            
+            if(r.result === 'pass') {
+                ++passes;
+                continue;
+            }
+            
+            const failInfoElem = document.createElement('pre');
+            rowElem.appendChild(failInfoElem);
+            switch(r.result) {
+                case 'fail.assert':
+                    failInfoElem.appendChild(document.createTextNode(`${r.actual}\n\n`));
+                    for(const a of r.failures.map(_assertionToString)) {
+                        failInfoElem.appendChild(document.createTextNode(`${a}\n`));
+                    }
+                    break;
+                case 'fail.diagnostics':
+                    for(const d of r.diagnostics.errors) {
+                        failInfoElem.appendChild(document.createTextNode(`${d}\n`));
+                    }
+                    break;
+                case 'fail.ice':
+                case 'fail.runtime':
+                    failInfoElem.innerText = r.msg;
+                    break;
+            }
         }
+        
+        summaryElem.className = passes === total ? 'pass' : 'fail';
+        summaryElem.innerText = `${passes}/${total} passed`;
+        
+        totalRun += total;
+        totalPassed += passes;
     }
     
-    summaryElem.className = passes === total ? 'pass' : 'fail';
-    summaryElem.innerText = `${passes}/${total} passed`;
-}
+    totalSummaryElem.className = totalPassed === totalRun ? 'pass' : 'fail';
+    totalSummaryElem.innerText = `${totalPassed}/${totalRun} passed`;
+    
+    Benchmark._runAll(benchmarkSectionElem);
+};

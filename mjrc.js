@@ -673,6 +673,12 @@ var CodeGen;
 (function (CodeGen) {
     const RUNTIME_LIB_NAME = 'MJr';
     class Python extends CodeGen.Base {
+        constructor(config) {
+            super(config);
+            if (config.indentSpaces === 0) {
+                this.diagnostics.configError(`Python output requires 'indentSpaces' to be non-zero`);
+            }
+        }
         STMT_WRITE_FUNCS = {
             'stmt.assign': (out, stmt) => {
                 const { left, op, right } = stmt;
@@ -2549,10 +2555,16 @@ class Diagnostics {
         }
     }
     error(prefix, msg, pos) {
-        this.errors.push(`${prefix}: ${msg} at line ${pos.line}, col ${pos.col}`);
+        if (pos !== undefined) {
+            msg += ` at line ${pos.line}, col ${pos.col}`;
+        }
+        this.errors.push(`${prefix}: ${msg}`);
         if (this.errors.length >= Diagnostics.MAX_ERRORS) {
             throw this;
         }
+    }
+    configError(msg) {
+        this.error('Configuration error', msg);
     }
     syntaxError(msg, pos) {
         this.error('Syntax error', msg, pos);

@@ -25,6 +25,11 @@ namespace CodeGen {
     }
     
     export class Python extends Base {
+        public constructor(config: Compiler.Config) {
+            super(config);
+            if(config.indentSpaces === 0) { this.diagnostics.configError(`Python output requires 'indentSpaces' to be non-zero`); }
+        }
+        
         readonly STMT_WRITE_FUNCS: StmtWriteFuncs<this> = {
             'stmt.assign': (out, stmt) => {
                 const {left, op, right} = stmt;

@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html>
 <head>
     <title>MJr tests</title>
@@ -6,6 +7,13 @@
         @import url('https://fonts.googleapis.com/css?family=Roboto');
         
         body { font-family: Roboto, sans-serif; }
+        table { border-collapse: collapse; }
+        table td:first-child, table th:first-child { text-align: left; }
+        table td:not(:first-child), table th:not(:first-child) { text-align: center; }
+        table th { border-top: 1px solid #5F574F; border-bottom: 1px solid #5F574F; }
+        table tr:last-child td { border-bottom: 1px solid #5F574F; }
+        table td { border-top: 1px solid #C2C3C7; border-bottom: 1px solid #C2C3C7; }
+        table th, table td { padding: 0.25em 0.5em; }
         code, pre { font-family: 'Iosevka Papyri Light'; }
         pre { padding-left: 0.5em; border-left: 1em solid #FF004D; }
         span.pass { color: #00E436; }

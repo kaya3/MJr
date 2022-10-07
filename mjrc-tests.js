@@ -24,39 +24,55 @@ const Benchmark = {
             Benchmark._baselines.set(name, baseline);
         }
     },
+    _time(f) {
+        const MAX_TOTAL_TIME = 1000;
+        const MAX_ITERATIONS = 1000;
+        const startTime = performance.now();
+        const maxEndTime = startTime + MAX_TOTAL_TIME;
+        let i = 0, endTime;
+        do {
+            f();
+            ++i;
+        } while ((endTime = performance.now()) < maxEndTime && i < MAX_ITERATIONS);
+        return (endTime - startTime) / i;
+    },
+    _timeBestOfThree(f) {
+        return Math.min(Benchmark._time(f), Benchmark._time(f), Benchmark._time(f));
+    },
     _run(src) {
         const result = Compiler.compile(src, 'JavaScript', { indentSpaces: 0 });
+        const compileTime = Benchmark._timeBestOfThree(() => Compiler.compile(src, 'JavaScript'));
         return {
             codeSize: result.length,
+            compileTime,
         };
     },
     _runAll(sectionElem) {
-        const SMALL_CHANGE_PERCENT = 2;
+        const SMALL_CHANGE_PERCENT = 3;
         const titleElem = document.createElement('h3');
-        const improvementsElem = document.createElement('span');
-        const regressionsElem = document.createElement('span');
-        titleElem.appendChild(document.createTextNode('Benchmarks ('));
-        titleElem.appendChild(improvementsElem);
-        titleElem.appendChild(document.createTextNode(', '));
-        titleElem.appendChild(regressionsElem);
-        titleElem.appendChild(document.createTextNode(')'));
+        titleElem.appendChild(document.createTextNode('Benchmarks'));
         sectionElem.appendChild(titleElem);
+        const tableElem = document.createElement('table');
+        const tableHeaderElem = document.createElement('tr');
+        tableElem.appendChild(tableHeaderElem);
+        for (const heading of ['Model', 'Compile time', 'Output size']) {
+            const headingElem = document.createElement('th');
+            headingElem.innerText = heading;
+            tableHeaderElem.append(headingElem);
+        }
+        sectionElem.appendChild(tableElem);
         const allResults = {};
         let improvements = 0, regressions = 0;
-        for (const [name, src] of Benchmark._all.entries()) {
-            const baseline = Benchmark._baselines.get(name);
-            const result = Benchmark._run(src);
-            allResults[name] = result;
-            const resultElem = document.createElement('div');
+        function _makeTDElem(f, toStr, baseline, result) {
+            const tdElem = document.createElement('td');
             const changeElem = document.createElement('span');
-            resultElem.appendChild(document.createTextNode(`${name}: ${(result.codeSize / 1024).toFixed(1)} KiB (`));
-            resultElem.appendChild(changeElem);
-            resultElem.appendChild(document.createTextNode(')'));
+            const after = f(result);
             if (baseline === undefined) {
                 changeElem.innerText = 'no baseline';
             }
             else {
-                const changePercent = ((result.codeSize / baseline.codeSize) - 1) * 100;
+                const before = f(baseline);
+                const changePercent = ((after / before) - 1) * 100;
                 changeElem.innerText = `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(1)}%`;
                 if (changePercent > SMALL_CHANGE_PERCENT) {
                     ++regressions;
@@ -67,15 +83,46 @@ const Benchmark = {
                     changeElem.className = 'pass';
                 }
             }
-            sectionElem.appendChild(resultElem);
+            tdElem.appendChild(document.createTextNode(toStr(after) + ' ('));
+            tdElem.appendChild(changeElem);
+            tdElem.appendChild(document.createTextNode(')'));
+            return tdElem;
         }
-        improvementsElem.innerText = `${improvements} improvement${improvements === 1 ? '' : 's'}`;
-        if (improvements > 0) {
-            improvementsElem.className = 'pass';
+        const cases = Array.from(Benchmark._all.entries());
+        function runCase(i) {
+            if (i >= cases.length) {
+                const improvementsElem = document.createElement('span');
+                const regressionsElem = document.createElement('span');
+                improvementsElem.innerText = `${improvements} improvement${improvements === 1 ? '' : 's'}`;
+                if (improvements > 0) {
+                    improvementsElem.className = 'pass';
+                }
+                regressionsElem.innerText = `${regressions} regression${regressions === 1 ? '' : 's'}`;
+                regressionsElem.className = regressions === 0 ? 'pass' : 'fail';
+                titleElem.appendChild(document.createTextNode(' ('));
+                titleElem.appendChild(improvementsElem);
+                titleElem.appendChild(document.createTextNode(', '));
+                titleElem.appendChild(regressionsElem);
+                titleElem.appendChild(document.createTextNode(')'));
+                console.log('Benchmark.setBaselines(' + JSON.stringify(allResults, undefined, 4) + ');');
+                return;
+            }
+            const [name, src] = cases[i];
+            setTimeout(() => {
+                const baseline = Benchmark._baselines.get(name);
+                const result = Benchmark._run(src);
+                allResults[name] = result;
+                const rowElem = document.createElement('tr');
+                const nameElem = document.createElement('td');
+                nameElem.innerText = name;
+                rowElem.appendChild(nameElem);
+                rowElem.appendChild(_makeTDElem(r => r.compileTime, x => `${x.toFixed(1)} ms`, baseline, result));
+                rowElem.appendChild(_makeTDElem(r => r.codeSize, x => `${(x / 1024).toFixed(1)} KiB`, baseline, result));
+                tableElem.appendChild(rowElem);
+                runCase(i + 1);
+            }, 50);
         }
-        regressionsElem.innerText = `${regressions} regression${regressions === 1 ? '' : 's'}`;
-        regressionsElem.className = regressions === 0 ? 'pass' : 'fail';
-        console.log('Benchmark.setBaselines(' + JSON.stringify(allResults, undefined, 4) + ');');
+        runCase(0);
     }
 };
 function Test(src, width, height, assertions) {
@@ -188,21 +235,25 @@ Test.runAll = () => {
     }
     totalSummaryElem.className = totalPassed === totalRun ? 'pass' : 'fail';
     totalSummaryElem.innerText = `${totalPassed}/${totalRun} passed`;
-    Benchmark._runAll(benchmarkSectionElem);
+    setTimeout(() => Benchmark._runAll(benchmarkSectionElem), 50);
 };
 ///<reference path="../framework.ts"/>
 Benchmark.setBaselines({
     "GameOfLife": {
-        "codeSize": 3679
+        "codeSize": 3679,
+        "compileTime": 0.3083000000002794
     },
     "River": {
-        "codeSize": 13548
+        "codeSize": 13548,
+        "compileTime": 1.427674750357032
     },
     "BasicDungeonGrowth": {
-        "codeSize": 408748
+        "codeSize": 408748,
+        "compileTime": 69.32666666666046
     },
     "PacMan": {
-        "codeSize": 240832
+        "codeSize": 240832,
+        "compileTime": 59.26470588235294
     }
 });
 ///<reference path="../framework.ts"/>

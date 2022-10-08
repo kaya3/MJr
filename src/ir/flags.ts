@@ -1,4 +1,8 @@
 namespace IR {
+    function _bit(i: number): Expr {
+        return int(1 << (i & 31));
+    }
+    
     export class Flags {
         private vars: readonly NameExpr[];
         
@@ -9,10 +13,6 @@ namespace IR {
         
         private _var(i: number): NameExpr {
             return this.vars[i >> 5];
-        }
-        
-        private _bit(i: number): Expr {
-            return OP.lshift(ONE, int(i & 31));
         }
         
         public declare(): Stmt {
@@ -28,21 +28,21 @@ namespace IR {
             const v = this._var(i);
             return this.numFlags === 1
                 ? assign(v, '=', TRUE)
-                : assign(v, '|=', this._bit(i));
+                : assign(v, '|=', _bit(i));
         }
         
         public clear(i: number): Stmt {
             const v =  this._var(i);
             return this.numFlags === 1
                 ? assign(v, '=', FALSE)
-                : assign(v, '&=', OP.bitwiseNot(this._bit(i)));
+                : assign(v, '&=', OP.bitwiseNot(_bit(i)));
         }
         
         public check(i: number): Expr {
             const v = this._var(i);
             return this.numFlags === 1
                 ? v
-                : OP.ne(OP.bitwiseAnd(this._var(i), this._bit(i)), ZERO);
+                : OP.ne(OP.bitwiseAnd(this._var(i), _bit(i)), ZERO);
         }
     }
 }

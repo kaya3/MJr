@@ -84,20 +84,14 @@ namespace IR {
             return {name, decl: [], get: () => ZERO, set: () => PASS};
         }
         
-        const arr = {
+        const get = isInt(rowLength)
+            ? (j: Expr, i: Expr) => access(name, OP.multAddConstant(j, rowLength.value, i))
+            : (j: Expr, i: Expr) => access(name, OP.add(OP.mult(j, rowLength), i));
+        return {
             name,
             decl: [newArrayDecl(name, OP.mult(numRows, rowLength), domainSize)],
-            get: (j: Expr, i: Expr): ArrayAccessExpr => {
-                return access(name, OP.add(OP.mult(j, rowLength), i));
-            },
-            set(j: Expr, i: Expr, op: AssignOp, value: Expr): Stmt {
-                return assign(this.get(j, i), op, value);
-            },
+            get,
+            set: (j, i, op, value) => assign(get(j, i), op, value),
         };
-        if(rowLength.kind === 'expr.literal.int') {
-            const width = rowLength.value;
-            arr.get = (j, i) => access(name, OP.multAddConstant(j, width, i));
-        }
-        return arr;
     }
 }

@@ -112,6 +112,10 @@ namespace IR {
         return {kind: 'expr.literal.str', value};
     }
     
+    export function isInt(expr: Expr): expr is IntLiteralExpr {
+        return expr.kind === 'expr.literal.int';
+    }
+    
     // singleton objects for common values
     export const TRUE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: true};
     export const FALSE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: false};
@@ -201,7 +205,19 @@ namespace IR {
     export const CONTINUE: ContinueStmt = {kind: 'stmt.continue'};
     export const PASS: PassStmt = {kind: 'stmt.pass'};
     
-    export function assign(left: NameExpr | AttrExpr | ArrayAccessExpr, op: AssignOp, right: Expr): AssignStmt {
+    export function assign(left: NameExpr | AttrExpr | ArrayAccessExpr, op: AssignOp, right: Expr): Stmt {
+        if(isInt(right)) {
+            if(right.value === 0) {
+                if(op === '+=' || op === '-=' || op === '|=') {
+                    return PASS;
+                } else if(op === '&=') {
+                    op = '=';
+                }
+            } else if(right.value < 0 && (op === '+=' || op === '-=')) {
+                op = op === '+=' ? '-=' : '+=';
+                right = int(-right.value);
+            }
+        }
         return {kind: 'stmt.assign', op, left, right};
     }
     export function block(children: readonly Stmt[]): Stmt {

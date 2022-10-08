@@ -155,34 +155,34 @@ namespace IR {
         },
         
         add(left: Expr, right: Expr): Expr {
-            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? int(left.value + right.value)
+            return isInt(left) && isInt(right) ? int(left.value + right.value)
                 : left === ZERO ? right
                 : right === ZERO ? left
                 : _binOp('loose_int_plus', left, right);
         },
         addOne(expr: Expr): Expr {
-            return OP.addConstant(expr, 1);
+            return OP.add(expr, ONE);
         },
         addConstant(left: Expr, right: number): Expr {
             return right === 0 ? left
-                : left.kind === 'expr.literal.int' ? int(left.value + right)
+                : isInt(left) ? int(left.value + right)
                 : right > 0 ? OP.add(left, int(right))
                 : OP.minus(left, int(-right));
         },
         minus(left: Expr, right: Expr): Expr {
-            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? int(left.value - right.value)
+            return isInt(left) && isInt(right) ? int(left.value - right.value)
                 : right === ZERO ? left
                 : _binOp('loose_int_minus', left, right);
         },
         minusOne(expr: Expr): Expr {
-            return OP.addConstant(expr, -1);
+            return OP.minus(expr, ONE);
         },
         minusConstant(left: Expr, right: number): Expr {
             return OP.addConstant(left, -right);
         },
         mult(left: Expr, right: Expr): Expr {
-            return left.kind === 'expr.literal.int' ? OP.multConstant(right, left.value)
-                : right.kind === 'expr.literal.int' ? OP.multConstant(left, right.value)
+            return isInt(left) ? OP.multConstant(right, left.value)
+                : isInt(right) ? OP.multConstant(left, right.value)
                 : _binOp('loose_int_mult', left, right);
         },
         fraction(left: Expr, right: Expr): BinaryOpExpr | UnaryOpExpr {
@@ -190,17 +190,18 @@ namespace IR {
                 : _binOp('int_truediv', left, right);
         },
         floordiv(left: Expr, right: Expr): Expr {
-            return right.kind === 'expr.literal.int' && right.value > 0 ? OP.divConstant(left, right.value)
+            return isInt(right) && right.value > 0 ? OP.divConstant(left, right.value)
                 : _binOp('loose_int_floordiv', left, right);
         },
         mod(left: Expr, right: Expr): Expr {
-            return right.kind === 'expr.literal.int' && right.value > 0 ? OP.modConstant(left, right.value)
+            return isInt(right) && right.value > 0 ? OP.modConstant(left, right.value)
                 : _binOp('loose_int_mod', left, right);
         },
         
         multConstant(left: Expr, right: number): Expr {
             return right === 1 ? left
                 : right === 0 ? ZERO
+                : isInt(left) ? int(left.value * right)
                 : _isPowerOfTwo(right) ? OP.lshift(left, _log2(right))
                 : right > 0 ? _binOp('loose_int_mult', int(right), left)
                 : fail();
@@ -215,12 +216,14 @@ namespace IR {
         },
         divConstant(left: Expr, right: number): Expr {
             return right === 1 ? left
+                : isInt(left) ? int((left.value / right) | 0)
                 : _isPowerOfTwo(right) ? OP.rshift(left, _log2(right))
                 : right > 0 ? _binOp('loose_int_floordiv', left, int(right))
                 : fail();
         },
         modConstant(left: Expr, right: number): Expr {
             return right === 1 ? ZERO
+                : isInt(left) ? int(left.value % right)
                 : _isPowerOfTwo(right) ? OP.bitwiseAnd(left, int(right - 1))
                 : right > 0 ? _binOp('loose_int_mod', left, int(right))
                 : fail();
@@ -228,66 +231,74 @@ namespace IR {
         
         lshift(left: Expr, right: Expr): Expr {
             return left === ZERO || right === ZERO ? left
+                : isInt(left) && isInt(right) ? int(left.value << right.value)
                 : _binOp('int_lshift', left, right);
         },
         rshift(left: Expr, right: Expr): Expr {
             return left === ZERO || right === ZERO ? left
+                : isInt(left) && isInt(right) ? int(left.value >> right.value)
                 : _binOp('int_rshift', left, right);
         },
         bitwiseAnd(left: Expr, right: Expr): Expr {
             return left === ZERO || right === ZERO ? ZERO
+                : isInt(left) && isInt(right) ? int(left.value & right.value)
                 : _binOp('int_and', left, right);
         },
         bitwiseOr(left: Expr, right: Expr): Expr {
             return left === ZERO ? right
                 : right === ZERO ? left
+                : isInt(left) && isInt(right) ? int(left.value | right.value)
                 : _binOp('int_or', left, right);
         },
         bitwiseXor(left: Expr, right: Expr): Expr {
             return left === ZERO ? right
                 : right === ZERO ? left
+                : isInt(left) && isInt(right) ? int(left.value ^ right.value)
                 : _binOp('int_xor', left, right);
         },
         bitwiseNot(expr: Expr): Expr {
-            return expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
+            // folding e.g. ~1 into -2 doesn't reduce code size
+            return isInt(expr) && expr.value < 0 ? int(~expr.value)
+                : expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
                 : _unOp('int_not', expr);
         },
         countTrailingZeros(expr: Expr): Expr {
-            return _unOp('int_ctz', expr);
+            return isInt(expr) ? int(MJr.OPS.int_ctz(expr.value))
+                : _unOp('int_ctz', expr);
         },
         
         eq(left: Expr, right: Expr): Expr {
-            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if(isInt(left) && isInt(right)) {
                 return left.value === right.value ? TRUE : FALSE;
             }
             return _binOp('int_eq', left, right);
         },
         ne(left: Expr, right: Expr): Expr {
-            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if(isInt(left) && isInt(right)) {
                 return left.value !== right.value ? TRUE : FALSE;
             }
             return _binOp('int_ne', left, right);
         },
         lt(left: Expr, right: Expr): Expr {
-            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if(isInt(left) && isInt(right)) {
                 return left.value < right.value ? TRUE : FALSE;
             }
             return _binOp('int_lt', left, right);
         },
         le(left: Expr, right: Expr): Expr {
-            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if(isInt(left) && isInt(right)) {
                 return left.value <= right.value ? TRUE : FALSE;
             }
             return _binOp('int_le', left, right);
         },
         gt(left: Expr, right: Expr): Expr {
-            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if(isInt(left) && isInt(right)) {
                 return left.value > right.value ? TRUE : FALSE;
             }
             return _binOp('int_gt', left, right);
         },
         ge(left: Expr, right: Expr): Expr {
-            if(left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if(isInt(left) && isInt(right)) {
                 return left.value >= right.value ? TRUE : FALSE;
             }
             return _binOp('int_ge', left, right);

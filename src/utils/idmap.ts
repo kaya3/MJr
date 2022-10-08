@@ -3,6 +3,7 @@ type PrimitiveKey = string | number | bigint
 interface ReadonlyIDMap<T> {
     size(): number;
     has(x: T): boolean;
+    predicate(): (x: unknown) => x is T;
     getID(x: T): number;
     getIDs(xs: readonly T[]): number[];
     getIDSet(xs: readonly T[]): ISet;
@@ -103,6 +104,13 @@ class IDMap<T> implements ReadonlyIDMap<T> {
      */
     public has(x: T): boolean {
         return this.ids.has(this.keyFunc(x));
+    }
+    
+    /**
+     * Returns a type guard function which tests for membership of this map.
+     */
+    public predicate(): (x: unknown) => x is T {
+        return this.has.bind(this) as (x: unknown) => x is T;
     }
     
     /**

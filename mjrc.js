@@ -1295,6 +1295,10 @@ var IR;
         return { kind: 'expr.literal.str', value };
     }
     IR.str = str;
+    function isInt(expr) {
+        return expr.kind === 'expr.literal.int';
+    }
+    IR.isInt = isInt;
     // singleton objects for common values
     IR.TRUE = { kind: 'expr.literal.bool', value: true };
     IR.FALSE = { kind: 'expr.literal.bool', value: false };
@@ -1400,6 +1404,20 @@ var IR;
     IR.CONTINUE = { kind: 'stmt.continue' };
     IR.PASS = { kind: 'stmt.pass' };
     function assign(left, op, right) {
+        if (isInt(right)) {
+            if (right.value === 0) {
+                if (op === '+=' || op === '-=' || op === '|=') {
+                    return IR.PASS;
+                }
+                else if (op === '&=') {
+                    op = '=';
+                }
+            }
+            else if (right.value < 0 && (op === '+=' || op === '-=')) {
+                op = op === '+=' ? '-=' : '+=';
+                right = int(-right.value);
+            }
+        }
         return { kind: 'stmt.assign', op, left, right };
     }
     IR.assign = assign;
@@ -1812,34 +1830,34 @@ var IR;
             return _unOp('bool_not', expr);
         },
         add(left, right) {
-            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? IR.int(left.value + right.value)
+            return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value + right.value)
                 : left === IR.ZERO ? right
                     : right === IR.ZERO ? left
                         : _binOp('loose_int_plus', left, right);
         },
         addOne(expr) {
-            return IR.OP.addConstant(expr, 1);
+            return IR.OP.add(expr, IR.ONE);
         },
         addConstant(left, right) {
             return right === 0 ? left
-                : left.kind === 'expr.literal.int' ? IR.int(left.value + right)
+                : IR.isInt(left) ? IR.int(left.value + right)
                     : right > 0 ? IR.OP.add(left, IR.int(right))
                         : IR.OP.minus(left, IR.int(-right));
         },
         minus(left, right) {
-            return left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int' ? IR.int(left.value - right.value)
+            return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value - right.value)
                 : right === IR.ZERO ? left
                     : _binOp('loose_int_minus', left, right);
         },
         minusOne(expr) {
-            return IR.OP.addConstant(expr, -1);
+            return IR.OP.minus(expr, IR.ONE);
         },
         minusConstant(left, right) {
             return IR.OP.addConstant(left, -right);
         },
         mult(left, right) {
-            return left.kind === 'expr.literal.int' ? IR.OP.multConstant(right, left.value)
-                : right.kind === 'expr.literal.int' ? IR.OP.multConstant(left, right.value)
+            return IR.isInt(left) ? IR.OP.multConstant(right, left.value)
+                : IR.isInt(right) ? IR.OP.multConstant(left, right.value)
                     : _binOp('loose_int_mult', left, right);
         },
         fraction(left, right) {
@@ -1847,19 +1865,20 @@ var IR;
                 : _binOp('int_truediv', left, right);
         },
         floordiv(left, right) {
-            return right.kind === 'expr.literal.int' && right.value > 0 ? IR.OP.divConstant(left, right.value)
+            return IR.isInt(right) && right.value > 0 ? IR.OP.divConstant(left, right.value)
                 : _binOp('loose_int_floordiv', left, right);
         },
         mod(left, right) {
-            return right.kind === 'expr.literal.int' && right.value > 0 ? IR.OP.modConstant(left, right.value)
+            return IR.isInt(right) && right.value > 0 ? IR.OP.modConstant(left, right.value)
                 : _binOp('loose_int_mod', left, right);
         },
         multConstant(left, right) {
             return right === 1 ? left
                 : right === 0 ? IR.ZERO
-                    : _isPowerOfTwo(right) ? IR.OP.lshift(left, _log2(right))
-                        : right > 0 ? _binOp('loose_int_mult', IR.int(right), left)
-                            : fail();
+                    : IR.isInt(left) ? IR.int(left.value * right)
+                        : _isPowerOfTwo(right) ? IR.OP.lshift(left, _log2(right))
+                            : right > 0 ? _binOp('loose_int_mult', IR.int(right), left)
+                                : fail();
         },
         /**
          * For packing two numbers into one int; requires `0 <= y < scale`.
@@ -1871,77 +1890,87 @@ var IR;
         },
         divConstant(left, right) {
             return right === 1 ? left
-                : _isPowerOfTwo(right) ? IR.OP.rshift(left, _log2(right))
-                    : right > 0 ? _binOp('loose_int_floordiv', left, IR.int(right))
-                        : fail();
+                : IR.isInt(left) ? IR.int((left.value / right) | 0)
+                    : _isPowerOfTwo(right) ? IR.OP.rshift(left, _log2(right))
+                        : right > 0 ? _binOp('loose_int_floordiv', left, IR.int(right))
+                            : fail();
         },
         modConstant(left, right) {
             return right === 1 ? IR.ZERO
-                : _isPowerOfTwo(right) ? IR.OP.bitwiseAnd(left, IR.int(right - 1))
-                    : right > 0 ? _binOp('loose_int_mod', left, IR.int(right))
-                        : fail();
+                : IR.isInt(left) ? IR.int(left.value % right)
+                    : _isPowerOfTwo(right) ? IR.OP.bitwiseAnd(left, IR.int(right - 1))
+                        : right > 0 ? _binOp('loose_int_mod', left, IR.int(right))
+                            : fail();
         },
         lshift(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? left
-                : _binOp('int_lshift', left, right);
+                : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value << right.value)
+                    : _binOp('int_lshift', left, right);
         },
         rshift(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? left
-                : _binOp('int_rshift', left, right);
+                : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value >> right.value)
+                    : _binOp('int_rshift', left, right);
         },
         bitwiseAnd(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? IR.ZERO
-                : _binOp('int_and', left, right);
+                : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value & right.value)
+                    : _binOp('int_and', left, right);
         },
         bitwiseOr(left, right) {
             return left === IR.ZERO ? right
                 : right === IR.ZERO ? left
-                    : _binOp('int_or', left, right);
+                    : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value | right.value)
+                        : _binOp('int_or', left, right);
         },
         bitwiseXor(left, right) {
             return left === IR.ZERO ? right
                 : right === IR.ZERO ? left
-                    : _binOp('int_xor', left, right);
+                    : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value ^ right.value)
+                        : _binOp('int_xor', left, right);
         },
         bitwiseNot(expr) {
-            return expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
-                : _unOp('int_not', expr);
+            // folding e.g. ~1 into -2 doesn't reduce code size
+            return IR.isInt(expr) && expr.value < 0 ? IR.int(~expr.value)
+                : expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
+                    : _unOp('int_not', expr);
         },
         countTrailingZeros(expr) {
-            return _unOp('int_ctz', expr);
+            return IR.isInt(expr) ? IR.int(MJr.OPS.int_ctz(expr.value))
+                : _unOp('int_ctz', expr);
         },
         eq(left, right) {
-            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value === right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_eq', left, right);
         },
         ne(left, right) {
-            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value !== right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_ne', left, right);
         },
         lt(left, right) {
-            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value < right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_lt', left, right);
         },
         le(left, right) {
-            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value <= right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_le', left, right);
         },
         gt(left, right) {
-            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value > right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_gt', left, right);
         },
         ge(left, right) {
-            if (left.kind === 'expr.literal.int' && right.kind === 'expr.literal.int') {
+            if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value >= right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_ge', left, right);
@@ -2298,7 +2327,7 @@ var Compiler;
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            return max.kind !== 'expr.literal.int' ? IR.libFunctionCall('nextIntChecked', [RNG, max])
+            return !IR.isInt(max) ? IR.libFunctionCall('nextIntChecked', [RNG, max])
                 : max.value > 0 ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
                     : fail();
         },
@@ -5879,21 +5908,15 @@ var IR;
         if (domainSize <= 1 || rowLength === IR.ZERO || numRows === IR.ZERO) {
             return { name, decl: [], get: () => IR.ZERO, set: () => IR.PASS };
         }
-        const arr = {
+        const get = IR.isInt(rowLength)
+            ? (j, i) => IR.access(name, IR.OP.multAddConstant(j, rowLength.value, i))
+            : (j, i) => IR.access(name, IR.OP.add(IR.OP.mult(j, rowLength), i));
+        return {
             name,
             decl: [IR.newArrayDecl(name, IR.OP.mult(numRows, rowLength), domainSize)],
-            get: (j, i) => {
-                return IR.access(name, IR.OP.add(IR.OP.mult(j, rowLength), i));
-            },
-            set(j, i, op, value) {
-                return IR.assign(this.get(j, i), op, value);
-            },
+            get,
+            set: (j, i, op, value) => IR.assign(get(j, i), op, value),
         };
-        if (rowLength.kind === 'expr.literal.int') {
-            const width = rowLength.value;
-            arr.get = (j, i) => IR.access(name, IR.OP.multAddConstant(j, width, i));
-        }
-        return arr;
     }
     IR.makeMutableArray2D = makeMutableArray2D;
 })(IR || (IR = {}));
@@ -5970,6 +5993,9 @@ var IR;
 })(IR || (IR = {}));
 var IR;
 (function (IR) {
+    function _bit(i) {
+        return IR.int(1 << (i & 31));
+    }
     class Flags {
         numFlags;
         vars;
@@ -5980,9 +6006,6 @@ var IR;
         }
         _var(i) {
             return this.vars[i >> 5];
-        }
-        _bit(i) {
-            return IR.OP.lshift(IR.ONE, IR.int(i & 31));
         }
         declare() {
             const initialiser = this.numFlags === 1 ? IR.FALSE : IR.ZERO;
@@ -5996,19 +6019,19 @@ var IR;
             const v = this._var(i);
             return this.numFlags === 1
                 ? IR.assign(v, '=', IR.TRUE)
-                : IR.assign(v, '|=', this._bit(i));
+                : IR.assign(v, '|=', _bit(i));
         }
         clear(i) {
             const v = this._var(i);
             return this.numFlags === 1
                 ? IR.assign(v, '=', IR.FALSE)
-                : IR.assign(v, '&=', IR.OP.bitwiseNot(this._bit(i)));
+                : IR.assign(v, '&=', IR.OP.bitwiseNot(_bit(i)));
         }
         check(i) {
             const v = this._var(i);
             return this.numFlags === 1
                 ? v
-                : IR.OP.ne(IR.OP.bitwiseAnd(this._var(i), this._bit(i)), IR.ZERO);
+                : IR.OP.ne(IR.OP.bitwiseAnd(this._var(i), _bit(i)), IR.ZERO);
         }
     }
     IR.Flags = Flags;
@@ -6382,14 +6405,14 @@ var IR;
             };
             const makeUpdateSamplers = (acceptSetIDs, acceptSets, acceptMap) => {
                 let t = acceptSetIDs.get(S), oldT = acceptSetIDs.get(OLD_S);
-                if (t.kind === 'expr.literal.int' && oldT.kind === 'expr.literal.int') {
+                if (IR.isInt(t) && IR.isInt(oldT)) {
                     return t.value === oldT.value ? [] : fail();
                 }
                 const out = [];
                 if (t !== S || oldT !== OLD_S) {
                     out.push(IR.declVars([
-                        { name: T, type: IR.INT_TYPE, initialiser: acceptSetIDs.get(S) },
-                        { name: OLD_T, type: IR.INT_TYPE, initialiser: acceptSetIDs.get(OLD_S) },
+                        { name: T, type: IR.INT_TYPE, initialiser: t },
+                        { name: OLD_T, type: IR.INT_TYPE, initialiser: oldT },
                     ]), IR.if_(IR.OP.eq(T, OLD_T), IR.CONTINUE));
                     t = T;
                     oldT = OLD_T;
@@ -6495,9 +6518,9 @@ var IR;
             return rowsAcceptOrKeepMap.filter(pattern => PatternTree.matches(pattern, p => acceptSet.has(Pattern.key(p))));
         })
             .minimise(PatternTree.key);
-        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, row => rowsAcceptMap.has(row));
+        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, rowsAcceptMap.predicate());
         // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
-        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, (row) => rowsKeepMap.has(row));
+        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, rowsKeepMap.predicate());
         const acceptingSetIDs = makeArray(allLeafRows.size(), () => []);
         rowsToColsMap.forEach((rowSet, rowSetID) => {
             for (const row of rowSet) {
@@ -6509,13 +6532,10 @@ var IR;
         const colRegexPatterns = [];
         allLeaves.forEach((pattern, i) => {
             // patterns with only one row will be matched by the rowDFA directly
-            if (pattern.height === 1) {
-                return;
+            if (pattern.height > 1) {
+                const seq = leafRowMap[i].map(rowID => colRegexLetters[rowID]);
+                colRegexPatterns.push({ pattern, seq });
             }
-            colRegexPatterns.push({
-                pattern,
-                seq: leafRowMap[i].map(rowID => colRegexLetters[rowID]),
-            });
         });
         const colDFA = Regex.compile(rowsToColsMap.size(), _makeRegex(colRegexPatterns))
             .map(literals => {
@@ -7343,6 +7363,12 @@ class IDMap {
      */
     has(x) {
         return this.ids.has(this.keyFunc(x));
+    }
+    /**
+     * Returns a type guard function which tests for membership of this map.
+     */
+    predicate() {
+        return this.has.bind(this);
     }
     /**
      * Returns the ID of the given element, in O(1) time. An error is thrown if

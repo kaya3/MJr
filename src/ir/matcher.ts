@@ -114,7 +114,7 @@ namespace IR {
             
             const makeUpdateSamplers = (acceptSetIDs: ConstArray, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
                 let t = acceptSetIDs.get(S), oldT = acceptSetIDs.get(OLD_S);
-                if(t.kind === 'expr.literal.int' && oldT.kind === 'expr.literal.int') {
+                if(isInt(t) && isInt(oldT)) {
                     return t.value === oldT.value ? [] : fail();
                 }
                 
@@ -122,8 +122,8 @@ namespace IR {
                 if(t !== S || oldT !== OLD_S) {
                     out.push(
                         declVars([
-                            {name: T, type: INT_TYPE, initialiser: acceptSetIDs.get(S)},
-                            {name: OLD_T, type: INT_TYPE, initialiser: acceptSetIDs.get(OLD_S)},
+                            {name: T, type: INT_TYPE, initialiser: t},
+                            {name: OLD_T, type: INT_TYPE, initialiser: oldT},
                         ]),
                         if_(OP.eq(T, OLD_T), CONTINUE),
                     );
@@ -277,13 +277,10 @@ namespace IR {
             })
             .minimise(PatternTree.key);
         
-        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, row => rowsAcceptMap.has(row));
+        const [rowsAcceptSetIDs, rowsAcceptSetMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, rowsAcceptMap.predicate());
         
         // reduce alphabet size of colDFA by not distinguishing rows which aren't part of taller patterns
-        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(
-            rowsAcceptOrKeepMap,
-            (row: PatternTree): row is PatternTree.LeafOrTop => rowsKeepMap.has(row as PatternTree.LeafOrTop),
-        );
+        const [rowsToCols, rowsToColsMap] = rowDFA.getAcceptSetMap(rowsAcceptOrKeepMap, rowsKeepMap.predicate());
         
         const acceptingSetIDs: number[][] = makeArray(allLeafRows.size(), () => []);
         rowsToColsMap.forEach((rowSet, rowSetID) => {
@@ -297,11 +294,10 @@ namespace IR {
         const colRegexPatterns: PatternSeq[] = [];
         allLeaves.forEach((pattern, i) => {
             // patterns with only one row will be matched by the rowDFA directly
-            if(pattern.height === 1) { return; }
-            colRegexPatterns.push({
-                pattern,
-                seq: leafRowMap[i].map(rowID => colRegexLetters[rowID]),
-            });
+            if(pattern.height > 1) {
+                const seq = leafRowMap[i].map(rowID => colRegexLetters[rowID]);
+                colRegexPatterns.push({pattern, seq});
+            }
         });
         const colDFA = Regex.compile(
                 rowsToColsMap.size(),

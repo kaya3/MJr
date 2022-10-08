@@ -406,7 +406,7 @@ namespace Compiler {
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            return max.kind !== 'expr.literal.int' ? IR.libFunctionCall('nextIntChecked', [RNG, max])
+            return !IR.isInt(max) ? IR.libFunctionCall('nextIntChecked', [RNG, max])
                 : max.value > 0 ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
                 : fail();
         },

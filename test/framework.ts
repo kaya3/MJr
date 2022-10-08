@@ -25,6 +25,7 @@ interface Benchmark extends Readonly<{
 interface BenchmarkResult extends Readonly<{
     codeSize: number,
     compileTime: number,
+    runTime: number,
 }> {}
 
 const Assert = {
@@ -37,13 +38,20 @@ const Assert = {
     },
 };
 
+function dedent(src: string): string {
+    const lines = src.split('\n');
+    const firstLine = lines.find(line => line.trim().length > 0) ?? fail();
+    const initialIndent = firstLine.split(/[^\s]/, 2)[0];
+    return lines.map(line => line.replace(initialIndent, '')).join('\n');
+}
+
 const Benchmark = {
     _all: new Map<string, string>(),
     _baselines: new Map<string, BenchmarkResult>(),
     add(benchmarks: Record<string, string>): void {
         for(const [name, src] of Object.entries(benchmarks)) {
             if(Benchmark._all.has(name)) { throw new Error(`Benchmark '${name}' already exists`); }
-            Benchmark._all.set(name, src);
+            Benchmark._all.set(name, dedent(src));
         }
     },
     setBaselines(baselines: Record<string, BenchmarkResult>): void {
@@ -53,9 +61,9 @@ const Benchmark = {
     },
     
     _time(f: () => void): number {
-        const MAX_TOTAL_TIME = 1000;
-        const MAX_ITERATIONS = 1000;
-
+        const MAX_TOTAL_TIME = 2000;
+        const MAX_ITERATIONS = 2000;
+        
         const startTime = performance.now();
         const maxEndTime = startTime + MAX_TOTAL_TIME;
         let i = 0, endTime: number;
@@ -73,30 +81,34 @@ const Benchmark = {
             Benchmark._time(f),
         );
     },
-    _run(src: string): BenchmarkResult {
-        const result = Compiler.compile(src, 'JavaScript', {indentSpaces: 0});
-        const compileTime = Benchmark._timeBestOfThree(() => Compiler.compile(src, 'JavaScript'));
+    _run(src: string, gridSize: number): BenchmarkResult {
+        const [result, f] = Test._compile(src, {indentSpaces: 0, emitComments: false, maxIterations: 100000});
+        const rng = new Test.PRNG();
         return {
             codeSize: result.length,
-            compileTime,
+            compileTime: Benchmark._timeBestOfThree(() => Compiler.compile(src, 'JavaScript')),
+            runTime: Benchmark._timeBestOfThree(() => f(gridSize, gridSize, rng)),
         };
     },
-    _runAll(sectionElem: HTMLElement): void {
-        const SMALL_CHANGE_PERCENT = 3;
+    
+    runAll(): void {
+        const SMALL_CHANGE_PERCENT = 5;
+        const BENCHMARK_GRID_SIZE = 127;
         
-        const titleElem = document.createElement('h3');
+        const benchmarkPanelElem = document.getElementById('benchmark_panel') ?? fail();
+        const titleElem = document.createElement('h2');
         titleElem.appendChild(document.createTextNode('Benchmarks'));
-        sectionElem.appendChild(titleElem);
+        benchmarkPanelElem.appendChild(titleElem);
 
         const tableElem = document.createElement('table');
         const tableHeaderElem = document.createElement('tr');
         tableElem.appendChild(tableHeaderElem);
-        for(const heading of ['Model', 'Compile time', 'Output size']) {
+        for(const heading of ['Model', 'Compile time', 'Output size', 'Run time']) {
             const headingElem = document.createElement('th');
             headingElem.innerText = heading;
             tableHeaderElem.append(headingElem);
         }
-        sectionElem.appendChild(tableElem);
+        benchmarkPanelElem.appendChild(tableElem);
         
         const allResults: Record<string, BenchmarkResult> = {};
         let improvements = 0, regressions = 0;
@@ -147,7 +159,7 @@ const Benchmark = {
             setTimeout(() => {
                 const [name, src] = cases[i];
                 const baseline = Benchmark._baselines.get(name);
-                const result = Benchmark._run(src);
+                const result = Benchmark._run(src, BENCHMARK_GRID_SIZE);
                 allResults[name] = result;
                 
                 const rowElem = document.createElement('tr');
@@ -156,6 +168,7 @@ const Benchmark = {
                 rowElem.appendChild(nameElem);
                 rowElem.appendChild(_makeTDElem(r => r.compileTime, x => `${x.toFixed(1)} ms`, baseline, result));
                 rowElem.appendChild(_makeTDElem(r => r.codeSize, x => `${(x / 1024).toFixed(1)} KiB`, baseline, result));
+                rowElem.appendChild(_makeTDElem(r => r.runTime, x => `${x.toFixed(1)} ms`, baseline, result));
                 tableElem.appendChild(rowElem);
 
                 runCase(i + 1);
@@ -166,7 +179,7 @@ const Benchmark = {
 };
 
 function Test(src: string, width: number, height: number, assertions: readonly Assertion[]): TestCase {
-    return {src, width, height, assertions};
+    return {src: dedent(src), width, height, assertions};
 }
 
 Test._all = [] as Readonly<{title: string, tests: IRecord<string, TestCase>}>[];
@@ -175,12 +188,44 @@ Test.add = (title: string, tests: IRecord<string, TestCase>): void => {
     Test._all.push({title, tests});
 };
 
+// Translated from https://prng.di.unimi.it/xoroshiro64starstar.c
+Test.PRNG = class PRNG {
+    s0: number = 1234;
+    s1: number = 5678;
+    
+    private nextUint32(): number {
+        const s0 = this.s0;
+        let s1 = this.s1;
+        
+        const r0 = Math.imul(s0, 0x9E3779BB);
+        const r1 = (r0 << 5) | (r0 >>> 27);
+        const r2 = Math.imul(r1, 5);
+        
+        s1 ^= s0;
+        this.s0 = ((s0 << 26) | (s0 >>> 6)) ^ s1 ^ (s1 << 9);
+        this.s1 = (s1 << 13) | (s1 >>> 19);
+        
+        return r2 >>> 0;
+    }
+    
+    nextInt(n: number): number {
+        return this.nextUint32() % n;
+    }
+    nextDouble(): number {
+        return this.nextUint32() * (2 ** -32);
+    }
+};
+
+Test._compile = (src: string, config?: Partial<Compiler.Config>): [string, (width: number, height: number, rng: MJr.PRNG) => MJr.Grid] => {
+    const compiled = Compiler.compile(src, 'JavaScript', config);
+    return [compiled, Function(`return ${compiled};`)()];
+};
 Test._run = (test: TestCase): TestResult => {
     let compiled: string | undefined = undefined;
     try {
-        compiled = Compiler.compile(test.src, 'JavaScript');
-        const f: (width: number, height: number, rng?: MJr.PRNG) => MJr.Grid = Function(`return ${compiled};`)();
-        const actual = f(test.width, test.height).toString();
+        const [_compiled, f] = Test._compile(test.src);
+        compiled = _compiled;
+        const actual = f(test.width, test.height, new Test.PRNG()).toString();
         
         const failures = test.assertions.filter((assertion: Assertion): boolean => {
             switch(assertion.kind) {
@@ -211,16 +256,15 @@ Test._run = (test: TestCase): TestResult => {
 };
 
 Test.runAll = (): void => {
+    const testPanelElem = document.getElementById('test_panel') ?? fail();
+    
     let totalRun = 0, totalPassed = 0;
     const totalSectionElem = document.createElement('h2');
     const totalSummaryElem = document.createElement('span');
     totalSectionElem.appendChild(document.createTextNode('Tests ('));
     totalSectionElem.appendChild(totalSummaryElem);
     totalSectionElem.appendChild(document.createTextNode(')'));
-    document.body.appendChild(totalSectionElem);
-    
-    const benchmarkSectionElem = document.createElement('div');
-    document.body.appendChild(benchmarkSectionElem);
+    testPanelElem.appendChild(totalSectionElem);
     
     for(const {title, tests} of Test._all) {
         const sectionElem = document.createElement('div');
@@ -230,7 +274,7 @@ Test.runAll = (): void => {
         titleElem.appendChild(summaryElem);
         titleElem.appendChild(document.createTextNode(`)`));
         sectionElem.appendChild(titleElem);
-        document.body.appendChild(sectionElem);
+        testPanelElem.appendChild(sectionElem);
         
         function _assertionToString(a: Assertion): string {
             switch(a.kind) {
@@ -288,6 +332,4 @@ Test.runAll = (): void => {
     
     totalSummaryElem.className = totalPassed === totalRun ? 'pass' : 'fail';
     totalSummaryElem.innerText = `${totalPassed}/${totalRun} passed`;
-    
-    setTimeout(() => Benchmark._runAll(benchmarkSectionElem), 50);
 };

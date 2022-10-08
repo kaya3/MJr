@@ -51,6 +51,9 @@ var CodeGen;
             this._indent = ' '.repeat(this.config.indentSpaces * i);
         }
         writeStmt(stmt) {
+            if (stmt.kind === 'stmt.comment' && !this.config.emitComments) {
+                return;
+            }
             const f = this.STMT_WRITE_FUNCS[stmt.kind];
             f(this, stmt);
         }
@@ -1548,6 +1551,7 @@ var IR;
         PARAMS: IR.nameExpr('params'),
         RNG: IR.nameExpr('rng'),
         STATE: IR.nameExpr('state'),
+        ITERATIONS: IR.nameExpr('iterations'),
         AT: IR.nameExpr('at'),
         AT_X: IR.nameExpr('atX'),
         AT_Y: IR.nameExpr('atY'),
@@ -1956,8 +1960,10 @@ var Compiler;
     Compiler_1.REQUIRED_RUNTIME_LIB_VERSION = 0;
     const DEFAULT_CONFIG = {
         indentSpaces: 4,
+        emitComments: true,
         emitChecks: true,
         entryPointName: 'main',
+        maxIterations: 0,
         animate: false,
     };
     const ALWAYS_USED_OPS = [
@@ -1967,7 +1973,7 @@ var Compiler;
         'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
     ];
     // helpers
-    const { OP, NAMES: { WIDTH, HEIGHT, PARAMS, RNG, STATE, AT, AT_X, AT_Y, AT_CONV, I, P, ANY, MATCH, }, } = IR;
+    const { OP, NAMES: { WIDTH, HEIGHT, PARAMS, RNG, STATE, ITERATIONS, AT, AT_X, AT_Y, AT_CONV, I, P, ANY, MATCH, }, } = IR;
     /**
      * Compiles MJr source code to a high-level intermediate representation.
      */
@@ -2040,6 +2046,7 @@ var Compiler;
             // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
             const maxScale = Math.max(this.matches.scale, ...this.grids.map(g => g.getScale()));
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
+            const { maxIterations } = this.config;
             return IR.declFunc(IR.nameExpr(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${Compiler_1.COMPILER_VERSION} on ${date}`),
                 this.config.emitChecks ? IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`))) : IR.PASS,
@@ -2054,8 +2061,13 @@ var Compiler;
                 ...varDecls,
                 flagDecls,
                 limitDecls,
+                maxIterations !== 0 ? IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true) : IR.PASS,
                 ...this.goto(-1, 0),
-                IR.while_(OP.ge(STATE, IR.ZERO), IR.switch_(STATE, switchCases)),
+                IR.while_(OP.ge(STATE, IR.ZERO), IR.block([
+                    maxIterations !== 0 ? IR.if_(OP.ge(ITERATIONS, IR.int(maxIterations)), IR.throw_(`Exceeded maximum of ${maxIterations} iterations`)) : IR.PASS,
+                    IR.switch_(STATE, switchCases),
+                    maxIterations !== 0 ? IR.assign(ITERATIONS, '+=', IR.ONE) : IR.PASS,
+                ])),
                 IR.return_(endGridObj),
             ]));
         }

@@ -5,6 +5,7 @@ namespace IR {
         PARAMS: nameExpr('params'),
         RNG: nameExpr('rng'),
         STATE: nameExpr('state'),
+        ITERATIONS: nameExpr('iterations'),
         AT: nameExpr('at'),
         AT_X: nameExpr('atX'),
         AT_Y: nameExpr('atY'),

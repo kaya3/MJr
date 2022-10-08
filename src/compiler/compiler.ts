@@ -12,8 +12,10 @@ namespace Compiler {
     export type Config = typeof DEFAULT_CONFIG
     const DEFAULT_CONFIG = {
         indentSpaces: 4,
+        emitComments: true,
         emitChecks: true,
         entryPointName: 'main',
+        maxIterations: 0,
         animate: false,
     };
     
@@ -29,7 +31,7 @@ namespace Compiler {
         OP,
         NAMES: {
             WIDTH, HEIGHT, PARAMS, RNG,
-            STATE,
+            STATE, ITERATIONS,
             AT, AT_X, AT_Y, AT_CONV,
             I, P,
             ANY, MATCH,
@@ -129,6 +131,7 @@ namespace Compiler {
                 ...this.grids.map(g => g.getScale()),
             );
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
+            const {maxIterations} = this.config;
             
             return IR.declFunc(IR.nameExpr(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${COMPILER_VERSION} on ${date}`),
@@ -155,8 +158,19 @@ namespace Compiler {
                 ...varDecls,
                 flagDecls,
                 limitDecls,
+                maxIterations !== 0 ? IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true) : IR.PASS,
                 ...this.goto(-1, 0),
-                IR.while_(OP.ge(STATE, IR.ZERO), IR.switch_(STATE, switchCases)),
+                IR.while_(
+                    OP.ge(STATE, IR.ZERO),
+                    IR.block([
+                        maxIterations !== 0 ? IR.if_(
+                            OP.ge(ITERATIONS, IR.int(maxIterations)),
+                            IR.throw_(`Exceeded maximum of ${maxIterations} iterations`),
+                        ) : IR.PASS,
+                        IR.switch_(STATE, switchCases),
+                        maxIterations !== 0 ? IR.assign(ITERATIONS, '+=', IR.ONE) : IR.PASS,
+                    ]),
+                ),
                 IR.return_(endGridObj),
             ]));
         }

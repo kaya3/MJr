@@ -6,7 +6,8 @@
         @import url('https://kaya3.github.io/papyri/fonts/iosevka-papyri-light.css');
         @import url('https://fonts.googleapis.com/css?family=Roboto');
         
-        body { font-family: Roboto, sans-serif; }
+        body { font-family: Roboto, sans-serif; display: flex; }
+        #test_panel { width: 40%; }
         table { border-collapse: collapse; }
         table td:first-child, table th:first-child { text-align: left; }
         table td:not(:first-child), table th:not(:first-child) { text-align: center; }
@@ -23,6 +24,11 @@
     <script src="../mjrc-tests.js"></script>
 </head>
 <body>
-<script type="text/javascript">Test.runAll();</script>
+<div id="test_panel"></div>
+<div id="benchmark_panel"></div>
+<script type="text/javascript">
+Test.runAll();
+Benchmark.runAll();
+</script>
 </body>
 </html>

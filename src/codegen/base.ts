@@ -69,6 +69,8 @@ namespace CodeGen {
         }
         
         public writeStmt(stmt: IR.Stmt): void {
+            if(stmt.kind === 'stmt.comment' && !this.config.emitComments) { return; }
+            
             const f = this.STMT_WRITE_FUNCS[stmt.kind];
             f(this, stmt as never);
         }

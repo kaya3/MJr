@@ -217,6 +217,9 @@ namespace IR {
                 op = op === '+=' ? '-=' : '+=';
                 right = int(-right.value);
             }
+        } else if(right.kind === 'expr.op.unary' && right.op === 'int_uminus' && (op === '+=' || op === '-=')) {
+            op = op === '+=' ? '-=' : '+=';
+            right = right.child;
         }
         return {kind: 'stmt.assign', op, left, right};
     }

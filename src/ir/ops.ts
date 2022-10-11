@@ -11,6 +11,7 @@ namespace IR {
                 if(left === ZERO) { return unaryOp('int_uminus', right); }
                 if(right === ZERO) { return left; }
                 if(right.kind === 'expr.op.unary' && right.op === 'int_uminus') { return binaryOp('int_plus', left, right.child); }
+                if(equals(left, right)) { return ZERO; }
                 break;
             
             case 'float_plus':
@@ -31,6 +32,7 @@ namespace IR {
                 if(right === ONE) { return left; }
                 if(left === MINUS_ONE) { return unaryOp('int_uminus', right); }
                 if(right === MINUS_ONE) { return unaryOp('int_uminus', left); }
+                if(isInt(left) && isInt(right)) { return int(Math.imul(left.value, right.value)); }
                 break;
             case 'int_truediv':
                 if(right === ONE) { return _unOp('int_to_fraction', left); }
@@ -172,6 +174,7 @@ namespace IR {
         minus(left: Expr, right: Expr): Expr {
             return isInt(left) && isInt(right) ? int(left.value - right.value)
                 : right === ZERO ? left
+                : equals(left, right) ? ZERO
                 : _binOp('loose_int_minus', left, right);
         },
         minusOne(expr: Expr): Expr {

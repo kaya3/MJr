@@ -4,7 +4,7 @@ namespace IR {
     export interface AbstractSampler {
         readonly count: Expr;
         declare(): Stmt,
-        handleMatch(f: 'add' | 'del', patternIndex: number): Stmt;
+        handleMatch(f: 'add' | 'del', patternIndex: Expr): Stmt;
         sampleWithReplacement(cases: readonly Stmt[]): Stmt;
         beginSamplingWithoutReplacement(): Stmt;
         sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt;
@@ -40,8 +40,8 @@ namespace IR {
             return declVar(this.name, SAMPLER_TYPE, libConstructorCall('Sampler', [this.capacity]));
         }
         
-        public handleMatch(f: 'add' | 'del', patternIndex: number): Stmt {
-            const match = OP.multAddConstant(AT, this.numPatterns, int(patternIndex));
+        public handleMatch(f: 'add' | 'del', patternIndex: Expr): Stmt {
+            const match = OP.multAddConstant(AT, this.numPatterns, patternIndex);
             return libMethodCallStmt('Sampler', f, this.name, [match]);
         }
         
@@ -112,7 +112,7 @@ namespace IR {
             return PASS;
         }
         
-        public handleMatch(f: "add" | "del", patternIndex: number): Stmt {
+        public handleMatch(f: "add" | "del", patternIndex: Expr): Stmt {
             fail();
         }
         

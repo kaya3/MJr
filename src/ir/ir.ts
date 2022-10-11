@@ -242,11 +242,11 @@ namespace IR {
     export function declVars(decls: readonly VarDecl[], mutable: boolean = false): Stmt {
         return decls.length > 0 ? {kind: 'stmt.decl.vars', decls, mutable} : PASS;
     }
-    export function forRange(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[]): ForRangeStmt {
-        return {kind: 'stmt.for.range', index, low, high, reverse: false, body: block(body)};
+    export function forRange(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[], reverse: boolean = false): ForRangeStmt {
+        return {kind: 'stmt.for.range', index, low, high, reverse, body: block(body)};
     }
     export function forRangeReverse(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[]): ForRangeStmt {
-        return {kind: 'stmt.for.range', index, low, high, reverse: true, body: block(body)};
+        return forRange(index, low, high, body, true);
     }
     export function if_(condition: Expr, then: Stmt, otherwise?: Stmt): Stmt {
         if(otherwise === PASS) { otherwise = undefined; }
@@ -290,7 +290,7 @@ namespace IR {
     export function return_(expr?: Expr): ReturnStmt {
         return {kind: 'stmt.return', expr};
     }
-    export function switch_(expr: Expr, casesByIndex: readonly Stmt[]): Stmt {
+    export function switch_(expr: Expr, casesByIndex: readonly Stmt[], optimise: boolean = false): Stmt {
         if(casesByIndex.length === 0) {
             return PASS;
         } else if(casesByIndex.length === 1) {
@@ -318,6 +318,14 @@ namespace IR {
             
             const k = key(c);
             getOrCompute(map, k, () => ({values: [], then: c})).values.push(i);
+        }
+        
+        if(optimise) {
+            for(const c of map.values()) {
+                if(c.values.length === 1) {
+                    c.then = replace(c.then, expr, int(c.values[0]));
+                }
+            }
         }
         
         const cases = Array.from(map.values());

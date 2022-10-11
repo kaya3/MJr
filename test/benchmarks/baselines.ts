@@ -3,27 +3,27 @@
 Benchmark.setBaselines({
     "GameOfLife": {
         "codeSize": 3705,
-        "compileTime": 0.656949999999255,
-        "runTime": 157.95384615373152
+        "compileTime": 0.6566000000014901,
+        "runTime": 160.4692307693454
     },
     "River": {
-        "codeSize": 13142,
-        "compileTime": 2.6124020887747914,
-        "runTime": 17.435652173926
+        "codeSize": 11876,
+        "compileTime": 2.5535714285714284,
+        "runTime": 15.182575757587045
     },
     "BasicDungeonGrowth": {
-        "codeSize": 408437,
-        "compileTime": 139.92666666656731,
-        "runTime": 8.52127659574468
+        "codeSize": 407405,
+        "compileTime": 136.67333333343268,
+        "runTime": 8.565384615403719
     },
     "NystromDungeon": {
-        "codeSize": 23056,
-        "compileTime": 5.52011019284978,
-        "runTime": 11.175
+        "codeSize": 22010,
+        "compileTime": 5.5010989010948075,
+        "runTime": 10.855135135151244
     },
     "MazesAndLakes": {
-        "codeSize": 17462,
-        "compileTime": 4.843099273614964,
-        "runTime": 11.994610778407422
+        "codeSize": 16722,
+        "compileTime": 4.910784313710881,
+        "runTime": 10.380829015544041
     }
 });

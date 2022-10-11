@@ -1446,12 +1446,12 @@ var IR;
         return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable } : IR.PASS;
     }
     IR.declVars = declVars;
-    function forRange(index, low, high, body) {
-        return { kind: 'stmt.for.range', index, low, high, reverse: false, body: block(body) };
+    function forRange(index, low, high, body, reverse = false) {
+        return { kind: 'stmt.for.range', index, low, high, reverse, body: block(body) };
     }
     IR.forRange = forRange;
     function forRangeReverse(index, low, high, body) {
-        return { kind: 'stmt.for.range', index, low, high, reverse: true, body: block(body) };
+        return forRange(index, low, high, body, true);
     }
     IR.forRangeReverse = forRangeReverse;
     function if_(condition, then, otherwise) {
@@ -1511,7 +1511,7 @@ var IR;
         return { kind: 'stmt.return', expr };
     }
     IR.return_ = return_;
-    function switch_(expr, casesByIndex) {
+    function switch_(expr, casesByIndex, optimise = false) {
         if (casesByIndex.length === 0) {
             return IR.PASS;
         }
@@ -1537,6 +1537,13 @@ var IR;
             }
             const k = key(c);
             getOrCompute(map, k, () => ({ values: [], then: c })).values.push(i);
+        }
+        if (optimise) {
+            for (const c of map.values()) {
+                if (c.values.length === 1) {
+                    c.then = IR.replace(c.then, expr, int(c.values[0]));
+                }
+            }
         }
         const cases = Array.from(map.values());
         return cases.length === 0 ? IR.PASS
@@ -1658,6 +1665,9 @@ var IR;
                 if (right.kind === 'expr.op.unary' && right.op === 'int_uminus') {
                     return binaryOp('int_plus', left, right.child);
                 }
+                if (IR.equals(left, right)) {
+                    return IR.ZERO;
+                }
                 break;
             case 'float_plus':
                 if (left === IR.FLOAT_ZERO) {
@@ -1699,6 +1709,9 @@ var IR;
                 }
                 if (right === IR.MINUS_ONE) {
                     return unaryOp('int_uminus', left);
+                }
+                if (IR.isInt(left) && IR.isInt(right)) {
+                    return IR.int(Math.imul(left.value, right.value));
                 }
                 break;
             case 'int_truediv':
@@ -1847,7 +1860,8 @@ var IR;
         minus(left, right) {
             return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value - right.value)
                 : right === IR.ZERO ? left
-                    : _binOp('loose_int_minus', left, right);
+                    : IR.equals(left, right) ? IR.ZERO
+                        : _binOp('loose_int_minus', left, right);
         },
         minusOne(expr) {
             return IR.OP.minus(expr, IR.ONE);
@@ -6331,7 +6345,7 @@ var IR;
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
-    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, AT, AT_X, AT_Y, S, OLD_S, T, OLD_T, U, } = IR.NAMES;
+    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, AT, AT_X, AT_Y, S, OLD_S, T, OLD_T, U, I, } = IR.NAMES;
     class Matcher {
         g;
         id;
@@ -6345,10 +6359,11 @@ var IR;
         addMatchHandler(handler) {
             this.matchHandlers.push(handler);
         }
-        makeMatchHandler(h, f) {
+        makeMatchHandler(h, acceptID, f) {
             switch (h.kind) {
                 case 'sampler':
-                    return h.sampler.handleMatch(f, h.i);
+                    // `I - constant` allows code to be shared among consecutive match handlers
+                    return h.sampler.handleMatch(f, IR.OP.addConstant(I, h.i - acceptID));
                 case 'counter':
                     return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.ONE);
                 case 'convolution':
@@ -6390,14 +6405,15 @@ var IR;
                     for (let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
                         const key = PatternTree.key(acceptMap.getByID(acceptID));
                         const handlers = handlersByPattern.get(key) ?? fail();
-                        cases.push(IR.block(handlers.map(h => this.makeMatchHandler(h, f))));
+                        cases.push(IR.block(handlers.map(h => this.makeMatchHandler(h, acceptID & 31, f))));
                     }
                     out.push(IR.assign(U, '=', maskDiff(acceptSets, t1, t2, index)), 
                     // special cases for short switches, when there is no need for `countTrailingZeros`
-                    cases.length === 1 ? IR.if_(IR.OP.ne(U, IR.ZERO), cases[0])
-                        : cases.length === 2 ? IR.block(cases.map((c, i) => IR.if_(IR.OP.ne(IR.OP.bitwiseAnd(U, IR.int(1 << i)), IR.ZERO), c)))
+                    cases.length === 1 ? IR.if_(IR.OP.ne(U, IR.ZERO), IR.replace(cases[0], I, IR.ZERO))
+                        : cases.length === 2 ? IR.block(cases.map((c, i) => IR.if_(IR.OP.ne(IR.OP.bitwiseAnd(U, IR.int(1 << i)), IR.ZERO), IR.replace(c, I, IR.int(i)))))
                             : IR.while_(IR.OP.ne(U, IR.ZERO), IR.block([
-                                IR.switch_(IR.OP.countTrailingZeros(U), cases),
+                                IR.declVar(I, IR.INT_TYPE, IR.OP.countTrailingZeros(U)),
+                                IR.switch_(I, cases, true),
                                 IR.assign(U, '&=', IR.OP.minusOne(U)),
                             ])));
                 }
@@ -6609,6 +6625,116 @@ var IR;
     }
     IR.MatchesArray = MatchesArray;
 })(IR || (IR = {}));
+var IR;
+(function (IR) {
+    function _replaceVarDecl(decl, from, to) {
+        const { name, type } = decl;
+        return { name, type, initialiser: decl.initialiser && replace(decl.initialiser, from, to) };
+    }
+    function replace(node, from, to) {
+        if (IR.equals(node, from)) {
+            return to;
+        }
+        switch (node.kind) {
+            case 'stmt.blankline':
+            case 'stmt.break':
+            case 'stmt.comment':
+            case 'stmt.continue':
+            case 'stmt.pass':
+            case 'stmt.preamble':
+            case 'stmt.throw':
+            case 'expr.array.const':
+            case 'expr.array.new':
+            case 'expr.literal.bool':
+            case 'expr.literal.float':
+            case 'expr.literal.int':
+            case 'expr.literal.null':
+            case 'expr.literal.str':
+            case 'expr.name':
+            case 'expr.param':
+                return node;
+            case 'expr.attr':
+                return IR.attr(replace(node.left, from, to), node.attr);
+            case 'expr.dict':
+                return IR.dict(node.type, node.values.map(v => replace(v, from, to)));
+            case 'expr.letin':
+                return IR.letIn(node.decls.map(d => _replaceVarDecl(d, from, to)), replace(node.child, from, to));
+            case 'expr.op.access':
+                return IR.access(replace(node.left, from, to), replace(node.right, from, to));
+            case 'expr.op.binary':
+                const left = replace(node.left, from, to), right = replace(node.right, from, to);
+                switch (node.op) {
+                    case 'int_and':
+                        return IR.OP.bitwiseAnd(left, right);
+                    case 'int_or':
+                        return IR.OP.bitwiseOr(left, right);
+                    case 'int_xor':
+                        return IR.OP.bitwiseXor(left, right);
+                    case 'int_lshift':
+                        return IR.OP.lshift(left, right);
+                    case 'int_rshift':
+                        return IR.OP.rshift(left, right);
+                    case 'loose_int_plus':
+                        return IR.OP.add(left, right);
+                    case 'loose_int_minus':
+                        return IR.OP.minus(left, right);
+                    case 'loose_int_mult':
+                        return IR.OP.mult(left, right);
+                    case 'loose_int_floordiv':
+                        return IR.OP.floordiv(left, right);
+                    case 'loose_int_mod':
+                        return IR.OP.mod(left, right);
+                    default:
+                        return IR.binaryOp(node.op, left, right);
+                }
+            case 'expr.op.call.lib.constructor':
+                return IR.libConstructorCall(node.className, node.args.map(v => replace(v, from, to)));
+            case 'expr.op.call.lib.function':
+                return IR.libFunctionCall(node.name, node.args.map(v => replace(v, from, to)));
+            case 'expr.op.call.lib.method':
+                return IR.libMethodCall(node.className, node.name, replace(node.obj, from, to), node.args.map(v => replace(v, from, to)));
+            case 'expr.op.call.local':
+                return IR.localCall(node.name, node.args.map(v => replace(v, from, to)));
+            case 'expr.op.ternary':
+                return IR.ternary(replace(node.condition, from, to), replace(node.then, from, to), replace(node.otherwise, from, to));
+            case 'expr.op.unary':
+                const child = replace(node.child, from, to);
+                switch (node.op) {
+                    case 'int_not':
+                        return IR.OP.bitwiseNot(child);
+                    case 'int_ctz':
+                        return IR.OP.countTrailingZeros(child);
+                    default:
+                        return IR.unaryOp(node.op, child);
+                }
+            case 'stmt.assign':
+                return IR.assign(replace(node.left, from, to), node.op, replace(node.right, from, to));
+            case 'stmt.block':
+                return IR.block(node.children.map(c => replace(c, from, to)));
+            case 'stmt.decl.func':
+                return IR.declFunc(node.name, node.yields, node.params, node.paramTypes, node.returnType, replace(node.body, from, to));
+            case 'stmt.decl.vars':
+                return IR.declVars(node.decls.map(d => _replaceVarDecl(d, from, to)), node.mutable);
+            case 'stmt.expr':
+                return { kind: 'stmt.expr', expr: replace(node.expr, from, to) };
+            case 'stmt.for.range':
+                return IR.forRange(node.index, replace(node.low, from, to), replace(node.high, from, to), [replace(node.body, from, to)], node.reverse);
+            case 'stmt.if':
+                return IR.if_(replace(node.condition, from, to), replace(node.then, from, to), node.otherwise && replace(node.otherwise, from, to));
+            case 'stmt.log':
+                return IR.log(replace(node.expr, from, to));
+            case 'stmt.return':
+                return IR.return_(node.expr && replace(node.expr, from, to));
+            case 'stmt.switch':
+                throw new Error();
+            case 'stmt.while':
+                return IR.while_(replace(node.condition, from, to), replace(node.then, from, to));
+            case 'stmt.yield':
+                return IR.yield_(node.expr && replace(node.expr, from, to));
+        }
+    }
+    IR.replace = replace;
+})(IR || (IR = {}));
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
@@ -6636,7 +6762,7 @@ var IR;
             return IR.declVar(this.name, IR.SAMPLER_TYPE, IR.libConstructorCall('Sampler', [this.capacity]));
         }
         handleMatch(f, patternIndex) {
-            const match = IR.OP.multAddConstant(AT, this.numPatterns, IR.int(patternIndex));
+            const match = IR.OP.multAddConstant(AT, this.numPatterns, patternIndex);
             return IR.libMethodCallStmt('Sampler', f, this.name, [match]);
         }
         sampleWithReplacement(cases) {

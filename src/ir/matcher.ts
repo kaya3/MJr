@@ -11,7 +11,7 @@ namespace IR {
     const {
         START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT,
         AT, AT_X, AT_Y,
-        S, OLD_S, T, OLD_T, U,
+        S, OLD_S, T, OLD_T, U, I,
     } = NAMES;
     
     export class Matcher {
@@ -29,10 +29,11 @@ namespace IR {
             this.matchHandlers.push(handler);
         }
         
-        private makeMatchHandler(h: MatchHandler, f: 'add' | 'del'): Stmt {
+        private makeMatchHandler(h: MatchHandler, acceptID: number, f: 'add' | 'del'): Stmt {
             switch(h.kind) {
                 case 'sampler':
-                    return h.sampler.handleMatch(f, h.i);
+                    // `I - constant` allows code to be shared among consecutive match handlers
+                    return h.sampler.handleMatch(f, OP.addConstant(I, h.i - acceptID));
                 
                 case 'counter':
                     return assign(h.counter, f === 'add' ? '+=' : '-=', ONE);
@@ -94,16 +95,17 @@ namespace IR {
                     for(let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
                         const key = PatternTree.key(acceptMap.getByID(acceptID));
                         const handlers = handlersByPattern.get(key) ?? fail();
-                        cases.push(block(handlers.map(h => this.makeMatchHandler(h, f))));
+                        cases.push(block(handlers.map(h => this.makeMatchHandler(h, acceptID & 31, f))));
                     }
                     
                     out.push(
                         assign(U, '=', maskDiff(acceptSets, t1, t2, index)),
                         // special cases for short switches, when there is no need for `countTrailingZeros`
-                        cases.length === 1 ? if_(OP.ne(U, ZERO), cases[0])
-                        : cases.length === 2 ? block(cases.map((c, i) => if_(OP.ne(OP.bitwiseAnd(U, int(1 << i)), ZERO), c)))
+                        cases.length === 1 ? if_(OP.ne(U, ZERO), replace(cases[0], I, ZERO))
+                        : cases.length === 2 ? block(cases.map((c, i) => if_(OP.ne(OP.bitwiseAnd(U, int(1 << i)), ZERO), replace(c, I, int(i)))))
                         : while_(OP.ne(U, ZERO), block([
-                            switch_(OP.countTrailingZeros(U), cases),
+                            declVar(I, INT_TYPE, OP.countTrailingZeros(U)),
+                            switch_(I, cases, true),
                             assign(U, '&=', OP.minusOne(U)),
                         ])),
                     );

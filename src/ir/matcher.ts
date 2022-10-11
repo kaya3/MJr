@@ -11,7 +11,7 @@ namespace IR {
     const {
         START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT,
         AT, AT_X, AT_Y,
-        S, OLD_S, T, OLD_T, U, I,
+        S, OLD_S, T, OLD_T, U, I, DELTA,
     } = NAMES;
     
     export class Matcher {
@@ -29,17 +29,17 @@ namespace IR {
             this.matchHandlers.push(handler);
         }
         
-        private makeMatchHandler(h: MatchHandler, acceptID: number, f: 'add' | 'del'): Stmt {
+        private makeMatchHandler(h: MatchHandler, acceptID: number): Stmt {
             switch(h.kind) {
                 case 'sampler':
                     // `I - constant` allows code to be shared among consecutive match handlers
-                    return h.sampler.handleMatch(f, OP.addConstant(I, h.i - acceptID));
+                    return h.sampler.handleMatch(OP.addConstant(I, h.i - acceptID), DELTA);
                 
                 case 'counter':
-                    return assign(h.counter, f === 'add' ? '+=' : '-=', ONE);
+                    return assign(h.counter, '+=', DELTA);
                 
                 case 'convolution':
-                    return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');
+                    return h.buffer.update(h.i, AT_X, AT_Y, DELTA);
             }
         }
         
@@ -70,6 +70,9 @@ namespace IR {
             const rowStates = makeMutableArray(NAMES.matcherVar(g, id, 'rowStates'), g.n, rowDFASize);
             const colStates = makeMutableArray(NAMES.matcherVar(g, id, 'colStates'), g.n, colDFASize);
             
+            const handleRow = NAMES.matcherVar(g, id, 'handleRow');
+            const handleCol = NAMES.matcherVar(g, id, 'handleCol');
+            
             const handlersByPattern = new Map<string, MatchHandler[]>();
             for(const handler of this.matchHandlers) {
                 const key = PatternTree.key(handler.pattern);
@@ -84,37 +87,47 @@ namespace IR {
                 );
             };
             
-            const makeStateChangeHandlers = (t1: Expr, t2: Expr, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>, f: 'add' | 'del'): Stmt[] => {
-                const maskSize = (acceptMap.size() + 31) >> 5;
+            const makeMatchHandlerFunc = (name: NameExpr, acceptMap: ReadonlyIDMap<PatternTree>): Stmt => {
+                if(acceptMap.size() === 0) { return PASS; }
+                
+                const cases = acceptMap.map((p, acceptID) => {
+                    const key = PatternTree.key(p);
+                    const handlers = handlersByPattern.get(key) ?? fail();
+                    return block(handlers.map(h => this.makeMatchHandler(h, acceptID)));
+                });
+                return declFunc(
+                    name,
+                    undefined,
+                    [AT, AT_X, AT_Y, I, DELTA],
+                    [INT_TYPE, INT_TYPE, INT_TYPE, INT_TYPE, INT_TYPE],
+                    VOID_TYPE,
+                    switch_(I, cases, true),
+                );
+            };
+            
+            const makeStateChangeHandlers = (t1: Expr, t2: Expr, handleFuncName: NameExpr, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>, delta: Expr): Stmt[] => {
+                const acceptMapSize = acceptMap.size();
+                const maskSize = (acceptMapSize + 31) >> 5;
                 
                 const out: Stmt[] = [];
                 for(let index = 0; index < maskSize; ++index) {
-                    const cases: Stmt[] = [];
-                    const minAcceptID = index << 5,
-                        maxAcceptID = Math.min(minAcceptID + 32, acceptMap.size());
-                    for(let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
-                        const key = PatternTree.key(acceptMap.getByID(acceptID));
-                        const handlers = handlersByPattern.get(key) ?? fail();
-                        cases.push(block(handlers.map(h => this.makeMatchHandler(h, acceptID & 31, f))));
-                    }
+                    const acceptIndex = OP.addConstant(OP.countTrailingZeros(U), index << 5);
                     
                     out.push(
                         assign(U, '=', maskDiff(acceptSets, t1, t2, index)),
                         // special cases for short switches, when there is no need for `countTrailingZeros`
-                        cases.length === 1 ? if_(OP.ne(U, ZERO), replace(cases[0], I, ZERO))
-                        : cases.length === 2 ? block(cases.map((c, i) => if_(OP.ne(OP.bitwiseAnd(U, int(1 << i)), ZERO), replace(c, I, int(i)))))
+                        acceptMapSize === 1 ? if_(OP.ne(U, ZERO), localCallStmt(handleFuncName, [AT, AT_X, AT_Y, ZERO, delta]))
+                        : acceptMapSize === 2 ? block(makeArray(2, i => if_(OP.ne(OP.bitwiseAnd(U, int(1 << i)), ZERO), localCallStmt(handleFuncName, [AT, AT_X, AT_Y, int(i), delta]))))
                         : while_(OP.ne(U, ZERO), block([
-                            declVar(I, INT_TYPE, OP.countTrailingZeros(U)),
-                            switch_(I, cases, true),
+                            localCallStmt(handleFuncName, [AT, AT_X, AT_Y, acceptIndex, delta]),
                             assign(U, '&=', OP.minusOne(U)),
                         ])),
                     );
                 }
-                
                 return out;
             };
             
-            const makeUpdateSamplers = (acceptSetIDs: ConstArray, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
+            const makeUpdateSamplers = (handleFuncName: NameExpr, acceptSetIDs: ConstArray, acceptSets: ConstArray2D, acceptMap: ReadonlyIDMap<PatternTree>): Stmt[] => {
                 let t = acceptSetIDs.get(S), oldT = acceptSetIDs.get(OLD_S);
                 if(isInt(t) && isInt(oldT)) {
                     return t.value === oldT.value ? [] : fail();
@@ -135,8 +148,8 @@ namespace IR {
                 
                 out.push(
                     declVar(U, INT_TYPE, undefined, true),
-                    ...makeStateChangeHandlers(oldT, t, acceptSets, acceptMap, 'del'),
-                    ...makeStateChangeHandlers(t, oldT, acceptSets, acceptMap, 'add'),
+                    ...makeStateChangeHandlers(oldT, t, handleFuncName, acceptSets, acceptMap, MINUS_ONE),
+                    ...makeStateChangeHandlers(t, oldT, handleFuncName, acceptSets, acceptMap, ONE),
                 );
                 return out;
             };
@@ -160,7 +173,7 @@ namespace IR {
                         numColPatterns === 0 ? PASS : if_(OP.lt(AT_X, START_X), assign(START_X, '=', AT_X)),
                         
                         // must occur last, since it uses `continue`
-                        ...makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),
+                        ...makeUpdateSamplers(handleRow, rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),
                     ]),
                 ]),
             ];
@@ -182,7 +195,7 @@ namespace IR {
                         colStates.set(AT, '=', S),
                         
                         // must occur last, since it uses `continue`
-                        ...makeUpdateSamplers(colAcceptSetIDs, colAcceptSets, dfas.colsAcceptMap),
+                        ...makeUpdateSamplers(handleCol, colAcceptSetIDs, colAcceptSets, dfas.colsAcceptMap),
                     ]),
                 ]),
             ];
@@ -199,6 +212,8 @@ namespace IR {
                     rowStates,
                     colStates
                 ].flatMap(arr => arr.decl)),
+                makeMatchHandlerFunc(handleRow, dfas.rowsAcceptMap),
+                makeMatchHandlerFunc(handleCol, dfas.colsAcceptMap),
                 declFunc(
                     this.updateFuncName,
                     undefined,

@@ -71,18 +71,18 @@ namespace IR {
             return this.values.get(ISet.key(chars)) ?? fail();
         }
         
-        public update(i: number, xVar: NameExpr, yVar: NameExpr, op: '+=' | '-='): Stmt {
+        public update(i: number, xVar: NameExpr, yVar: NameExpr, delta: Expr): Stmt {
             const {buffer, width, kernel} = this;
             const out: Stmt[] = [];
             for(let dy = 0; dy < kernel.height; ++dy) {
                 for(let dx = 0; dx < kernel.width; ++dx) {
-                    const delta = kernel.data[dx + kernel.width * dy];
-                    if(delta !== 0) {
+                    const d = kernel.data[dx + kernel.width * dy];
+                    if(d !== 0) {
                         const index = OP.add(
                             OP.addConstant(xVar, dx),
                             OP.mult(OP.addConstant(yVar, dy), width),
                         );
-                        out.push(buffer.set(int(i), index, op, int(delta)));
+                        out.push(buffer.set(int(i), index, '+=', OP.multConstant(delta, d)));
                     }
                 }
             }

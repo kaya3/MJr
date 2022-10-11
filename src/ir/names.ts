@@ -30,6 +30,7 @@ namespace IR {
         T: nameExpr('t'),
         OLD_T: nameExpr('oldT'),
         U: nameExpr('u'),
+        DELTA: nameExpr('delta'),
         MASK: nameExpr('mask'),
         MASK_CLEAR: nameExpr('mask_clear'),
         MASK_SET: nameExpr('mask_set'),
@@ -70,5 +71,5 @@ namespace IR {
     
     type ConvBufferVar = 'width' | 'n' | 'buffer'
     type GridVar = 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'buffer' | 'lfsrFeedbackTerm'
-    type MatcherVar = 'update' | 'rowsToCols' | `${'row' | 'col'}${'DFA' | 'States' | 'AcceptSetIDs' | 'AcceptSets'}`
+    type MatcherVar = 'update' | 'handleRow' | 'handleCol' | 'rowsToCols' | `${'row' | 'col'}${'DFA' | 'States' | 'AcceptSetIDs' | 'AcceptSets'}`
 }

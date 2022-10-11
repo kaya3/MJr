@@ -252,6 +252,14 @@ namespace MJr {
             return this.indices[x] < this.count;
         }
         
+        public handle(x: number, delta: number): void {
+            if(delta > 0) {
+                this.add(x);
+            } else {
+                this.del(x);
+            }
+        }
+        
         public add(x: number): void {
             const {arr, indices, count} = this;
             const i = indices[x];

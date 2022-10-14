@@ -208,7 +208,8 @@ namespace IR {
             }
             
             const filteredToCover = cur.toCover.filter(s => !ISet.isDisjoint(cur.allowedReps, s));
-            if(filteredToCover.length === 0 || cur.covered + filteredToCover.length < best.covered) { continue; }
+            const upperBound = cur.covered + filteredToCover.length;
+            if(filteredToCover.length === 0 || upperBound < best.covered || (upperBound === best.covered && cur.countUsed >= best.countUsed)) { continue; }
             
             const x = ISet.first(ISet.intersection(filteredToCover[0], cur.allowedReps));
             if(x < 0) { fail(); }

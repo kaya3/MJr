@@ -190,6 +190,17 @@ var CodeGen;
                 : 32;
     }
     CodeGen.uintBits = uintBits;
+    function uintBitsFours(domainSize) {
+        return domainSize <= (1 << 4) ? 4
+            : domainSize <= (1 << 8) ? 8
+                : domainSize <= (1 << 12) ? 12
+                    : domainSize <= (1 << 16) ? 16
+                        : domainSize <= (1 << 20) ? 20
+                            : domainSize <= (1 << 24) ? 24
+                                : domainSize <= (1 << 28) ? 28
+                                    : 32;
+    }
+    CodeGen.uintBitsFours = uintBitsFours;
     function arrayToHex(arr, bitsPerElement) {
         const digitsPerElement = bitsPerElement >> 2;
         return arr.map(x => x.toString(16).padStart(digitsPerElement, '0')).join('');
@@ -387,7 +398,7 @@ var CodeGen;
         EXPR_WRITE_FUNCS = {
             'expr.array.const': [18 /* Precedence.MAX */, (out, expr) => {
                     const { from } = expr;
-                    const bits = CodeGen.uintBits(expr.domainSize);
+                    const bits = CodeGen.uintBitsFours(expr.domainSize);
                     const s = CodeGen.arrayToHex(from, bits);
                     out.write(`${RUNTIME_LIB_NAME}.HEX.u${bits}(`);
                     out.writeLongStringLiteral(s, expr.rowLength * s.length / from.length);
@@ -1553,7 +1564,8 @@ var IR;
         const cases = Array.from(map.values());
         return cases.length === 0 ? IR.PASS
             : cases.length === 1 && exhaustive ? firstCase
-                : { kind: 'stmt.switch', expr, cases };
+                : cases.length === 1 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, int(cases[0].values[0])), cases[0].then)
+                    : { kind: 'stmt.switch', expr, cases };
     }
     IR.switch_ = switch_;
     function throw_(message) {
@@ -2198,7 +2210,7 @@ var Compiler;
                 }
                 case 'pattern.out': {
                     const { width, height, pattern } = c.value;
-                    const patternExpr = IR.constArray(pattern, 256, width);
+                    const patternExpr = IR.constArray(pattern, Math.max(...pattern) + 1, width);
                     return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
                 }
                 case 'position': {
@@ -2664,6 +2676,7 @@ var MJr;
         if (y === 0) {
             throw new Error(MJr.DIV_ZERO_MESSAGE);
         }
+        return y;
     }
     function modulo(x, y) {
         return x - y * Math.floor(x / y);
@@ -2704,6 +2717,13 @@ var MJr;
         int_to_fraction: (x) => ({ p: x, q: 1 }),
     };
     MJr.HEX = {
+        u4(s) {
+            const arr = new Uint8Array(s.length);
+            for (let i = 0; i < s.length; ++i) {
+                arr[i] = parseInt(s.substring(i, i + 1), 16);
+            }
+            return arr;
+        },
         u8(s) {
             const arr = new Uint8Array(s.length >> 1);
             for (let i = 0; i < s.length; i += 2) {
@@ -2711,10 +2731,42 @@ var MJr;
             }
             return arr;
         },
+        u12(s) {
+            const n = (s.length / 3) | 0;
+            const arr = new Uint16Array(n);
+            for (let i = 0, j = 0; i < n; ++i, j += 3) {
+                arr[i] = parseInt(s.substring(j, j + 3), 16);
+            }
+            return arr;
+        },
         u16(s) {
             const arr = new Uint16Array(s.length >> 2);
             for (let i = 0; i < s.length; i += 4) {
                 arr[i >> 2] = parseInt(s.substring(i, i + 4), 16);
+            }
+            return arr;
+        },
+        u20(s) {
+            const n = (s.length / 5) | 0;
+            const arr = new Uint32Array(n);
+            for (let i = 0, j = 0; i < n; ++i, j += 5) {
+                arr[i] = parseInt(s.substring(j, j + 5), 16);
+            }
+            return arr;
+        },
+        u24(s) {
+            const n = (s.length / 6) | 0;
+            const arr = new Uint32Array(n);
+            for (let i = 0, j = 0; i < n; ++i, j += 6) {
+                arr[i] = parseInt(s.substring(j, j + 6), 16);
+            }
+            return arr;
+        },
+        u28(s) {
+            const n = (s.length / 7) | 0;
+            const arr = new Uint32Array(n);
+            for (let i = 0, j = 0; i < n; ++i, j += 7) {
+                arr[i] = parseInt(s.substring(j, j + 7), 16);
             }
             return arr;
         },
@@ -6135,7 +6187,8 @@ var IR;
                 }
             }
             const filteredToCover = cur.toCover.filter(s => !ISet.isDisjoint(cur.allowedReps, s));
-            if (filteredToCover.length === 0 || cur.covered + filteredToCover.length < best.covered) {
+            const upperBound = cur.covered + filteredToCover.length;
+            if (filteredToCover.length === 0 || upperBound < best.covered || (upperBound === best.covered && cur.countUsed >= best.countUsed)) {
                 continue;
             }
             const x = ISet.first(ISet.intersection(filteredToCover[0], cur.allowedReps));
@@ -6546,11 +6599,11 @@ var IR;
             const colsAlphabetSize = dfas.colDFA.alphabetSize, rowDFASize = dfas.rowDFA.size(), colDFASize = dfas.colDFA.size(), numRowPatterns = dfas.rowsAcceptMap.size(), numColPatterns = dfas.colsAcceptMap.size(), rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]), colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
             const rowDFA = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'rowDFA'), dfas.rowDFA.toFlatArray(), gridAlphabetSize, rowDFASize);
             const rowAcceptSetIDs = IR.makeConstArray(IR.NAMES.matcherVar(g, id, 'rowAcceptSetIDs'), dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size());
-            const rowAcceptSets = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'rowAcceptSets'), rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 16 ? 1 << numRowPatterns : IR.INT32_ARRAY_TYPE.domainSize);
+            const rowAcceptSets = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'rowAcceptSets'), rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 31 ? 1 << numRowPatterns : IR.INT32_ARRAY_TYPE.domainSize);
             const rowsToCols = IR.makeConstArray(IR.NAMES.matcherVar(g, id, 'rowsToCols'), dfas.rowsToCols, colsAlphabetSize);
             const colDFA = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'colDFA'), dfas.colDFA.toFlatArray(), colsAlphabetSize, colDFASize);
             const colAcceptSetIDs = IR.makeConstArray(IR.NAMES.matcherVar(g, id, 'colAcceptSetIDs'), dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size());
-            const colAcceptSets = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'colAcceptSets'), colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 16 ? 1 << numColPatterns : IR.INT32_ARRAY_TYPE.domainSize);
+            const colAcceptSets = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'colAcceptSets'), colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 31 ? 1 << numColPatterns : IR.INT32_ARRAY_TYPE.domainSize);
             const rowStates = IR.makeMutableArray(IR.NAMES.matcherVar(g, id, 'rowStates'), g.n, rowDFASize);
             const colStates = IR.makeMutableArray(IR.NAMES.matcherVar(g, id, 'colStates'), g.n, colDFASize);
             const handlersByPattern = new Map();

@@ -211,7 +211,7 @@ namespace CodeGen {
         readonly EXPR_WRITE_FUNCS: ExprWriteFuncs<this> = {
             'expr.array.const': [Precedence.MAX, (out, expr) => {
                 const {from} = expr;
-                const bits = uintBits(expr.domainSize);
+                const bits = uintBitsFours(expr.domainSize);
                 const s = arrayToHex(from, bits);
                 out.write(`${RUNTIME_LIB_NAME}.HEX.u${bits}(`);
                 out.writeLongStringLiteral(s, expr.rowLength * s.length / from.length);

@@ -335,6 +335,7 @@ namespace IR {
         const cases = Array.from(map.values());
         return cases.length === 0 ? PASS
             : cases.length === 1 && exhaustive ? firstCase
+            : cases.length === 1 && cases[0].values.length === 1 ? if_(OP.eq(expr, int(cases[0].values[0])), cases[0].then)
             : {kind: 'stmt.switch', expr, cases};
     }
     export function throw_(message: string): ThrowStmt {

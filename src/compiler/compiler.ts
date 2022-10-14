@@ -249,7 +249,7 @@ namespace Compiler {
                 }
                 case 'pattern.out': {
                     const {width, height, pattern} = c.value;
-                    const patternExpr = IR.constArray(pattern, 256, width);
+                    const patternExpr = IR.constArray(pattern, Math.max(...pattern) + 1, width);
                     return this.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
                 }
                 case 'position': {

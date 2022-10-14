@@ -62,11 +62,11 @@ namespace IR {
             
             const rowDFA = makeConstArray2D(NAMES.matcherVar(g, id, 'rowDFA'), dfas.rowDFA.toFlatArray(), gridAlphabetSize, rowDFASize);
             const rowAcceptSetIDs = makeConstArray(NAMES.matcherVar(g, id, 'rowAcceptSetIDs'), dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size());
-            const rowAcceptSets = makeConstArray2D(NAMES.matcherVar(g, id, 'rowAcceptSets'), rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 16 ? 1 << numRowPatterns : INT32_ARRAY_TYPE.domainSize);
+            const rowAcceptSets = makeConstArray2D(NAMES.matcherVar(g, id, 'rowAcceptSets'), rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 31 ? 1 << numRowPatterns : INT32_ARRAY_TYPE.domainSize);
             const rowsToCols = makeConstArray(NAMES.matcherVar(g, id, 'rowsToCols'), dfas.rowsToCols, colsAlphabetSize);
             const colDFA = makeConstArray2D(NAMES.matcherVar(g, id, 'colDFA'), dfas.colDFA.toFlatArray(), colsAlphabetSize, colDFASize);
             const colAcceptSetIDs = makeConstArray(NAMES.matcherVar(g, id, 'colAcceptSetIDs'), dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size());
-            const colAcceptSets = makeConstArray2D(NAMES.matcherVar(g, id, 'colAcceptSets'), colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 16 ? 1 << numColPatterns : INT32_ARRAY_TYPE.domainSize);
+            const colAcceptSets = makeConstArray2D(NAMES.matcherVar(g, id, 'colAcceptSets'), colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 31 ? 1 << numColPatterns : INT32_ARRAY_TYPE.domainSize);
             const rowStates = makeMutableArray(NAMES.matcherVar(g, id, 'rowStates'), g.n, rowDFASize);
             const colStates = makeMutableArray(NAMES.matcherVar(g, id, 'colStates'), g.n, colDFASize);
             

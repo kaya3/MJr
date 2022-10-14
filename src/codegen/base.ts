@@ -191,6 +191,16 @@ namespace CodeGen {
             : domainSize <= (1 << 16) ? 16
             : 32;
     }
+    export function uintBitsFours(domainSize: number): 4 | 8 | 12 | 16 | 20 | 24 | 28 | 32 {
+        return domainSize <= (1 << 4) ? 4
+            : domainSize <= (1 << 8) ? 8
+            : domainSize <= (1 << 12) ? 12
+            : domainSize <= (1 << 16) ? 16
+            : domainSize <= (1 << 20) ? 20
+            : domainSize <= (1 << 24) ? 24
+            : domainSize <= (1 << 28) ? 28
+            : 32;
+    }
     
     export function arrayToHex(arr: readonly number[], bitsPerElement: number): string {
         const digitsPerElement = bitsPerElement >> 2;

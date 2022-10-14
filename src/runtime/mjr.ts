@@ -3,8 +3,9 @@ namespace MJr {
     export const VERSION = 0;
     
     export const DIV_ZERO_MESSAGE: string = 'division by zero';
-    function checkZero(y: number): void {
+    function checkZero(y: number): number {
         if(y === 0) { throw new Error(DIV_ZERO_MESSAGE); }
+        return y;
     }
     function modulo(x: number, y: number): number {
         return x - y * Math.floor(x / y);
@@ -48,6 +49,13 @@ namespace MJr {
     };
     
     export const HEX = {
+        u4(s: string): Uint8Array {
+            const arr = new Uint8Array(s.length);
+            for(let i = 0; i < s.length; ++i) {
+                arr[i] = parseInt(s.substring(i, i + 1), 16);
+            }
+            return arr;
+        },
         u8(s: string): Uint8Array {
             const arr = new Uint8Array(s.length >> 1);
             for(let i = 0; i < s.length; i += 2) {
@@ -55,10 +63,42 @@ namespace MJr {
             }
             return arr;
         },
+        u12(s: string): Uint16Array {
+            const n = (s.length / 3) | 0;
+            const arr = new Uint16Array(n);
+            for(let i = 0, j = 0; i < n; ++i, j += 3) {
+                arr[i] = parseInt(s.substring(j, j + 3), 16);
+            }
+            return arr;
+        },
         u16(s: string): Uint16Array {
             const arr = new Uint16Array(s.length >> 2);
             for(let i = 0; i < s.length; i += 4) {
                 arr[i >> 2] = parseInt(s.substring(i, i + 4), 16);
+            }
+            return arr;
+        },
+        u20(s: string): Uint32Array {
+            const n = (s.length / 5) | 0;
+            const arr = new Uint32Array(n);
+            for(let i = 0, j = 0; i < n; ++i, j += 5) {
+                arr[i] = parseInt(s.substring(j, j + 5), 16);
+            }
+            return arr;
+        },
+        u24(s: string): Uint32Array {
+            const n = (s.length / 6) | 0;
+            const arr = new Uint32Array(n);
+            for(let i = 0, j = 0; i < n; ++i, j += 6) {
+                arr[i] = parseInt(s.substring(j, j + 6), 16);
+            }
+            return arr;
+        },
+        u28(s: string): Uint32Array {
+            const n = (s.length / 7) | 0;
+            const arr = new Uint32Array(n);
+            for(let i = 0, j = 0; i < n; ++i, j += 7) {
+                arr[i] = parseInt(s.substring(j, j + 7), 16);
             }
             return arr;
         },

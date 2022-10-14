@@ -266,7 +266,7 @@ Test.runAll = (): void => {
     totalSectionElem.appendChild(document.createTextNode(')'));
     testPanelElem.appendChild(totalSectionElem);
     
-    for(const {title, tests} of Test._all) {
+    for(const {title, tests} of Test._all.sort((a, b) => a.title.localeCompare(b.title))) {
         const sectionElem = document.createElement('div');
         const titleElem = document.createElement('h3');
         const summaryElem = document.createElement('span');
@@ -285,8 +285,9 @@ Test.runAll = (): void => {
             }
         }
         
+        const cases: [string, TestCase][] = Object.entries(tests);
         let passes = 0, total = 0;
-        for(const [name, test] of Object.entries(tests) as [string, TestCase][]) {
+        for(const [name, test] of cases) {
             ++total;
             const r = Test._run(test);
             const rowElem = document.createElement('div');

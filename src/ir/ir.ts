@@ -245,11 +245,12 @@ namespace IR {
     export function declVars(decls: readonly VarDecl[], mutable: boolean = false): Stmt {
         return decls.length > 0 ? {kind: 'stmt.decl.vars', decls, mutable} : PASS;
     }
-    export function forRange(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[], reverse: boolean = false): ForRangeStmt {
-        return {kind: 'stmt.for.range', index, low, high, reverse, body: block(body)};
+    export function forRange(index: NameExpr, low: Expr, high: Expr, stmts: readonly Stmt[], reverse: boolean = false): Stmt {
+        const body = block(stmts);
+        return body === PASS ? PASS : {kind: 'stmt.for.range', index, low, high, reverse, body};
     }
-    export function forRangeReverse(index: NameExpr, low: Expr, high: Expr, body: readonly Stmt[]): ForRangeStmt {
-        return forRange(index, low, high, body, true);
+    export function forRangeReverse(index: NameExpr, low: Expr, high: Expr, stmts: readonly Stmt[]): Stmt {
+        return forRange(index, low, high, stmts, true);
     }
     export function if_(condition: Expr, then: Stmt, otherwise?: Stmt): Stmt {
         if(otherwise === PASS) { otherwise = undefined; }

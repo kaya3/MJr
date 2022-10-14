@@ -106,7 +106,7 @@ namespace IR {
                         : while_(OP.ne(U, ZERO), block([
                             declVar(I, INT_TYPE, OP.countTrailingZeros(U)),
                             switch_(I, cases, true),
-                            assign(U, '&=', OP.minusOne(U)),
+                            assign(U, '&=', OP.minus(U, ONE)),
                         ])),
                     );
                 }
@@ -326,8 +326,8 @@ namespace IR {
         };
     }
     
-    type PatternSeq = Readonly<{pattern: PatternTree.LeafOrTop, seq: readonly Regex.Node<PatternTree.LeafOrTop>[]}>
-    function _makeRegex(patterns: PatternSeq[]): Regex.Node<PatternTree.LeafOrTop> {
+    type PatternSeq = Readonly<{pattern: Pattern, seq: readonly Regex.Node<Pattern>[]}>
+    function _makeRegex(patterns: PatternSeq[]): Regex.Node<Pattern> {
         return Regex.concat([
             Regex.DOT_STAR,
             Regex.union(

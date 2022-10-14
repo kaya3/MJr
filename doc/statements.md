@@ -95,15 +95,17 @@ prl:
 
 ### 'Convolution' statements
 
-A `convolution` statement applies a set of 1x1 rewrite rules to all matches in parallel, where the rules may make use of ['sum' expressions](expressions.md#sum-operator). There is one required argument, named `kernel`, which determines the convolution kernel used by `sum` expressions within the statement. It must be a compile-time constant `str` equal to one of the following names:
+A `convolution` statement applies a set of 1x1 rewrite rules to all matches in parallel, where the rules may make use of ['sum' expressions](expressions.md#sum-operator). There is one required argument, `kernel`, which determines the convolution kernel used by `sum` expressions within the statement. It must be a compile-time constant `str` equal to one of the following names:
 
 - `Moore`: a [Moore neighbourhood](https://en.wikipedia.org/wiki/Moore_neighborhood).
 - `VonNeumann`: a [Von Neumann neighbourhood](https://en.wikipedia.org/wiki/Von_Neumann_neighborhood).
 
+Additionally, there is an optional argument, `boundary`, which must be a compile-time constant 1x1 pattern. If present, cells outside of the grid are treated as if they take values from the subset of the alphabet defined by `boundary`. A compilation error occurs if `boundary` is specified for a periodic grid.
+
 The statement "returns true" if there were any applicable matches, otherwise it "returns false".
 
 <pre>
-convolution {kernel=<i>Expression</i>}:
+convolution {<i>Arguments</i>}:
     <i>Rule+</i>
 </pre>
 

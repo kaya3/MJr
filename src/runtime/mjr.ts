@@ -163,7 +163,7 @@ namespace MJr {
             for(let y = 0; y < height; ++y) {
                 for(let x = 0; x < width; ++x) {
                     const c = pattern[x + width * y];
-                    if(c < 0) { continue; }
+                    if(c >= 128) { continue; }
                     v.push(x, y, c);
                     minX = Math.min(minX, x);
                     minY = Math.min(minY, y);

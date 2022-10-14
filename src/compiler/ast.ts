@@ -78,7 +78,7 @@ namespace AST {
     export type RuleBlockStmt = AllStmt | ConvolutionStmt | MapStmt | OnceStmt | OneStmt | PrlStmt
     type _RuleStmtNode<K extends string, T> = _StmtNode<`rules.${K}`, {rules: readonly Rule[]} & T>
     export interface AllStmt extends _RuleStmtNode<'all', {temperature?: Expression, search?: Expression, maxStates?: Expression, depthCoefficient?: Expression}> {}
-    export interface ConvolutionStmt extends _RuleStmtNode<'convolution', {kernel: Expression}> {}
+    export interface ConvolutionStmt extends _RuleStmtNode<'convolution', {kernel: Expression, boundary?: Expression}> {}
     export interface MapStmt extends _RuleStmtNode<'map', {scaleX: Expression, scaleY: Expression, outGrid: Expression}> {}
     export interface OnceStmt extends _RuleStmtNode<'once', {}> {}
     export interface OneStmt extends _RuleStmtNode<'one', {temperature?: Expression, search?: Expression, maxStates?: Expression, depthCoefficient?: Expression}> {}

@@ -82,17 +82,13 @@ namespace IR {
             });
         }
         
-        public makeConvBuffer(p: ASG.ConvPattern): ConvBuffer {
+        public makeConvBuffer(kernel: Convolution.Kernel): ConvBuffer {
             const {convBuffers} = this;
-            const key = Convolution.Kernel.key(p.kernel);
+            const key = Convolution.Kernel.key(kernel);
             return getOrCompute(convBuffers, key, () => {
-                const charsets: ISet[] = [];
-                this.grid.convPatterns.forEach(q => {
-                    if(p.kernel.equals(q.kernel)) { charsets.push(q.chars); }
-                });
-                
-                this.scale = Math.max(this.scale, charsets.length);
-                return new ConvBuffer(convBuffers.size, this, charsets, p.kernel);
+                const patterns = this.grid.convPatterns.filter(p => p.kernel.equals(kernel));
+                this.scale = Math.max(this.scale, patterns.length);
+                return new ConvBuffer(convBuffers.size, this, patterns, kernel);
             });
         }
         
@@ -146,10 +142,6 @@ namespace IR {
                 consts.push({name: lfsrFeedbackTerm, type: INT_TYPE, initialiser: libFunctionCall('lfsrFeedbackTerm', [n])});
             }
             
-            for(const buffer of this.convBuffers.values()) {
-                consts.push(...buffer.declare());
-            }
-            
             vars.push(...Array.from(this.counters.values(), counter => ({
                 name: counter,
                 type: INT_TYPE,
@@ -159,6 +151,7 @@ namespace IR {
             return [
                 declVars(consts),
                 declVars(vars, true),
+                ...Array.from(this.convBuffers.values(), buffer => buffer.declare()),
                 ...Array.from(this.samplers.values(), sampler => sampler.declare()),
             ];
         }

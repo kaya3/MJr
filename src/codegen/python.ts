@@ -82,9 +82,9 @@ namespace CodeGen {
                 out.beginLine();
                 out.write(`for ${stmt.index.name} in range(`);
                 if(stmt.reverse) {
-                    out.writeExpr(IR.OP.minusOne(high));
+                    out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`, `);
-                    out.writeExpr(IR.OP.minusOne(low));
+                    out.writeExpr(IR.OP.minus(low, IR.ONE));
                     out.write(`, -1)`);
                 } else {
                     if(low !== IR.ZERO) {

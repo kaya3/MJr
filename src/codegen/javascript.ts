@@ -95,7 +95,7 @@ namespace CodeGen {
                 out.beginLine();
                 out.write(`for(let ${i} = `);
                 if(reverse) {
-                    out.writeExpr(IR.OP.minusOne(high));
+                    out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`; ${i} >= `);
                     out.writeExpr(low, Precedence.CMP);
                     out.write(`; --${i})`);

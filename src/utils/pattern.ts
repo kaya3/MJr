@@ -6,14 +6,13 @@ namespace PatternTree {
     export type Kind = Node['kind']
     export type Node =
         | Pattern
-        | _Node<'top' | 'bottom', {}>
+        | _Node<'bottom', {}>
         | _Node<'and' | 'or', {left: OfKind<'and' | 'or' | 'not' | 'leaf'>, right: OfKind<'and' | 'or' | 'not' | 'leaf'>}>
         | _Node<'not', {child: Pattern}>
     
     type _Node<K extends string, T> = K extends unknown ? Readonly<{kind: K} & T & {width: number, height: number}> & {_key: string | undefined} : never
     
-    type OfKind<K extends Kind> = Extract<Node, {kind: K}>
-    export type LeafOrTop = Pattern | OfKind<'top'>
+    type OfKind<K extends Kind> = K extends 'leaf' | 'top' ? Pattern : Extract<Node, {kind: K}>
     
     /**
      * Returns the intersection of two patterns, or `undefined` if they are
@@ -30,9 +29,9 @@ namespace PatternTree {
             if(maskSize === 0) { return undefined; }
             
             pattern.push(
-                maskSize === 1 ? ISet.toArray(mask)[0]
-                : maskSize === alphabetKey.length ? -1
-                : -2
+                maskSize === 1 ? ISet.first(mask)
+                : maskSize === alphabetKey.length ? PatternValue.WILDCARD
+                : PatternValue.UNION
             );
             masks.push(mask);
         }
@@ -46,9 +45,8 @@ namespace PatternTree {
     function _entails(left: Node, right: Pattern): boolean {
         switch(left.kind) {
             case 'leaf':
-                return left.masks.every((mask, i) => ISet.isSubset(mask, right.masks[i]));
             case 'top':
-                return false;
+                return left.masks.every((mask, i) => ISet.isSubset(mask, right.masks[i]));
             case 'bottom':
                 return true;
             case 'and':
@@ -60,8 +58,10 @@ namespace PatternTree {
         }
     }
     
-    export function top(width: number, height: number): OfKind<'top'> {
-        return {kind: 'top', width, height, _key: undefined};
+    export function top(width: number, height: number, alphabetKey: string): OfKind<'top'> {
+        const pattern = emptyArray(width * height, PatternValue.WILDCARD);
+        const masks = emptyArray(width * height, ISet.full(alphabetKey.length));
+        return new Pattern(width, height, alphabetKey, pattern, masks, false);
     }
     
     export function bottom(width: number, height: number): OfKind<'bottom'> {
@@ -100,25 +100,24 @@ namespace PatternTree {
         } else if(left.kind === 'leaf' && right.kind === 'leaf' && width === 1 && height === 1) {
             const {alphabetKey} = left;
             const mask = ISet.union(left.masks[0], right.masks[0]);
-            return ISet.size(mask) === alphabetKey.length
-                ? top(1, 1)
-                : new Pattern(1, 1, alphabetKey, [-2], [mask], true);
+            const pattern = [ISet.size(mask) === alphabetKey.length ? PatternValue.WILDCARD : PatternValue.UNION];
+            return new Pattern(1, 1, alphabetKey, pattern, [mask], true);
         }
         
         return {kind: 'or', left, right, width, height, _key: undefined};
     }
     
-    export function not(child: PatternTree): PatternTree {
+    export function not(child: PatternTree, alphabetKey: string): PatternTree {
         const {width, height} = child;
         switch(child.kind) {
             case 'top':
                 return bottom(width, height);
             case 'bottom':
-                return top(width, height);
+                return top(width, height, alphabetKey);
             case 'and':
-                return or(not(child.left), not(child.right));
+                return or(not(child.left, alphabetKey), not(child.right, alphabetKey));
             case 'or':
-                return and(not(child.left), not(child.right));
+                return and(not(child.left, alphabetKey), not(child.right, alphabetKey));
             case 'not':
                 return child.child;
         }
@@ -133,12 +132,15 @@ namespace PatternTree {
         return {kind: 'not', child, width, height, _key: undefined};
     }
     
+    export function isLeafOrTop(p: PatternTree): p is Pattern {
+        return p.kind === 'leaf' || p.kind === 'top';
+    }
+    
     export function rotate(p: PatternTree): PatternTree {
         switch(p.kind) {
             case 'leaf':
-                return Pattern.rotate(p);
             case 'top':
-                return top(p.height, p.width);
+                return Pattern.rotate(p);
             case 'bottom':
                 return bottom(p.height, p.width);
             case 'and':
@@ -146,7 +148,7 @@ namespace PatternTree {
             case 'or':
                 return or(rotate(p.left), rotate(p.right));
             case 'not':
-                return not(Pattern.rotate(p.child));
+                return not(Pattern.rotate(p.child), p.child.alphabetKey);
         }
     }
     
@@ -162,11 +164,11 @@ namespace PatternTree {
             case 'or':
                 return or(reflect(p.left), reflect(p.right));
             case 'not':
-                return not(Pattern.reflect(p.child));
+                return not(Pattern.reflect(p.child), p.child.alphabetKey);
         }
     }
     
-    export function getLeaves(p: PatternTree): LeafOrTop[] {
+    export function getLeaves(p: PatternTree): Pattern[] {
         switch(p.kind) {
             case 'leaf':
             case 'top':
@@ -181,7 +183,7 @@ namespace PatternTree {
             }
             case 'not': {
                 const out = getLeaves(p.child);
-                out.push(top(p.width, p.height));
+                out.push(top(p.width, p.height, p.child.alphabetKey));
                 return out;
             }
         }
@@ -191,7 +193,7 @@ namespace PatternTree {
      * Evaluates a pattern tree as a boolean expression, using the given
      * predicate to evaluate the leaf and top nodes.
      */
-    export function matches(p: PatternTree, predicate: (x: LeafOrTop) => boolean): boolean {
+    export function matches(p: PatternTree, predicate: (x: Pattern) => boolean): boolean {
         switch(p.kind) {
             case 'leaf':
             case 'top':
@@ -203,7 +205,7 @@ namespace PatternTree {
             case 'or':
                 return matches(p.left, predicate) || matches(p.right, predicate);
             case 'not':
-                return predicate(top(p.width, p.height)) && !matches(p.child, predicate);
+                return predicate(top(p.width, p.height, p.child.alphabetKey)) && !matches(p.child, predicate);
         }
     }
     
@@ -223,13 +225,18 @@ namespace PatternTree {
     }
 }
 
+const enum PatternValue {
+    WILDCARD = 0xFF,
+    UNION = 0xFE,
+}
+
 class Pattern extends MJr.Pattern {
-    public static rowsOf(p: PatternTree.LeafOrTop): PatternTree.LeafOrTop[] {
+    public static rowsOf(p: Pattern): Pattern[] {
         const {width, height} = p;
         if(height === 1) { return [p]; }
         
         if(p.kind === 'top') {
-            return emptyArray(height, PatternTree.top(width, 1))
+            return emptyArray(height, PatternTree.top(width, 1, p.alphabetKey))
         }
         
         const {pattern, masks} = p;
@@ -245,6 +252,10 @@ class Pattern extends MJr.Pattern {
     
     public static rotate(p: Pattern): Pattern {
         const {width, height, pattern, masks} = p;
+        if(p.kind === 'top') {
+            return new Pattern(height, width, p.alphabetKey, pattern, masks, p.hasUnions);
+        }
+        
         const newData: number[] = [];
         const newMasks: ISet[] = [];
         for(let x = 0; x < width; ++x) {
@@ -258,6 +269,8 @@ class Pattern extends MJr.Pattern {
     }
     
     public static reflect(p: Pattern): Pattern {
+        if(p.kind === 'top') { return p; }
+        
         const {width, height, pattern, masks} = p;
         const newData: number[] = [];
         const newMasks: ISet[] = [];
@@ -271,11 +284,11 @@ class Pattern extends MJr.Pattern {
         return new Pattern(width, height, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     
-    public static key(p: PatternTree.LeafOrTop): string {
-        return p._key ??= `${p.width}x${p.height}:${p.kind === 'leaf' ? p.masks.map(ISet.key).join(';') : 'top'}`;
+    public static key(p: Pattern): string {
+        return p._key ??= `${p.width}x${p.height}:${p.masks.map(ISet.key).join(';')}`;
     }
     
-    public readonly kind: 'leaf' = 'leaf';
+    public readonly kind: 'leaf' | 'top';
     _key: string | undefined = undefined;
     
     public constructor(
@@ -289,8 +302,8 @@ class Pattern extends MJr.Pattern {
         height: number,
         public readonly alphabetKey: string,
         /**
-         * The pattern, as a flat array. Wildcards are represented as -1, and
-         * unions as -2.
+         * The pattern, as a flat array. Wildcards are represented as 0xFF, and
+         * unions as 0xFE.
          */
         pattern: readonly number[],
         /**
@@ -304,14 +317,7 @@ class Pattern extends MJr.Pattern {
         public readonly hasUnions: boolean,
     ) {
         super(width, height, pattern);
-    }
-    
-    /**
-     * Indicates whether this pattern is tautological, i.e. it always matches
-     * at any position.
-     */
-    public isTop(): boolean {
-        return this.pattern.every(p => p === -1);
+        this.kind = pattern.every(p => p === PatternValue.WILDCARD) ? 'top' : 'leaf';
     }
     
     /**

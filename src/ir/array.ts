@@ -49,7 +49,7 @@ namespace IR {
         if(from.every((x, i) => x === from[i % rowLength])) {
             const row = from.slice(0, rowLength);
             const table = makeConstArray(name, row, domainSize);
-            return {decl: [], get: (j, i) => table.get(i)};
+            return {decl: table.decl, get: (j, i) => table.get(i)};
         } else if(from.every((x, i) => x === from[i - i % rowLength])) {
             const col = makeArray((from.length / rowLength) | 0, i => from[i * rowLength]);
             return makeConstArray(name, col, domainSize);

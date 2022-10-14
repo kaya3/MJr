@@ -29,7 +29,7 @@ namespace ISet {
      */
     export function full(domainSize: number): MutableISet {
         const set = empty(domainSize);
-        set.fill(-1);
+        set.fill(~0);
         if((domainSize & 31) !== 0) {
             set[set.length - 1] = (1 << (domainSize & 31)) - 1;
         }
@@ -44,6 +44,13 @@ namespace ISet {
         const set = empty(domainSize);
         for(const x of xs) { add(set, x); }
         return set;
+    }
+    
+    /**
+     * Returns a new copy of the given set.
+     */
+    export function copy(set: ISet): MutableISet {
+        return new Uint32Array(set);
     }
     
     /**
@@ -68,10 +75,30 @@ namespace ISet {
     }
     
     /**
-     * Adds the element `x` to the set if it not already present, in O(1) time.
+     * Returns some element of the set, or -1 if the set is empty, in O(N) time.
+     */
+    export function first(set: ISet): number {
+        for(let i = 0; i < set.length; ++i) {
+            const x = set[i];
+            if(x !== 0) {
+                return (i << 5) | (31 - Math.clz32(x));
+            }
+        }
+        return -1;
+    }
+    
+    /**
+     * Adds the element `x` to the set if it is not already present, in O(1) time.
      */
     export function add(set: MutableISet, x: number): void {
         set[x >> 5] |= 1 << (x & 31);
+    }
+    
+    /**
+     * Removes the element `x` to the set if it is present, in O(1) time.
+     */
+    export function remove(set: MutableISet, x: number): void {
+        set[x >> 5] &= ~(1 << (x & 31));
     }
     
     /**
@@ -222,6 +249,16 @@ namespace ISet {
     export function toArray(set: ISet): number[] {
         const arr: number[] = [];
         _forEach(set, x => arr.push(x));
+        return arr;
+    }
+    
+    /**
+     * Returns a new array by mapping the natural numbers in the given set,
+     * not necessarily in order.
+     */
+    export function map<T>(set: ISet, f: (x: number) => T): T[] {
+        const arr: T[] = [];
+        _forEach(set, x => arr.push(f(x)));
         return arr;
     }
     

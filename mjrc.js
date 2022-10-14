@@ -273,7 +273,7 @@ var CodeGen;
                 out.beginLine();
                 out.write(`for(let ${i} = `);
                 if (reverse) {
-                    out.writeExpr(IR.OP.minusOne(high));
+                    out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`; ${i} >= `);
                     out.writeExpr(low, 9 /* Precedence.CMP */);
                     out.write(`; --${i})`);
@@ -738,9 +738,9 @@ var CodeGen;
                 out.beginLine();
                 out.write(`for ${stmt.index.name} in range(`);
                 if (stmt.reverse) {
-                    out.writeExpr(IR.OP.minusOne(high));
+                    out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`, `);
-                    out.writeExpr(IR.OP.minusOne(low));
+                    out.writeExpr(IR.OP.minus(low, IR.ONE));
                     out.write(`, -1)`);
                 }
                 else {
@@ -1418,6 +1418,10 @@ var IR;
                 right = int(-right.value);
             }
         }
+        else if (right.kind === 'expr.op.unary' && right.op === 'int_uminus' && (op === '+=' || op === '-=')) {
+            op = op === '+=' ? '-=' : '+=';
+            right = right.child;
+        }
         return { kind: 'stmt.assign', op, left, right };
     }
     IR.assign = assign;
@@ -1446,12 +1450,13 @@ var IR;
         return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable } : IR.PASS;
     }
     IR.declVars = declVars;
-    function forRange(index, low, high, body, reverse = false) {
-        return { kind: 'stmt.for.range', index, low, high, reverse, body: block(body) };
+    function forRange(index, low, high, stmts, reverse = false) {
+        const body = block(stmts);
+        return body === IR.PASS ? IR.PASS : { kind: 'stmt.for.range', index, low, high, reverse, body };
     }
     IR.forRange = forRange;
-    function forRangeReverse(index, low, high, body) {
-        return forRange(index, low, high, body, true);
+    function forRangeReverse(index, low, high, stmts) {
+        return forRange(index, low, high, stmts, true);
     }
     IR.forRangeReverse = forRangeReverse;
     function if_(condition, then, otherwise) {
@@ -1843,13 +1848,24 @@ var IR;
             return _unOp('bool_not', expr);
         },
         add(left, right) {
+            if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && IR.isInt(right)) {
+                if (IR.isInt(left.right)) {
+                    const lrSign = left.op === 'loose_int_plus' ? 1 : -1;
+                    right = IR.int(lrSign * left.right.value + right.value);
+                    left = left.left;
+                }
+                else if (IR.isInt(left.left)) {
+                    const llSign = left.op === 'loose_int_plus' ? 1 : -1;
+                    right = IR.int(llSign * left.left.value + right.value);
+                    left = left.right;
+                }
+            }
             return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value + right.value)
                 : left === IR.ZERO ? right
                     : right === IR.ZERO ? left
-                        : _binOp('loose_int_plus', left, right);
-        },
-        addOne(expr) {
-            return IR.OP.add(expr, IR.ONE);
+                        : IR.isInt(left) && left.value < 0 ? IR.OP.minusConstant(right, -left.value)
+                            : IR.isInt(right) && right.value < 0 ? IR.OP.minusConstant(left, -right.value)
+                                : _binOp('loose_int_plus', left, right);
         },
         addConstant(left, right) {
             return right === 0 ? left
@@ -1858,13 +1874,19 @@ var IR;
                         : IR.OP.minus(left, IR.int(-right));
         },
         minus(left, right) {
+            if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && IR.isInt(right)) {
+                if (IR.isInt(left.right)) {
+                    const lrSign = left.op === 'loose_int_plus' ? -1 : 1;
+                    right = IR.int(lrSign * left.right.value - right.value);
+                    left = left.left;
+                }
+            }
             return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value - right.value)
                 : right === IR.ZERO ? left
                     : IR.equals(left, right) ? IR.ZERO
-                        : _binOp('loose_int_minus', left, right);
-        },
-        minusOne(expr) {
-            return IR.OP.minus(expr, IR.ONE);
+                        : IR.isInt(left) && left.value < 0 ? IR.OP.addConstant(right, -left.value)
+                            : IR.isInt(right) && right.value < 0 ? IR.OP.addConstant(left, -right.value)
+                                : _binOp('loose_int_minus', left, right);
         },
         minusConstant(left, right) {
             return IR.OP.addConstant(left, -right);
@@ -2348,7 +2370,7 @@ var Compiler;
         'expr.sum': (c, expr) => {
             const g = c.grids[expr.inGrid];
             const p = g.grid.convPatterns.getByID(expr.patternID);
-            return g.makeConvBuffer(p).get(p.chars);
+            return g.makeConvBuffer(p.kernel).get(p);
         },
     };
     const STMT_COMPILE_FUNCS = {
@@ -2362,7 +2384,8 @@ var Compiler;
             // check whether pattern is effective
             let isEffective;
             if (pattern.kind === 'expr.constant') {
-                const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
+                const { value } = pattern.constant;
+                const checks = value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
                 isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
             }
             else {
@@ -2558,12 +2581,14 @@ var Compiler;
     function _stmtConvolution(c, stmt, ifChanged, then) {
         const { kernel } = stmt;
         const g = c.grids[stmt.inGrid];
+        const buffer = g.makeConvBuffer(kernel);
         const cases = emptyArray(g.grid.alphabet.key.length, IR.PASS);
         for (const rule of stmt.rewrites) {
-            const mask = rule.from.kind === 'leaf' ? rule.from.masks[0]
-                : rule.from.kind === 'top' ? g.grid.alphabet.wildcard
-                    : fail();
-            const caseHandler = IR.if_(_writeCondition(c, g, rule.to, undefined, rule.condition), _doWrite(c, g, rule.from, rule.to, false, ANY, false, false));
+            const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
+            const caseHandler = IR.block([
+                rule.to.kind === 'expr.constant' ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)),
+                IR.if_(_writeCondition(c, g, rule.to, P, rule.condition), _doWrite(c, g, rule.from, rule.to, false, ANY, false, false)),
+            ]);
             ISet.forEach(mask, i => {
                 if (cases[i] !== IR.PASS) {
                     fail();
@@ -2571,13 +2596,12 @@ var Compiler;
                 cases[i] = caseHandler;
             });
         }
-        const bufferWidth = OP.addConstant(g.width, kernel.width - 1), atConvInitialiser = OP.add(OP.addConstant(AT_X, kernel.centreX), OP.mult(OP.addConstant(AT_Y, kernel.centreY), bufferWidth));
         // TODO: different strategy if rules don't cover the whole alphabet?
         return IR.block([
             IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
             IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
                     g.declareAtXY(AT_X, AT_Y),
-                    IR.declVar(AT_CONV, IR.INT_TYPE, atConvInitialiser),
+                    IR.declVar(AT_CONV, IR.INT_TYPE, buffer.index(AT_X, AT_Y)),
                     IR.switch_(g.data.get(AT), cases),
                 ])]),
             IR.if_(ANY, IR.block([
@@ -2805,7 +2829,7 @@ var MJr;
             for (let y = 0; y < height; ++y) {
                 for (let x = 0; x < width; ++x) {
                     const c = pattern[x + width * y];
-                    if (c < 0) {
+                    if (c >= 128) {
                         continue;
                     }
                     v.push(x, y, c);
@@ -3065,7 +3089,7 @@ var Parser;
     const ARGS = ((specs) => specs)({
         all: { temperature: false, search: false, maxStates: false, depthCoefficient: false },
         convchain: { sample: true, n: true, on: true, temperature: false, periodic: false },
-        convolution: { kernel: true },
+        convolution: { kernel: true, boundary: false },
         field: { for_: true, on: true, from: false, to: false, essential: false, recompute: false },
         grid: { scaleX: false, scaleY: false, periodic: false },
         map: { outGrid: true },
@@ -4074,6 +4098,7 @@ var Resolver;
         variables = new Map();
         errorVariables = new Set();
         kernel = undefined;
+        boundaryMask = undefined;
         grid = undefined;
         inputPattern = undefined;
         isRuleContext = false;
@@ -4291,22 +4316,17 @@ var Resolver;
             if (charset === PROP_ERROR) {
                 return undefined;
             }
-            let mask = undefined;
             switch (charset.kind) {
                 case 'leaf':
-                    mask = charset.masks[0];
-                    break;
                 case 'top':
-                    mask = alphabet.wildcard;
-                    break;
+                    return alphabet.withUnion(label.s, charset.masks[0], f);
                 case 'bottom':
                     this.error(`empty charset`, decl.chars.pos);
-                    break;
+                    return undefined;
                 default:
                     this.error(`union must be a constant charset`, decl.chars.pos);
-                    break;
+                    return undefined;
             }
-            return mask && alphabet.withUnion(label.s, mask, f);
         }
         withVariable(variable, f) {
             const { variables } = this;
@@ -4570,7 +4590,7 @@ var Resolver;
                         ok = false;
                     }
                     else if (size === 1) {
-                        charID = ISet.toArray(mask)[0];
+                        charID = ISet.first(mask);
                     }
                     else {
                         isUnion = size < alphabet.key.length;
@@ -4585,7 +4605,7 @@ var Resolver;
                 }
             }
             if (mask !== undefined) {
-                pattern.push(isUnion ? -2 : charID);
+                pattern.push(charID >= 0 ? charID : isUnion ? 254 /* PatternValue.UNION */ : 255 /* PatternValue.WILDCARD */);
                 masks.push(mask);
                 hasUnions ||= isUnion;
             }
@@ -4662,20 +4682,22 @@ var Resolver;
             ctx.error(`'sum' expression may only be used in a rule condition or output pattern`, pos);
             return undefined;
         }
-        const chars = _resolveProp(expr, 'child', 'const charset.in', ctx);
-        if (chars === PROP_ERROR) {
+        const charsPattern = _resolveProp(expr, 'child', 'const charset.in', ctx);
+        if (charsPattern === PROP_ERROR) {
             return undefined;
         }
-        switch (chars.kind) {
-            case 'top': {
-                const flags = 31 /* ExprFlags.CONSTANT */;
-                return { kind: 'expr.attr.grid', type: Type.INT, flags, grid: grid.id, attr: 'area', pos };
-            }
+        switch (charsPattern.kind) {
             case 'bottom': {
                 return _makeConstantExpr(Type.INT, 0, pos);
             }
+            case 'top':
             case 'leaf': {
-                const patternID = grid.convPatterns.getOrCreateID({ chars: chars.masks[0], kernel });
+                const chars = charsPattern.masks[0];
+                const includeBoundary = ctx.boundaryMask !== undefined && !ISet.isDisjoint(ctx.boundaryMask, chars);
+                if (charsPattern.kind === 'top' && includeBoundary) {
+                    return _makeConstantExpr(Type.INT, kernel.total(), pos);
+                }
+                const patternID = grid.convPatterns.getOrCreateID({ chars, kernel, includeBoundary });
                 const flags = 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */;
                 return { kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos };
             }
@@ -4715,10 +4737,18 @@ var Resolver;
             return undefined;
         }
         if (rule.kind === 'rule.rewrite' && to.kind === 'expr.constant') {
-            from = PatternTree.and(from, PatternTree.not(to.constant.value));
+            from = PatternTree.and(from, PatternTree.not(to.constant.value, to.type.alphabetKey));
         }
         if (from.kind === 'bottom') {
-            ctx.error('rule has no effect', pos);
+            ctx.error('input pattern has no effect', rule.from.pos);
+            return { rules: [] };
+        }
+        else if (to.kind === 'expr.constant' && to.constant.value.kind === 'top') {
+            ctx.error('output pattern has no effect', rule.to.pos);
+            return { rules: [] };
+        }
+        else if (via !== undefined && via.kind === 'expr.constant' && via.constant.value.kind === 'top') {
+            ctx.error(`'via' pattern has no effect`, rule.via.pos);
             return { rules: [] };
         }
         else if (condition.kind === 'expr.constant' && !condition.constant.value) {
@@ -4730,7 +4760,7 @@ var Resolver;
             rules.push({ kind: rule.kind, from, via, to, condition, pos });
         };
         if ((via === undefined || via.kind === 'expr.constant') && to.kind === 'expr.constant') {
-            const symmetries = Symmetry.generate({ from, via: via?.constant?.value, to: to.constant.value }, ctx.symmetryName, s => ({ from: PatternTree.rotate(s.from), via: s.via && Pattern.rotate(s.via), to: Pattern.rotate(s.to) }), s => ({ from: PatternTree.reflect(s.from), via: s.via && Pattern.reflect(s.via), to: Pattern.reflect(s.to) }), s => `${PatternTree.key(s.from)} -> ${s.via && Pattern.key(s.via)} -> ${Pattern.key(s.to)}`);
+            const symmetries = Symmetry.generate({ from, via: via?.constant.value, to: to.constant.value }, ctx.symmetryName, s => ({ from: PatternTree.rotate(s.from), via: s.via && Pattern.rotate(s.via), to: Pattern.rotate(s.to) }), s => ({ from: PatternTree.reflect(s.from), via: s.via && Pattern.reflect(s.via), to: Pattern.reflect(s.to) }), s => `${PatternTree.key(s.from)} -> ${s.via && Pattern.key(s.via)} -> ${Pattern.key(s.to)}`);
             function makeExpr(p, original) {
                 const { width, height } = p;
                 const { alphabetKey } = original.type;
@@ -4966,7 +4996,7 @@ var Resolver;
                 return undefined;
             }
             const { width, height, alphabetKey } = p;
-            return _makeConstantExpr({ kind: p.hasUnions ? 'pattern.in' : 'pattern.out', alphabetKey, width, height }, p.isTop() ? PatternTree.top(width, height) : p, expr.pos);
+            return _makeConstantExpr({ kind: p.hasUnions ? 'pattern.in' : 'pattern.out', alphabetKey, width, height }, p, expr.pos);
         },
         'expr.literal.str': _resolveSimpleLiteralExpr,
         'expr.name.keyword': (expr, ctx) => {
@@ -5134,7 +5164,7 @@ var Resolver;
                     ctx.error(`'not' may only be used on constant patterns`, pos);
                     return undefined;
                 }
-                const value = PatternTree.not(child.constant.value);
+                const value = PatternTree.not(child.constant.value, type.alphabetKey);
                 return _makeConstantExpr(type, value, pos);
             }
             // unary + is a NOOP
@@ -5269,7 +5299,19 @@ var Resolver;
             if (!ctx.expectGrid(pos)) {
                 return undefined;
             }
+            let boundary = _resolveProp(stmt, 'boundary', 'const charset.in?', ctx);
+            if (boundary !== undefined && ctx.grid.periodic) {
+                ctx.error(`periodic grid has no boundary`, stmt.boundary.pos);
+            }
+            if (boundary === PROP_ERROR) {
+                boundary = undefined;
+            }
+            ctx.boundaryMask
+                = boundary === undefined ? undefined
+                    : PatternTree.isLeafOrTop(boundary) ? boundary.masks[0]
+                        : fail();
             const { rewrites, assigns } = _resolveRules(stmt, ctx, ctx.grid, false);
+            ctx.boundaryMask = undefined;
             if (rewrites.length === 0) {
                 return undefined;
             }
@@ -5282,10 +5324,7 @@ var Resolver;
                     continue;
                 }
                 // logical ops on const 1x1 patterns should already be folded
-                if (rule.from.kind !== 'leaf' && rule.from.kind !== 'top') {
-                    fail();
-                }
-                const chars = rule.from.kind === 'top' ? ctx.grid.alphabet.wildcard : rule.from.masks[0];
+                const chars = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
                 if (!ISet.isDisjoint(chars, charsUsed)) {
                     ctx.error(`'convolution' input patterns must be disjoint`, rule.pos);
                 }
@@ -5294,7 +5333,7 @@ var Resolver;
             return {
                 kind: 'stmt',
                 assigns,
-                stmt: { kind: 'stmt.rules.convolution', inGrid: ctx.grid.id, rewrites, kernel, pos },
+                stmt: { kind: 'stmt.rules.convolution', inGrid: ctx.grid.id, rewrites, kernel, boundary, pos },
             };
         }),
         'stmt.rules.map': (stmt, ctx) => {
@@ -5889,7 +5928,7 @@ var IR;
         if (from.every((x, i) => x === from[i % rowLength])) {
             const row = from.slice(0, rowLength);
             const table = makeConstArray(name, row, domainSize);
-            return { decl: [], get: (j, i) => table.get(i) };
+            return { decl: table.decl, get: (j, i) => table.get(i) };
         }
         else if (from.every((x, i) => x === from[i - i % rowLength])) {
             const col = makeArray((from.length / rowLength) | 0, i => from[i * rowLength]);
@@ -5934,76 +5973,210 @@ var IR;
     }
     IR.makeMutableArray2D = makeMutableArray2D;
 })(IR || (IR = {}));
+///<reference path="./names.ts"/>
 var IR;
 (function (IR) {
+    function _key(p) {
+        return `${ISet.key(p.chars)}:${p.includeBoundary}`;
+    }
+    const { AT_CONV, AT_X, AT_Y, } = IR.NAMES;
     class ConvBuffer {
         g;
         kernel;
         buffer;
         width;
+        height;
         n;
         values;
-        constructor(id, g, charsets, kernel) {
+        repsWithBoundary;
+        constructor(id, g, patterns, kernel) {
             this.g = g;
             this.kernel = kernel;
             this.width = kernel.width === 1 ? g.width : IR.NAMES.convBufferVar(g, id, 'width');
+            this.height = kernel.height === 1 ? g.height : IR.NAMES.convBufferVar(g, id, 'height');
             const n = this.n = kernel.width === 1 && kernel.height === 1 ? g.n : IR.NAMES.convBufferVar(g, id, 'n');
             // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
             const alphabetKey = g.grid.alphabet.key;
             const alphabetPartition = new Partition(alphabetKey.length);
-            charsets.forEach(set => alphabetPartition.refine(set));
+            patterns.forEach(p => alphabetPartition.refine(p.chars));
             const repMap = IDMap.withKey(i => alphabetPartition.getRepresentative(i));
-            const mappedBuffers = charsets.map(chars => {
-                const out = new Set();
-                ISet.forEach(chars, i => out.add(repMap.getOrCreateID(i)));
-                return out;
-            });
+            const mappedReps = makeArray(patterns.length, () => ISet.empty(alphabetPartition.countSubsets()));
+            for (let i = 0; i < patterns.length; ++i) {
+                ISet.forEach(patterns[i].chars, c => {
+                    ISet.add(mappedReps[i], repMap.getOrCreateID(c));
+                });
+            }
+            const numReps = repMap.size();
             repMap.forEach((rep, i) => {
                 const chars = alphabetPartition.getSet(rep);
                 const pattern = new Pattern(1, 1, alphabetKey, [-2], [chars], true);
                 g.matcher.addMatchHandler({ kind: 'convolution', buffer: this, pattern, i });
             });
-            const buffer = this.buffer = IR.makeMutableArray2D(IR.NAMES.convBufferVar(g, id, 'buffer'), IR.int(repMap.size()), n, kernel.width * kernel.height);
+            // find a minimal subset of reps such that:
+            // - no rep in the subset occurs in a pattern `p` for which `p.includesBoundary` is false, and
+            // - for each `p` where `p.includeBoundary` is true, `p.chars` contains at most one rep from the subset;
+            // - the number of patterns `p` for which `p.includeBoundary` is true and `p.chars` contains a rep is maximised
+            // then add those reps to `repsWithBoundary`.
+            const allowedReps = ISet.full(alphabetPartition.countSubsets());
+            const toCover = [];
+            for (let i = 0; i < patterns.length; ++i) {
+                const p = patterns[i], m = mappedReps[i];
+                if (p.includeBoundary) {
+                    toCover.push(m);
+                }
+                else {
+                    ISet.removeAll(allowedReps, m);
+                }
+            }
+            const repsWithBoundary = this.repsWithBoundary = _findCover(ISet.empty(numReps + 1), allowedReps, toCover);
+            const anyExtraBoundary = patterns.some((p, i) => p.includeBoundary && ISet.isDisjoint(repsWithBoundary, mappedReps[i]));
+            if (anyExtraBoundary) {
+                ISet.add(repsWithBoundary, numReps);
+            }
+            const buffer = this.buffer = IR.makeMutableArray2D(IR.NAMES.convBufferVar(g, id, 'buffer'), IR.int(numReps + (anyExtraBoundary ? 1 : 0)), n, kernel.width * kernel.height);
+            const boundaryExpr = anyExtraBoundary ? buffer.get(IR.int(numReps), AT_CONV) : IR.ZERO;
             const values = this.values = new Map();
-            charsets.forEach((chars, i) => {
-                const exprs = Array.from(mappedBuffers[i], j => buffer.get(IR.int(j), IR.NAMES.AT_CONV));
+            patterns.forEach((p, i) => {
+                const reps = mappedReps[i];
+                const exprs = ISet.map(reps, j => buffer.get(IR.int(j), AT_CONV));
                 // sanity check
                 if (exprs.length === 0) {
                     fail();
                 }
-                values.set(ISet.key(chars), exprs.reduce(IR.OP.add));
+                if (p.includeBoundary && ISet.isDisjoint(reps, repsWithBoundary)) {
+                    exprs.push(boundaryExpr);
+                }
+                values.set(_key(p), exprs.reduce(IR.OP.add));
             });
         }
         declare() {
-            const { g, kernel, n, width, buffer } = this;
-            const out = [];
+            const { g, kernel, width, height, buffer } = this;
+            const { centreX, centreY } = kernel;
+            const decls = [];
             if (width !== g.width) {
                 const w = IR.OP.addConstant(g.width, kernel.width - 1);
-                out.push({ name: width, type: IR.INT_TYPE, initialiser: w });
+                decls.push({ name: width, type: IR.INT_TYPE, initialiser: w });
             }
-            const h = IR.OP.addConstant(g.height, kernel.height - 1);
-            out.push({ name: n, type: IR.INT_TYPE, initialiser: IR.OP.mult(width, h) }, ...buffer.decl);
-            return out;
-        }
-        get(chars) {
-            return this.values.get(ISet.key(chars)) ?? fail();
-        }
-        update(i, xVar, yVar, op) {
-            const { buffer, width, kernel } = this;
-            const out = [];
-            for (let dy = 0; dy < kernel.height; ++dy) {
-                for (let dx = 0; dx < kernel.width; ++dx) {
-                    const delta = kernel.data[dx + kernel.width * dy];
-                    if (delta !== 0) {
-                        const index = IR.OP.add(IR.OP.addConstant(xVar, dx), IR.OP.mult(IR.OP.addConstant(yVar, dy), width));
-                        out.push(buffer.set(IR.int(i), index, op, IR.int(delta)));
+            if (height !== g.height) {
+                const h = IR.OP.addConstant(g.height, kernel.height - 1);
+                decls.push({ name: height, type: IR.INT_TYPE, initialiser: h });
+            }
+            decls.push({ name: this.n, type: IR.INT_TYPE, initialiser: IR.OP.mult(width, height) }, ...buffer.decl);
+            const out = [IR.declVars(decls)];
+            const boundaryValues = kernel.boundaryValues();
+            const xLoop = [];
+            const yLoop = [];
+            ISet.forEach(this.repsWithBoundary, j => {
+                for (let dy = -centreY; dy <= centreY; ++dy) {
+                    const y = dy < 0 ? IR.int(-dy - 1)
+                        : dy === 0 ? AT_Y
+                            : IR.OP.minusConstant(g.height, dy);
+                    for (let dx = -centreX; dx <= centreX; ++dx) {
+                        const value = boundaryValues[(centreX + dx) + (centreY + dy) * kernel.width];
+                        if (value === 0) {
+                            continue;
+                        }
+                        const x = dx < 0 ? IR.int(-dx - 1)
+                            : dx === 0 ? AT_X
+                                : IR.OP.minusConstant(g.width, dx);
+                        const arr = dx === 0 ? xLoop
+                            : dy === 0 ? yLoop
+                                : out;
+                        arr.push(buffer.set(IR.int(j), this.index(x, y), '=', IR.int(value)));
                     }
                 }
-            }
+            });
+            out.push(IR.forRange(AT_X, IR.int(centreX), IR.OP.minusConstant(g.width, centreX), xLoop), IR.forRange(AT_Y, IR.int(centreY), IR.OP.minusConstant(g.height, centreY), yLoop));
+            return IR.block(out);
+        }
+        get(p) {
+            return this.values.get(_key(p)) ?? fail();
+        }
+        indexRaw(x, y) {
+            return IR.OP.add(x, IR.OP.mult(y, this.width));
+        }
+        index(x, y) {
+            const { centreX, centreY } = this.kernel;
+            return this.indexRaw(IR.OP.addConstant(x, centreX), IR.OP.addConstant(y, centreY));
+        }
+        update(i, xVar, yVar, op) {
+            const { buffer, kernel } = this;
+            const out = [];
+            kernel.forEach((dx, dy, value) => {
+                const index = this.indexRaw(IR.OP.addConstant(xVar, dx), IR.OP.addConstant(yVar, dy));
+                out.push(buffer.set(IR.int(i), index, op, IR.int(value)));
+            });
             return IR.block(out);
         }
     }
     IR.ConvBuffer = ConvBuffer;
+    function _findCover(repsUsed, allowedReps, toCover) {
+        // fast path for convolutions without boundary
+        if (toCover.length === 0) {
+            return repsUsed;
+        }
+        const initialState = {
+            allowedReps,
+            toCover,
+            covered: 0,
+            countUsed: 0,
+            repsUsed: repsUsed,
+        };
+        // depth-first search loop
+        let best = initialState;
+        const stack = [initialState];
+        while (stack.length > 0) {
+            const cur = stack.pop();
+            if (cur.covered > best.covered || (cur.covered === best.covered && cur.countUsed < best.countUsed)) {
+                best = cur;
+                // break if this set can't be improved on; fast path for common case where only one `p.includesBoundary` is true
+                if (best.covered === toCover.length && best.countUsed === 1) {
+                    break;
+                }
+            }
+            const filteredToCover = cur.toCover.filter(s => !ISet.isDisjoint(cur.allowedReps, s));
+            if (filteredToCover.length === 0 || cur.covered + filteredToCover.length < best.covered) {
+                continue;
+            }
+            const x = ISet.first(ISet.intersection(filteredToCover[0], cur.allowedReps));
+            if (x < 0) {
+                fail();
+            }
+            // add child state where x is not used
+            const xNotAllowed = ISet.copy(cur.allowedReps);
+            ISet.remove(xNotAllowed, x);
+            stack.push({
+                allowedReps: xNotAllowed,
+                toCover: filteredToCover.filter(s => !ISet.isDisjoint(xNotAllowed, s)),
+                covered: cur.covered,
+                countUsed: cur.countUsed,
+                repsUsed: cur.repsUsed,
+            });
+            // add child state where x is used
+            const newRepsUsed = ISet.copy(cur.repsUsed);
+            ISet.add(newRepsUsed, x);
+            const newAllowedReps = ISet.copy(cur.allowedReps);
+            let newCovered = cur.covered;
+            const newToCover = filteredToCover.filter(s => {
+                if (ISet.has(s, x)) {
+                    ISet.removeAll(newAllowedReps, s);
+                    ++newCovered;
+                    return false;
+                }
+                else {
+                    return true;
+                }
+            });
+            stack.push({
+                allowedReps: newAllowedReps,
+                toCover: newToCover,
+                covered: newCovered,
+                countUsed: cur.countUsed + 1,
+                repsUsed: newRepsUsed,
+            });
+        }
+        return best.repsUsed;
+    }
 })(IR || (IR = {}));
 var IR;
 (function (IR) {
@@ -6119,18 +6292,13 @@ var IR;
                 return sampler;
             });
         }
-        makeConvBuffer(p) {
+        makeConvBuffer(kernel) {
             const { convBuffers } = this;
-            const key = Convolution.Kernel.key(p.kernel);
+            const key = Convolution.Kernel.key(kernel);
             return getOrCompute(convBuffers, key, () => {
-                const charsets = [];
-                this.grid.convPatterns.forEach(q => {
-                    if (p.kernel.equals(q.kernel)) {
-                        charsets.push(q.chars);
-                    }
-                });
-                this.scale = Math.max(this.scale, charsets.length);
-                return new IR.ConvBuffer(convBuffers.size, this, charsets, p.kernel);
+                const patterns = this.grid.convPatterns.filter(p => p.kernel.equals(kernel));
+                this.scale = Math.max(this.scale, patterns.length);
+                return new IR.ConvBuffer(convBuffers.size, this, patterns, kernel);
             });
         }
         useOrigin() {
@@ -6170,9 +6338,6 @@ var IR;
             if (lfsrFeedbackTerm !== undefined) {
                 consts.push({ name: lfsrFeedbackTerm, type: IR.INT_TYPE, initialiser: IR.libFunctionCall('lfsrFeedbackTerm', [n]) });
             }
-            for (const buffer of this.convBuffers.values()) {
-                consts.push(...buffer.declare());
-            }
             vars.push(...Array.from(this.counters.values(), counter => ({
                 name: counter,
                 type: IR.INT_TYPE,
@@ -6181,6 +6346,7 @@ var IR;
             return [
                 IR.declVars(consts),
                 IR.declVars(vars, true),
+                ...Array.from(this.convBuffers.values(), buffer => buffer.declare()),
                 ...Array.from(this.samplers.values(), sampler => sampler.declare()),
             ];
         }
@@ -6414,7 +6580,7 @@ var IR;
                             : IR.while_(IR.OP.ne(U, IR.ZERO), IR.block([
                                 IR.declVar(I, IR.INT_TYPE, IR.OP.countTrailingZeros(U)),
                                 IR.switch_(I, cases, true),
-                                IR.assign(U, '&=', IR.OP.minusOne(U)),
+                                IR.assign(U, '&=', IR.OP.minus(U, IR.ONE)),
                             ])));
                 }
                 return out;
@@ -6613,7 +6779,7 @@ var IR;
         }
         add(match, shuffle) {
             return shuffle ? [
-                IR.declVar(J, IR.INT_TYPE, IR.libMethodCall('PRNG', 'nextInt', RNG, [IR.OP.addOne(this.count)])),
+                IR.declVar(J, IR.INT_TYPE, IR.libMethodCall('PRNG', 'nextInt', RNG, [IR.OP.add(this.count, IR.ONE)])),
                 IR.assign(this.getAtCount, '=', this.get(J)),
                 IR.assign(this.get(J), '=', match),
                 this.incrementCount,
@@ -6826,12 +6992,12 @@ var IR;
             ]);
         }
         beginSamplingWithoutReplacement() {
-            return IR.declVar(S, IR.INT_TYPE, IR.OP.addOne(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count])), true);
+            return IR.declVar(S, IR.INT_TYPE, IR.OP.add(IR.libMethodCall('PRNG', 'nextInt', RNG, [this.count]), IR.ONE), true);
         }
         sampleWithoutReplacement(cases, count) {
             const declAt = this.is1x1
-                ? this.g.declareAtIndex(IR.OP.minusOne(S))
-                : this.g.declareAtXY(IR.OP.mod(S, this.width), IR.OP.floordiv(IR.OP.minusOne(S), this.width));
+                ? this.g.declareAtIndex(IR.OP.minus(S, IR.ONE))
+                : this.g.declareAtXY(IR.OP.mod(S, this.width), IR.OP.floordiv(IR.OP.minus(S, IR.ONE), this.width));
             return IR.block([
                 IR.while_(IR.TRUE, IR.block([
                     IR.assign(S, '=', IR.ternary(IR.OP.ne(IR.OP.bitwiseAnd(S, IR.ONE), IR.ZERO), IR.OP.bitwiseXor(IR.OP.rshift(S, IR.ONE), this.g.useLsfrFeedbackTerm()), IR.OP.rshift(S, IR.ONE))),
@@ -6944,6 +7110,17 @@ var Convolution;
             this.centreX = width >> 1;
             this.centreY = height >> 1;
         }
+        forEach(f) {
+            const { width, height, data } = this;
+            for (let dy = 0; dy < height; ++dy) {
+                for (let dx = 0; dx < width; ++dx) {
+                    const value = data[dx + width * dy];
+                    if (value !== 0) {
+                        f(dx, dy, value);
+                    }
+                }
+            }
+        }
         equals(other) {
             if (this === other) {
                 return true;
@@ -6951,6 +7128,35 @@ var Convolution;
             return this.width === other.width
                 && this.height === other.height
                 && this.data.every((x, i) => x === other.data[i]);
+        }
+        total() {
+            let t = 0;
+            for (const x of this.data) {
+                t += x;
+            }
+            return t;
+        }
+        boundaryValues() {
+            const { width, height, centreX, centreY, data } = this;
+            const out = emptyArray(data.length, 0);
+            this.forEach((dx, dy) => {
+                dx -= centreX;
+                dy -= centreY;
+                for (let y = 0; y < height; ++y) {
+                    const diffY = y - centreY;
+                    const yOK = dy < 0 && diffY <= dy
+                        || dy > 0 && diffY >= dy;
+                    for (let x = 0; x < width; ++x) {
+                        const diffX = x - centreX;
+                        const xOK = dx < 0 && diffX <= dx
+                            || dx > 0 && diffX >= dx;
+                        if (xOK || yOK) {
+                            ++out[x + width * y];
+                        }
+                    }
+                }
+            });
+            return out;
         }
     }
     Convolution.Kernel = Kernel;
@@ -7560,7 +7766,7 @@ var ISet;
      */
     function full(domainSize) {
         const set = empty(domainSize);
-        set.fill(-1);
+        set.fill(~0);
         if ((domainSize & 31) !== 0) {
             set[set.length - 1] = (1 << (domainSize & 31)) - 1;
         }
@@ -7579,6 +7785,13 @@ var ISet;
         return set;
     }
     ISet.of = of;
+    /**
+     * Returns a new copy of the given set.
+     */
+    function copy(set) {
+        return new Uint32Array(set);
+    }
+    ISet.copy = copy;
     /**
      * Indicates whether `set` contains the element `x`, in O(1) time.
      */
@@ -7601,12 +7814,32 @@ var ISet;
     }
     ISet.size = size;
     /**
-     * Adds the element `x` to the set if it not already present, in O(1) time.
+     * Returns some element of the set, or -1 if the set is empty, in O(N) time.
+     */
+    function first(set) {
+        for (let i = 0; i < set.length; ++i) {
+            const x = set[i];
+            if (x !== 0) {
+                return (i << 5) | (31 - Math.clz32(x));
+            }
+        }
+        return -1;
+    }
+    ISet.first = first;
+    /**
+     * Adds the element `x` to the set if it is not already present, in O(1) time.
      */
     function add(set, x) {
         set[x >> 5] |= 1 << (x & 31);
     }
     ISet.add = add;
+    /**
+     * Removes the element `x` to the set if it is present, in O(1) time.
+     */
+    function remove(set, x) {
+        set[x >> 5] &= ~(1 << (x & 31));
+    }
+    ISet.remove = remove;
     /**
      * Adds all the members of the set `b` to the set `a`, in O(N) time.
      */
@@ -7774,6 +8007,16 @@ var ISet;
     }
     ISet.toArray = toArray;
     /**
+     * Returns a new array by mapping the natural numbers in the given set,
+     * not necessarily in order.
+     */
+    function map(set, f) {
+        const arr = [];
+        _forEach(set, x => arr.push(f(x)));
+        return arr;
+    }
+    ISet.map = map;
+    /**
      * Determines whether the predicate is true for every element of the set.
      */
     function every(set, f) {
@@ -7845,9 +8088,9 @@ var PatternTree;
             if (maskSize === 0) {
                 return undefined;
             }
-            pattern.push(maskSize === 1 ? ISet.toArray(mask)[0]
-                : maskSize === alphabetKey.length ? -1
-                    : -2);
+            pattern.push(maskSize === 1 ? ISet.first(mask)
+                : maskSize === alphabetKey.length ? 255 /* PatternValue.WILDCARD */
+                    : 254 /* PatternValue.UNION */);
             masks.push(mask);
         }
         return new Pattern(left.width, left.height, alphabetKey, pattern, masks, true);
@@ -7858,9 +8101,8 @@ var PatternTree;
     function _entails(left, right) {
         switch (left.kind) {
             case 'leaf':
-                return left.masks.every((mask, i) => ISet.isSubset(mask, right.masks[i]));
             case 'top':
-                return false;
+                return left.masks.every((mask, i) => ISet.isSubset(mask, right.masks[i]));
             case 'bottom':
                 return true;
             case 'and':
@@ -7871,8 +8113,10 @@ var PatternTree;
                 return false;
         }
     }
-    function top(width, height) {
-        return { kind: 'top', width, height, _key: undefined };
+    function top(width, height, alphabetKey) {
+        const pattern = emptyArray(width * height, 255 /* PatternValue.WILDCARD */);
+        const masks = emptyArray(width * height, ISet.full(alphabetKey.length));
+        return new Pattern(width, height, alphabetKey, pattern, masks, false);
     }
     PatternTree.top = top;
     function bottom(width, height) {
@@ -7919,24 +8163,23 @@ var PatternTree;
         else if (left.kind === 'leaf' && right.kind === 'leaf' && width === 1 && height === 1) {
             const { alphabetKey } = left;
             const mask = ISet.union(left.masks[0], right.masks[0]);
-            return ISet.size(mask) === alphabetKey.length
-                ? top(1, 1)
-                : new Pattern(1, 1, alphabetKey, [-2], [mask], true);
+            const pattern = [ISet.size(mask) === alphabetKey.length ? 255 /* PatternValue.WILDCARD */ : 254 /* PatternValue.UNION */];
+            return new Pattern(1, 1, alphabetKey, pattern, [mask], true);
         }
         return { kind: 'or', left, right, width, height, _key: undefined };
     }
     PatternTree.or = or;
-    function not(child) {
+    function not(child, alphabetKey) {
         const { width, height } = child;
         switch (child.kind) {
             case 'top':
                 return bottom(width, height);
             case 'bottom':
-                return top(width, height);
+                return top(width, height, alphabetKey);
             case 'and':
-                return or(not(child.left), not(child.right));
+                return or(not(child.left, alphabetKey), not(child.right, alphabetKey));
             case 'or':
-                return and(not(child.left), not(child.right));
+                return and(not(child.left, alphabetKey), not(child.right, alphabetKey));
             case 'not':
                 return child.child;
         }
@@ -7950,12 +8193,15 @@ var PatternTree;
         return { kind: 'not', child, width, height, _key: undefined };
     }
     PatternTree.not = not;
+    function isLeafOrTop(p) {
+        return p.kind === 'leaf' || p.kind === 'top';
+    }
+    PatternTree.isLeafOrTop = isLeafOrTop;
     function rotate(p) {
         switch (p.kind) {
             case 'leaf':
-                return Pattern.rotate(p);
             case 'top':
-                return top(p.height, p.width);
+                return Pattern.rotate(p);
             case 'bottom':
                 return bottom(p.height, p.width);
             case 'and':
@@ -7963,7 +8209,7 @@ var PatternTree;
             case 'or':
                 return or(rotate(p.left), rotate(p.right));
             case 'not':
-                return not(Pattern.rotate(p.child));
+                return not(Pattern.rotate(p.child), p.child.alphabetKey);
         }
     }
     PatternTree.rotate = rotate;
@@ -7979,7 +8225,7 @@ var PatternTree;
             case 'or':
                 return or(reflect(p.left), reflect(p.right));
             case 'not':
-                return not(Pattern.reflect(p.child));
+                return not(Pattern.reflect(p.child), p.child.alphabetKey);
         }
     }
     PatternTree.reflect = reflect;
@@ -7998,7 +8244,7 @@ var PatternTree;
             }
             case 'not': {
                 const out = getLeaves(p.child);
-                out.push(top(p.width, p.height));
+                out.push(top(p.width, p.height, p.child.alphabetKey));
                 return out;
             }
         }
@@ -8020,7 +8266,7 @@ var PatternTree;
             case 'or':
                 return matches(p.left, predicate) || matches(p.right, predicate);
             case 'not':
-                return predicate(top(p.width, p.height)) && !matches(p.child, predicate);
+                return predicate(top(p.width, p.height, p.child.alphabetKey)) && !matches(p.child, predicate);
         }
     }
     PatternTree.matches = matches;
@@ -8050,7 +8296,7 @@ class Pattern extends MJr.Pattern {
             return [p];
         }
         if (p.kind === 'top') {
-            return emptyArray(height, PatternTree.top(width, 1));
+            return emptyArray(height, PatternTree.top(width, 1, p.alphabetKey));
         }
         const { pattern, masks } = p;
         const out = [];
@@ -8064,6 +8310,9 @@ class Pattern extends MJr.Pattern {
     }
     static rotate(p) {
         const { width, height, pattern, masks } = p;
+        if (p.kind === 'top') {
+            return new Pattern(height, width, p.alphabetKey, pattern, masks, p.hasUnions);
+        }
         const newData = [];
         const newMasks = [];
         for (let x = 0; x < width; ++x) {
@@ -8076,6 +8325,9 @@ class Pattern extends MJr.Pattern {
         return new Pattern(height, width, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     static reflect(p) {
+        if (p.kind === 'top') {
+            return p;
+        }
         const { width, height, pattern, masks } = p;
         const newData = [];
         const newMasks = [];
@@ -8089,9 +8341,9 @@ class Pattern extends MJr.Pattern {
         return new Pattern(width, height, p.alphabetKey, newData, newMasks, p.hasUnions);
     }
     static key(p) {
-        return p._key ??= `${p.width}x${p.height}:${p.kind === 'leaf' ? p.masks.map(ISet.key).join(';') : 'top'}`;
+        return p._key ??= `${p.width}x${p.height}:${p.masks.map(ISet.key).join(';')}`;
     }
-    kind = 'leaf';
+    kind;
     _key = undefined;
     constructor(
     /**
@@ -8103,8 +8355,8 @@ class Pattern extends MJr.Pattern {
      */
     height, alphabetKey, 
     /**
-     * The pattern, as a flat array. Wildcards are represented as -1, and
-     * unions as -2.
+     * The pattern, as a flat array. Wildcards are represented as 0xFF, and
+     * unions as 0xFE.
      */
     pattern, 
     /**
@@ -8120,13 +8372,7 @@ class Pattern extends MJr.Pattern {
         this.alphabetKey = alphabetKey;
         this.masks = masks;
         this.hasUnions = hasUnions;
-    }
-    /**
-     * Indicates whether this pattern is tautological, i.e. it always matches
-     * at any position.
-     */
-    isTop() {
-        return this.pattern.every(p => p === -1);
+        this.kind = pattern.every(p => p === 255 /* PatternValue.WILDCARD */) ? 'top' : 'leaf';
     }
     /**
      * Calls the given function for each non-wildcard, non-union symbol in this

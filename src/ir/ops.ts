@@ -157,13 +157,23 @@ namespace IR {
         },
         
         add(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && isInt(right)) {
+                if(isInt(left.right)) {
+                    const lrSign = left.op === 'loose_int_plus' ? 1 : -1;
+                    right = int(lrSign * left.right.value + right.value);
+                    left = left.left;
+                } else if(isInt(left.left)) {
+                    const llSign = left.op === 'loose_int_plus' ? 1 : -1;
+                    right = int(llSign * left.left.value + right.value);
+                    left = left.right;
+                }
+            }
             return isInt(left) && isInt(right) ? int(left.value + right.value)
                 : left === ZERO ? right
                 : right === ZERO ? left
+                : isInt(left) && left.value < 0 ? OP.minusConstant(right, -left.value)
+                : isInt(right) && right.value < 0 ? OP.minusConstant(left, -right.value)
                 : _binOp('loose_int_plus', left, right);
-        },
-        addOne(expr: Expr): Expr {
-            return OP.add(expr, ONE);
         },
         addConstant(left: Expr, right: number): Expr {
             return right === 0 ? left
@@ -172,13 +182,19 @@ namespace IR {
                 : OP.minus(left, int(-right));
         },
         minus(left: Expr, right: Expr): Expr {
+            if(left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && isInt(right)) {
+                if(isInt(left.right)) {
+                    const lrSign = left.op === 'loose_int_plus' ? -1 : 1;
+                    right = int(lrSign * left.right.value - right.value);
+                    left = left.left;
+                }
+            }
             return isInt(left) && isInt(right) ? int(left.value - right.value)
                 : right === ZERO ? left
                 : equals(left, right) ? ZERO
+                : isInt(left) && left.value < 0 ? OP.addConstant(right, -left.value)
+                : isInt(right) && right.value < 0 ? OP.addConstant(left, -right.value)
                 : _binOp('loose_int_minus', left, right);
-        },
-        minusOne(expr: Expr): Expr {
-            return OP.minus(expr, ONE);
         },
         minusConstant(left: Expr, right: number): Expr {
             return OP.addConstant(left, -right);

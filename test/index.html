@@ -8,6 +8,7 @@
         
         body { font-family: Roboto, sans-serif; display: flex; }
         #test_panel { width: 40%; }
+        button { font-size: 1em; padding: 2em; }
         table { border-collapse: collapse; }
         table td:first-child, table th:first-child { text-align: left; }
         table td:not(:first-child), table th:not(:first-child) { text-align: center; }
@@ -25,10 +26,14 @@
 </head>
 <body>
 <div id="test_panel"></div>
-<div id="benchmark_panel"></div>
+<div id="benchmark_panel"><button id="run_benchmarks">Run Benchmarks</button></div>
 <script type="text/javascript">
 Test.runAll();
-Benchmark.runAll();
+const runButton = document.getElementById('run_benchmarks');
+runButton.onclick = () => {
+    runButton.remove();
+    Benchmark.runAll();
+};
 </script>
 </body>
 </html>

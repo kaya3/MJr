@@ -125,13 +125,13 @@ namespace IR {
         }
         
         public beginSamplingWithoutReplacement(): Stmt {
-            return IR.declVar(S, INT_TYPE, OP.addOne(libMethodCall('PRNG', 'nextInt', RNG, [this.count])), true);
+            return IR.declVar(S, INT_TYPE, OP.add(libMethodCall('PRNG', 'nextInt', RNG, [this.count]), ONE), true);
         }
         
         public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {
             const declAt = this.is1x1
-                ? this.g.declareAtIndex(OP.minusOne(S))
-                : this.g.declareAtXY(OP.mod(S, this.width), OP.floordiv(OP.minusOne(S), this.width));
+                ? this.g.declareAtIndex(OP.minus(S, ONE))
+                : this.g.declareAtXY(OP.mod(S, this.width), OP.floordiv(OP.minus(S, ONE), this.width));
             return IR.block([
                 IR.while_(
                     TRUE,

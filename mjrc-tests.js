@@ -211,7 +211,7 @@ Test.runAll = () => {
     totalSectionElem.appendChild(totalSummaryElem);
     totalSectionElem.appendChild(document.createTextNode(')'));
     testPanelElem.appendChild(totalSectionElem);
-    for (const { title, tests } of Test._all) {
+    for (const { title, tests } of Test._all.sort((a, b) => a.title.localeCompare(b.title))) {
         const sectionElem = document.createElement('div');
         const titleElem = document.createElement('h3');
         const summaryElem = document.createElement('span');
@@ -228,8 +228,9 @@ Test.runAll = () => {
                     return `Expected:\n${a.expected}`;
             }
         }
+        const cases = Object.entries(tests);
         let passes = 0, total = 0;
-        for (const [name, test] of Object.entries(tests)) {
+        for (const [name, test] of cases) {
             ++total;
             const r = Test._run(test);
             const rowElem = document.createElement('div');
@@ -450,6 +451,33 @@ Benchmark.add({
             # delete water pixels at random, for an animated effect
             one: [I] -> [B] if ANIMATE_WATER
     `,
+});
+///<reference path="../framework.ts"/>
+Test.add('Convolution', {
+    emptySum: Test(`
+        grid [BW]
+        convolution {kernel="Moore"}:
+            [B] -> [W] if sum [W] == 0
+    `, 3, 3, [
+        Assert.equals('WWW\nWWW\nWWW'),
+    ]),
+    oneSum: Test(`
+        grid [BW]
+        put [W] at origin
+        convolution {kernel="Moore"}:
+            [B] -> [W] if sum [W] == 1
+            [W] -> [B] if sum [B] == 8
+    `, 3, 3, [
+        Assert.equals('WWW\nWBW\nWWW'),
+    ]),
+    boundary: Test(`
+        grid [BW035]
+        convolution {kernel="Moore", boundary=[W]}:
+            [B] -> (let s = sum [W] in
+                [0] if s == 0 else [3] if s == 3 else [5] if s == 5 else [.])
+    `, 4, 4, [
+        Assert.equals('5335\n3003\n3003\n5335'),
+    ]),
 });
 ///<reference path="../framework.ts"/>
 Test.add('Basic', {

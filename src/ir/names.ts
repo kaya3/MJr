@@ -68,7 +68,7 @@ namespace IR {
         },
     };
     
-    type ConvBufferVar = 'width' | 'n' | 'buffer'
+    type ConvBufferVar = 'width' | 'height' | 'n' | 'buffer'
     type GridVar = 'width' | 'height' | 'n' | 'data' | 'obj' | 'origin' | 'buffer' | 'lfsrFeedbackTerm'
     type MatcherVar = 'update' | 'rowsToCols' | `${'row' | 'col'}${'DFA' | 'States' | 'AcceptSetIDs' | 'AcceptSets'}`
 }

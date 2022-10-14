@@ -65,7 +65,7 @@ namespace Parser {
     const ARGS = (<T extends {[K in Tokenizer.Keyword]?: IRecord<string, boolean>}>(specs: T): T => specs)({
         all: {temperature: false, search: false, maxStates: false, depthCoefficient: false},
         convchain: {sample: true, n: true, on: true, temperature: false, periodic: false},
-        convolution: {kernel: true},
+        convolution: {kernel: true, boundary: false},
         field: {for_: true, on: true, from: false, to: false, essential: false, recompute: false},
         grid: {scaleX: false, scaleY: false, periodic: false},
         map: {outGrid: true},

@@ -41,6 +41,7 @@ namespace ASG {
     export interface ConvPattern extends Readonly<{
         kernel: Convolution.Kernel,
         chars: ISet,
+        includeBoundary: boolean,
     }> {}
     
     export interface FormalPotential extends Readonly<{
@@ -146,7 +147,7 @@ namespace ASG {
     type _RulesStmtNode<K extends string, T> = _StmtNode<`rules.${K}`, {inGrid: number, rewrites: readonly RewriteRule[]} & T>
     export interface BasicRulesStmt extends _RulesStmtNode<'basic.all' | 'basic.one' | 'basic.prl', {commutative: boolean}> {}
     export interface BiasedRulesStmt extends _RulesStmtNode<'biased.all' | 'biased.one', {temperature: Prop<'float?'>, fields: readonly FieldRule[], observations: readonly ObserveRule[]}> {}
-    export interface ConvolutionStmt extends _RulesStmtNode<'convolution', {kernel: Convolution.Kernel}> {}
+    export interface ConvolutionStmt extends _RulesStmtNode<'convolution', {kernel: Convolution.Kernel, boundary: Prop<'const charset.in?'>}> {}
     export interface SearchRulesStmt extends _RulesStmtNode<'search.all' | 'search.one', {temperature: Prop<'float?'>, maxStates: Prop<'int?'>, depthCoefficient: Prop<'float?'>, observations: readonly ObserveRule[]}> {}
     
     export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, sample: Type.Value<'pattern.out'>, n: number, temperature: Prop<'float?'>, on: Prop<'charset.in'>, periodic: boolean | undefined}> {}

@@ -413,7 +413,7 @@ namespace Compiler {
         'expr.sum': (c, expr) => {
             const g = c.grids[expr.inGrid];
             const p = g.grid.convPatterns.getByID(expr.patternID);
-            return g.makeConvBuffer(p).get(p.chars);
+            return g.makeConvBuffer(p.kernel).get(p);
         },
     };
     
@@ -433,7 +433,8 @@ namespace Compiler {
             // check whether pattern is effective
             let isEffective: IR.Expr;
             if(pattern.kind === 'expr.constant') {
-                const checks = pattern.constant.value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
+                const {value} = pattern.constant;
+                const checks = value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
                 isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
             } else {
                 // non-constant pattern will be checked in _writeCondition
@@ -715,36 +716,31 @@ namespace Compiler {
     function _stmtConvolution(c: Compiler, stmt: ASG.ConvolutionStmt, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
         const {kernel} = stmt;
         const g = c.grids[stmt.inGrid];
+        const buffer = g.makeConvBuffer(kernel);
         
         const cases: IR.Stmt[] = emptyArray(g.grid.alphabet.key.length, IR.PASS);
         for(const rule of stmt.rewrites) {
-            const mask
-                = rule.from.kind === 'leaf' ? rule.from.masks[0]
-                : rule.from.kind === 'top' ? g.grid.alphabet.wildcard
-                : fail();
+            const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
             
-            const caseHandler = IR.if_(
-                _writeCondition(c, g, rule.to, undefined, rule.condition),
-                _doWrite(c, g, rule.from, rule.to, false, ANY, false, false),
-            );
+            const caseHandler = IR.block([
+                rule.to.kind === 'expr.constant' ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)),
+                IR.if_(
+                    _writeCondition(c, g, rule.to, P, rule.condition),
+                    _doWrite(c, g, rule.from, rule.to, false, ANY, false, false),
+                ),
+            ]);
             ISet.forEach(mask, i => {
                 if(cases[i] !== IR.PASS) { fail(); }
                 cases[i] = caseHandler;
             });
         }
         
-        const bufferWidth = OP.addConstant(g.width, kernel.width - 1),
-            atConvInitialiser = OP.add(
-                OP.addConstant(AT_X, kernel.centreX),
-                OP.mult(OP.addConstant(AT_Y, kernel.centreY), bufferWidth),
-            );
-        
         // TODO: different strategy if rules don't cover the whole alphabet?
         return IR.block([
             IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
             IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
                 g.declareAtXY(AT_X, AT_Y),
-                IR.declVar(AT_CONV, IR.INT_TYPE, atConvInitialiser),
+                IR.declVar(AT_CONV, IR.INT_TYPE, buffer.index(AT_X, AT_Y)),
                 IR.switch_(g.data.get(AT), cases),
             ])]),
             IR.if_(

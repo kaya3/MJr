@@ -3,7 +3,7 @@
 namespace IR {
     const {
         MATCHES, MATCH_COUNT,
-        WIDTH, HEIGHT, RNG,
+        WIDTH, HEIGHT,
         J,
     } = NAMES;
     
@@ -15,7 +15,6 @@ namespace IR {
         private readonly getAtCount = this.get(this.count);
         public readonly isNotEmpty = OP.gt(this.count, ZERO);
         public readonly incrementCount = assign(this.count, '+=', ONE);
-        public readonly decrementCount = assign(this.count, '-=', ONE);
         
         public use(g: Grid, k: number): void {
             // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
@@ -37,14 +36,18 @@ namespace IR {
             return access(this.array, index);
         }
         
-        public add(match: Expr, shuffle: boolean): Stmt[] {
-            return shuffle ? [
-                declVar(J, INT_TYPE, libMethodCall('PRNG', 'nextInt', RNG, [OP.add(this.count, ONE)])),
+        public push(match: Expr): Stmt[] {
+            return [
+                assign(this.getAtCount, '=', match),
+                this.incrementCount,
+            ];
+        }
+        
+        public insertShuffled(match: Expr): Stmt[] {
+            return [
+                declVar(J, INT_TYPE, PRNG.nextInt(OP.add(this.count, ONE))),
                 assign(this.getAtCount, '=', this.get(J)),
                 assign(this.get(J), '=', match),
-                this.incrementCount,
-            ] : [
-                assign(this.getAtCount, '=', match),
                 this.incrementCount,
             ];
         }

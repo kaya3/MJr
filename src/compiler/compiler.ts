@@ -1,6 +1,7 @@
 ///<reference path="../ir/ir.ts"/>
 ///<reference path="../ir/names.ts"/>
 ///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/prng.ts"/>
 
 /**
  * Compiles MJr source code to a specified target language.
@@ -28,7 +29,6 @@ namespace Compiler {
     
     // helpers
     const {
-        OP,
         NAMES: {
             WIDTH, HEIGHT, PARAMS, RNG,
             STATE, ITERATIONS,
@@ -36,6 +36,8 @@ namespace Compiler {
             I, P,
             ANY, MATCH,
         },
+        OP,
+        PRNG,
     } = IR;
     
     /**
@@ -386,7 +388,7 @@ namespace Compiler {
                         ? c.grids[expr.type.inGrid].useOrigin()
                         : fail();
                 case 'random':
-                    return IR.libMethodCall('PRNG', 'nextDouble', RNG, []);
+                    return PRNG.NEXT_DOUBLE;
             }
         },
         'expr.name.simple': (c, expr) => c.variables.name(expr.variableID),
@@ -406,8 +408,8 @@ namespace Compiler {
         'expr.param': (c, expr) => IR.param(expr.name, c.expr(expr.otherwise)),
         'expr.randint': (c, expr) => {
             const max = c.expr(expr.max);
-            return !IR.isInt(max) ? IR.libFunctionCall('nextIntChecked', [RNG, max])
-                : max.value > 0 ? IR.libMethodCall('PRNG', 'nextInt', RNG, [max])
+            return !IR.isInt(max) ? PRNG.nextIntChecked(max)
+                : max.value > 0 ? PRNG.nextInt(max)
                 : fail();
         },
         'expr.sum': (c, expr) => {
@@ -497,7 +499,7 @@ namespace Compiler {
                 if(useMask || maybeEffective) {
                     out.push(outGrid.write(
                         outGrid.relativeIndex(dx, dy),
-                        colour,
+                        IR.int(colour),
                         useMask ? c.mask : undefined,
                     ));
                 }
@@ -530,7 +532,9 @@ namespace Compiler {
         }
         
         if(doUpdate) {
-            out.push(...outGrid.update(OP.add(AT_X, mX), OP.add(AT_Y, mY), eW, eH, doYield));
+            const x = OP.add(AT_X, mX), y = OP.add(AT_Y, mY);
+            out.push(outGrid.update(x, y, eW, eH));
+            if(doYield) { out.push(outGrid.yieldRewriteInfo(x, y, eW, eH)); }
         }
         if(flagVar !== undefined) {
             out.push(IR.assign(flagVar, '=', IR.TRUE));
@@ -579,10 +583,7 @@ namespace Compiler {
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.while_(
                     OP.and(c.matches.isNotEmpty, OP.not(ANY)),
-                    IR.block([
-                        sampler.sampleWithoutReplacement(cases, c.matches.count),
-                        c.matches.decrementCount,
-                    ]),
+                    sampler.sampleWithoutReplacement(cases, c.matches.count),
                 ),
                 IR.if_(ANY, ifChanged, then),
             ]);
@@ -654,21 +655,34 @@ namespace Compiler {
         // optimisation for common case: all rewrites are unconditional and definitely effective
         if(firstPassConditions.every(c => c === IR.TRUE)) {
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            out.push(...sampler.copyInto(c.matches, shuffle));
+            if(shuffle) {
+                out.push(
+                    c.matches.declareCount(IR.ZERO, true),
+                    sampler.shuffleInto(c.matches),
+                );
+            } else {
+                out.push(
+                    sampler.copyInto(c.matches.array),
+                    c.matches.declareCount(sampler.count, true),
+                );
+            }
         } else {
             out.push(c.matches.declareCount(IR.ZERO, true));
             for(let i = 0; i < k; ++i) {
                 const rule = rewrites[i];
                 const sampler = g.makeSampler([rule.from]);
                 const condition = firstPassConditions[i];
-                const addMatch = c.matches.add(OP.multAddConstant(AT, k, IR.int(i)), shuffle);
+                const match = OP.multAddConstant(AT, k, IR.int(i));
                 
                 out.push(
                     // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                     conditionIsSameEverywhere[i]
-                    ? IR.if_(condition, sampler.forEach(addMatch))
+                    ? IR.if_(condition, shuffle
+                        ? sampler.shuffleIntoOffset(c.matches, k, i)
+                        : sampler.copyIntoOffset(c.matches.array, c.matches.count, k, i)
+                    )
                     // otherwise, need to check the condition separately for each match
-                    : sampler.forEach([IR.if_(condition, IR.block(addMatch))])
+                    : sampler.forEach([IR.if_(condition, IR.block(shuffle ? c.matches.insertShuffled(match) : c.matches.push(match)))])
                 );
             }
         }
@@ -747,7 +761,8 @@ namespace Compiler {
                 ANY,
                 IR.block([
                     // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
-                    ...g.update(IR.ZERO, IR.ZERO, g.width, g.height, c.config.animate),
+                    g.update(IR.ZERO, IR.ZERO, g.width, g.height),
+                    c.config.animate ? g.yield_() : IR.PASS,
                     ifChanged,
                 ]),
                 then,

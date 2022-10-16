@@ -279,12 +279,28 @@ namespace MJr {
             }
         }
         
+        public copyIntoOffset(out: Uint32Array, offset: number, m: number, c: number): void {
+            const {arr, count} = this;
+            for(let i = 0; i < count; ++i) {
+                out[offset + i] = m * arr[i] + c;
+            }
+        }
+        
         public shuffleInto(out: Uint32Array, rng: PRNG): void {
             const {arr, count} = this;
             for(let i = 0; i < count; ++i) {
                 const j = rng.nextInt(i + 1);
                 out[i] = out[j];
                 out[j] = arr[i];
+            }
+        }
+        
+        public shuffleIntoOffset(out: Uint32Array, offset: number, m: number, c: number, rng: PRNG): void {
+            const {arr, count} = this;
+            for(let i = 0; i < count; ++i) {
+                const j = rng.nextInt(offset + i + 1);
+                out[offset + i] = out[j];
+                out[j] = m * arr[i] + c;
             }
         }
         

@@ -7,12 +7,20 @@ namespace IR {
         handleMatch(f: 'add' | 'del', patternIndex: Expr): Stmt;
         sampleWithReplacement(cases: readonly Stmt[]): Stmt;
         beginSamplingWithoutReplacement(): Stmt;
-        sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt;
-        copyInto(matches: MatchesArray, shuffle: boolean): Stmt[];
+        sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt;
+        copyInto(matchesArray: NameExpr): Stmt;
+        copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt;
+        shuffleInto(matches: MatchesArray): Stmt;
+        shuffleIntoOffset(matches: MatchesArray, m: number, c: number): Stmt;
         forEach(then: readonly Stmt[]): Stmt;
     }
     
-    const {RNG, I, S, MATCH, AT, AT_X, AT_Y} = NAMES;
+    const {
+        RNG,
+        I, J,
+        S, MATCH,
+        AT, AT_X, AT_Y,
+    } = NAMES;
     
     export class Sampler implements AbstractSampler {
         private readonly name: NameExpr;
@@ -50,7 +58,7 @@ namespace IR {
                 IR.declVar(
                     MATCH,
                     IR.INT_TYPE,
-                    access(this.arr, libMethodCall('PRNG', 'nextInt', RNG, [this.count])),
+                    access(this.arr, PRNG.nextInt(this.count)),
                 ),
                 this.declareMatchAt,
                 switch_(this.matchPatternIndex, cases),
@@ -61,7 +69,7 @@ namespace IR {
             return PASS;
         }
         
-        public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {
+        public sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt {
             return block([
                 declVar(
                     MATCH,
@@ -70,15 +78,30 @@ namespace IR {
                 ),
                 this.declareMatchAt,
                 switch_(this.matchPatternIndex, cases),
+                assign(count, '-=', ONE),
             ]);
         }
         
-        public copyInto(matches: MatchesArray, shuffle: boolean): Stmt[] {
-            return [
-                shuffle ? libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matches.array, RNG])
-                    : libMethodCallStmt('Sampler', 'copyInto', this.name, [matches.array]),
-                declVar(matches.count, INT_TYPE, this.count),
-            ];
+        public copyInto(matchesArray: NameExpr): Stmt {
+            return libMethodCallStmt('Sampler', 'copyInto', this.name, [matchesArray]);
+        }
+        
+        public copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
+            return libMethodCallStmt('Sampler', 'copyIntoOffset', this.name, [matchesArray, offset, int(m), int(c)]);
+        }
+        
+        public shuffleInto(matchesArray: MatchesArray): Stmt {
+            return block([
+                libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matchesArray.array, RNG]),
+                IR.assign(matchesArray.count, '+=', this.count),
+            ]);
+        }
+        
+        public shuffleIntoOffset(matchesArray: MatchesArray, m: number, c: number): Stmt {
+            return block([
+                libMethodCallStmt('Sampler', 'shuffleIntoOffset', this.name, [matchesArray.array, matchesArray.count, int(m), int(c), RNG]),
+                IR.assign(matchesArray.count, '+=', this.count),
+            ]);
         }
         
         public forEach(then: readonly Stmt[]): Stmt {
@@ -118,24 +141,24 @@ namespace IR {
         
         public sampleWithReplacement(cases: readonly Stmt[]): Stmt {
             return block([
-                this.is1x1 ? this.g.declareAtIndex(libMethodCall('PRNG', 'nextInt', RNG, [this.count]))
-                : this.g.declareAtXY(libMethodCall('PRNG', 'nextInt', RNG, [this.width]), libMethodCall('PRNG', 'nextInt', RNG, [this.height])),
+                this.is1x1 ? this.g.declareAtIndex(PRNG.nextInt(this.count))
+                : this.g.declareAtXY(PRNG.nextInt(this.width), PRNG.nextInt(this.height)),
                 cases.length === 1 ? cases[0] : fail(),
             ]);
         }
         
         public beginSamplingWithoutReplacement(): Stmt {
-            return IR.declVar(S, INT_TYPE, OP.add(libMethodCall('PRNG', 'nextInt', RNG, [this.count]), ONE), true);
+            return declVar(S, INT_TYPE, OP.add(PRNG.nextInt(this.count), ONE), true);
         }
         
-        public sampleWithoutReplacement(cases: readonly Stmt[], count: Expr): Stmt {
+        public sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt {
             const declAt = this.is1x1
                 ? this.g.declareAtIndex(OP.minus(S, ONE))
                 : this.g.declareAtXY(OP.mod(S, this.width), OP.floordiv(OP.minus(S, ONE), this.width));
-            return IR.block([
-                IR.while_(
+            return block([
+                while_(
                     TRUE,
-                    IR.block([
+                    block([
                         assign(S, '=', ternary(
                             OP.ne(OP.bitwiseAnd(S, ONE), ZERO),
                             OP.bitwiseXor(OP.rshift(S, ONE), this.g.useLsfrFeedbackTerm()),
@@ -146,17 +169,40 @@ namespace IR {
                 ),
                 declAt,
                 cases.length === 1 ? cases[0] : fail(),
+                assign(count, '-=', ONE),
             ]);
         }
         
-        public copyInto(matches: MatchesArray, shuffle: boolean): Stmt[] {
-            return [
-                declVar(matches.count, INT_TYPE, ZERO, true),
-                this.is1x1 ? forRange(AT, ZERO, this.count, matches.add(AT, shuffle))
+        public copyInto(matchesArray: NameExpr): Stmt {
+            return this.copyIntoOffset(matchesArray, ZERO, 1, 0);
+        }
+        
+        public copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
+            return this.is1x1
+                ? forRange(AT, ZERO, this.count, [
+                    IR.assign(IR.access(matchesArray, OP.add(AT, offset)), '=', OP.multAddConstant(AT, m, int(c))),
+                ])
+                : block([
+                    IR.declVar(J, INT_TYPE, offset, true),
+                    forRange(AT_Y, ZERO, this.height, [
+                        forRange(AT_X, ZERO, this.width, [
+                            IR.assign(IR.access(matchesArray, J), '=', OP.multAddConstant(this.g.index(AT_X, AT_Y), m, int(c))),
+                            IR.assign(J, '+=', ONE),
+                        ]),
+                    ]),
+                ]);
+        }
+        
+        public shuffleInto(matches: MatchesArray): Stmt {
+            return this.shuffleIntoOffset(matches, 1, 0);
+        }
+        
+        public shuffleIntoOffset(matches: MatchesArray, m: number, c: number): Stmt {
+            return this.is1x1
+                ? forRange(AT, ZERO, this.count, matches.insertShuffled(OP.multAddConstant(AT, m, int(c))))
                 : forRange(AT_Y, ZERO, this.height, [
-                    forRange(AT_X, ZERO, this.width, matches.add(this.g.index(AT_X, AT_Y), shuffle)),
-                ]),
-            ];
+                    forRange(AT_X, ZERO, this.width, matches.insertShuffled(OP.multAddConstant(this.g.index(AT_X, AT_Y), m, int(c)))),
+                ]);
         }
         
         public forEach(then: readonly Stmt[]): Stmt {

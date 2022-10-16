@@ -72,8 +72,8 @@ namespace IR {
             return localCallStmt(MASK_CLEAR, [g.n]);
         }
         
-        public set(g: Grid, index: Expr, colour: number): Stmt {
-            return localCallStmt(MASK_SET, [g.data.name, index, int(colour)]);
+        public set(g: Grid, index: Expr, colour: Expr): Stmt {
+            return localCallStmt(MASK_SET, [g.data.name, index, colour]);
         }
         
         public hasnt(index: Expr): Expr {

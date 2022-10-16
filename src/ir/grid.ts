@@ -58,6 +58,8 @@ namespace IR {
                 for(const pattern of patterns) {
                     matcher.addMatchHandler({kind: 'counter', pattern, counter});
                 }
+                // need to set scale to avoid overflowing the counter
+                this.scale = Math.max(this.scale, patterns.length);
                 return counter;
             });
         }
@@ -209,23 +211,20 @@ namespace IR {
             return declVars(decls);
         }
         
-        public write(index: Expr, colour: number, mask?: Mask): Stmt {
+        public write(index: Expr, colour: Expr, mask?: Mask): Stmt {
             return mask !== undefined ? mask.set(this, index, colour)
-                : this.data.set(index, '=', int(colour));
+                : this.data.set(index, '=', colour);
         }
         
-        public update(x: Expr, y: Expr, w: Expr, h: Expr, doYield: boolean): Stmt[] {
-            return [
-                this.matcher.update(x, y, w, h),
-                doYield ? this.yieldRewriteInfo(x, y, w, h) : PASS,
-            ];
+        public update(x: Expr, y: Expr, w: Expr, h: Expr): Stmt {
+            return this.matcher.update(x, y, w, h);
         }
         
         public yield_(): YieldStmt {
             return this.yieldRewriteInfo(ZERO, ZERO, this.width, this.height);
         }
         
-        private yieldRewriteInfo(x: Expr, y: Expr, w: Expr, h: Expr): YieldStmt {
+        public yieldRewriteInfo(x: Expr, y: Expr, w: Expr, h: Expr): YieldStmt {
             return yield_(libConstructorCall('RewriteInfo', [this.useObj(), x, y, w, h]));
         }
     }

@@ -56,10 +56,28 @@ namespace IR {
             return getOrCompute(counters, key, () => {
                 const counter = NAMES.counter(this, counters.size);
                 for(const pattern of patterns) {
-                    matcher.addMatchHandler({kind: 'counter', pattern, counter});
+                    matcher.addMatchHandler({kind: 'counter', pattern, counter, weight: 1});
                 }
                 // need to set scale to avoid overflowing the counter
                 this.scale = Math.max(this.scale, patterns.length);
+                return counter;
+            });
+        }
+        
+        public makeWeightedCounter(weights: readonly ASG.WeightedPattern[]): Expr {
+            const {counters, matcher} = this;
+            
+            const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n');
+            
+            return getOrCompute(counters, key, () => {
+                const counter = NAMES.counter(this, counters.size);
+                let totalWeight = 0;
+                for(const {pattern, weight} of weights) {
+                    matcher.addMatchHandler({kind: 'counter', pattern, counter, weight});
+                    totalWeight += weight;
+                }
+                // need to set scale to avoid overflowing the counter
+                this.scale = Math.max(this.scale, totalWeight);
                 return counter;
             });
         }

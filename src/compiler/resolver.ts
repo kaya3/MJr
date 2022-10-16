@@ -31,7 +31,7 @@ namespace Resolver {
             sample: 'const pattern.out',
             n: 'const int',
             temperature: 'float?',
-            on: 'charset.in',
+            on: 'const charset.in',
             periodic: 'const bool?',
         },
         'stmt.log': {
@@ -1257,7 +1257,45 @@ namespace Resolver {
     const STMT_RESOLVE_FUNCS: {readonly [K in AST.Statement['kind']]: StmtResolveFunc<K>} = {
         'stmt.block.markov': _resolveBlockStmt,
         'stmt.block.sequence': _resolveBlockStmt,
-        'stmt.convchain': _resolvePropsStmt,
+        'stmt.convchain': (stmt, ctx) => {
+            const {pos} = stmt;
+            if(!ctx.expectGrid(pos)) { return undefined; }
+            
+            const props = _resolveProps(stmt, ctx);
+            if(props === undefined) { return undefined; }
+            
+            const {on, sample, n, periodic = true, temperature} = props;
+            if(sample.pattern.some(c => c === PatternValue.WILDCARD || c === PatternValue.UNION)) {
+                ctx.error(`'sample' must not have wildcards or unions`, stmt.sample.pos);
+            }
+            if(n < 1 || n > sample.width || n > sample.height) {
+                ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
+                return undefined;
+            }
+            
+            const samplePatterns = IDMap.withKey(Pattern.key);
+            const sampleWeights: number[] = [];
+            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern));
+            
+            for(const symmetry of Symmetry.generate(sample, ctx.symmetryName, Pattern.rotate, Pattern.reflect, Pattern.key)) {
+                for(const p of Pattern.windowsOf(symmetry, n, periodic)) {
+                    const id = samplePatterns.getOrCreateID(p);
+                    if(id === sampleWeights.length) { sampleWeights.push(0); }
+                    ++sampleWeights[id];
+                }
+            }
+            
+            const weightMap = new Map<number, PatternTree[]>();
+            samplePatterns.forEach((p, i) => {
+                getOrCompute(weightMap, sampleWeights[i], () => []).push(p);
+            });
+            const weights = Array.from(weightMap.entries(), ([weight, v]) => ({
+                pattern: v.reduce(PatternTree.or),
+                weight,
+            }));
+            
+            return {kind: 'stmt', stmt: {kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, pos}};
+        },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));
             stmts ??= [];

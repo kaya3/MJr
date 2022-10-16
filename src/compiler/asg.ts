@@ -150,7 +150,8 @@ namespace ASG {
     export interface ConvolutionStmt extends _RulesStmtNode<'convolution', {kernel: Convolution.Kernel, boundary: Prop<'const charset.in?'>}> {}
     export interface SearchRulesStmt extends _RulesStmtNode<'search.all' | 'search.one', {temperature: Prop<'float?'>, maxStates: Prop<'int?'>, depthCoefficient: Prop<'float?'>, observations: readonly ObserveRule[]}> {}
     
-    export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, sample: Type.Value<'pattern.out'>, n: number, temperature: Prop<'float?'>, on: Prop<'charset.in'>, periodic: boolean | undefined}> {}
+    export interface WeightedPattern extends Readonly<{pattern: PatternTree, weight: number}> {}
+    export interface ConvChainStmt extends _StmtNode<'convchain', {inGrid: number, weights: readonly WeightedPattern[], output: readonly number[], temperature: Prop<'float?'>, on: Prop<'const charset.in'>}> {}
     export interface PathStmt extends _StmtNode<'path', {inGrid: number, from: Prop<'charset.in'>, to: Prop<'charset.in'>, input: Prop<'charset.in'>, output: Prop<'charset.out'>, longest: Prop<'bool?'>, inertia: Prop<'bool?'>}> {}
     
     export type NonBranchingStmt = AssignStmt | LogStmt | MapStmt | PutStmt | UseStmt

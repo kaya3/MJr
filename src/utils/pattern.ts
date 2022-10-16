@@ -250,6 +250,32 @@ class Pattern extends MJr.Pattern {
         return out;
     }
     
+    public static windowsOf(p: Pattern, n: number, periodic: boolean): Pattern[] {
+        const {width, height, alphabetKey, pattern, masks, hasUnions} = p;
+        
+        const maxX = periodic ? width - n + 1 : width;
+        const maxY = periodic ? height - n + 1 : height;
+        const out: Pattern[] = [];
+        
+        for(let y = 0; y < maxY; ++y) {
+            for(let x = 0; x < maxX; ++x) {
+                const qPattern: number[] = [];
+                const qMasks: ISet[] = [];
+                for(let dy = 0; dy < n; ++dy) {
+                    const py = (y + dy) % height;
+                    for(let dx = 0; dx < n; ++dx) {
+                        const px = (x + dx) % width;
+                        qPattern.push(pattern[px + width * py]);
+                        qMasks.push(masks[px + width * py]);
+                    }
+                }
+                out.push(new Pattern(n, n, alphabetKey, qPattern, qMasks, hasUnions));
+            }
+        }
+        
+        return out;
+    }
+    
     public static rotate(p: Pattern): Pattern {
         const {width, height, pattern, masks} = p;
         if(p.kind === 'top') {

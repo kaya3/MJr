@@ -2065,7 +2065,7 @@ var Compiler;
         'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
     ];
     // helpers
-    const { NAMES: { WIDTH, HEIGHT, PARAMS, RNG, STATE, ITERATIONS, AT, AT_X, AT_Y, AT_CONV, I, P, ANY, MATCH, }, OP, PRNG, } = IR;
+    const { NAMES: { WIDTH, HEIGHT, PARAMS, RNG, STATE, ITERATIONS, AT, AT_X, AT_Y, AT_CONV, I, P, S, OLD_S, T, OLD_T, ANY, MATCH, }, OP, PRNG, } = IR;
     /**
      * Compiles MJr source code to a high-level intermediate representation.
      */
@@ -2646,6 +2646,48 @@ var Compiler;
                 ifChanged,
             ]), then),
         ]);
+    }
+    function _stmtConvChain(c, stmt, ifChanged, then) {
+        const g = c.grids[stmt.inGrid];
+        const sampler = g.makeSampler([stmt.on]);
+        const counter = g.makeWeightedCounter(stmt.weights);
+        const output = stmt.output;
+        const temperature = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+        // TODO
+        const colourArrayName = null;
+        const matchesArrayName = null;
+        const matchesCount = null;
+        const doReset = null;
+        const setFlagToNotDoResetNextTime = null;
+        const keepProbability = null;
+        const colourArray = IR.makeConstArray(colourArrayName, output, g.grid.alphabet.key.length);
+        const matchesArray = IR.makeMutableArray(matchesArrayName, g.n, IR.INT32_ARRAY_TYPE.domainSize);
+        const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
+        const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
+        return IR.if_(doReset, IR.if_(OP.gt(matchesCount, IR.ZERO), IR.block([
+            sampler.copyInto(matchesArrayName),
+            IR.assign(matchesCount, '=', sampler.count),
+            IR.forRange(I, IR.ZERO, matchesCount, [
+                g.write(matchesArray.get(I), getRandomColour),
+            ]),
+            setFlagToNotDoResetNextTime,
+            ifChanged,
+        ]), then), IR.block([
+            IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
+            IR.forRange(I, IR.ZERO, matchesCount, [
+                g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
+                IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
+                IR.declVar(OLD_T, IR.INT_TYPE, counter),
+                g.write(AT, getRandomColour),
+                update1x1,
+                IR.if_(OP.and(OP.lt(counter, OLD_T), OP.ge(PRNG.NEXT_DOUBLE, keepProbability)), IR.block([
+                    g.write(AT, OLD_S),
+                    update1x1,
+                    IR.assign(ANY, '=', IR.TRUE),
+                ])),
+            ]),
+            IR.if_(ANY, IR.block([c.config.animate ? g.yield_() : IR.PASS, ifChanged]), then),
+        ]));
     }
     function compile(src, targetLanguage, config) {
         const ast = Parser.parse(src);
@@ -4109,7 +4151,7 @@ var Resolver;
             sample: 'const pattern.out',
             n: 'const int',
             temperature: 'float?',
-            on: 'charset.in',
+            on: 'const charset.in',
             periodic: 'const bool?',
         },
         'stmt.log': {
@@ -5327,7 +5369,45 @@ var Resolver;
     const STMT_RESOLVE_FUNCS = {
         'stmt.block.markov': _resolveBlockStmt,
         'stmt.block.sequence': _resolveBlockStmt,
-        'stmt.convchain': _resolvePropsStmt,
+        'stmt.convchain': (stmt, ctx) => {
+            const { pos } = stmt;
+            if (!ctx.expectGrid(pos)) {
+                return undefined;
+            }
+            const props = _resolveProps(stmt, ctx);
+            if (props === undefined) {
+                return undefined;
+            }
+            const { on, sample, n, periodic = true, temperature } = props;
+            if (sample.pattern.some(c => c === 255 /* PatternValue.WILDCARD */ || c === 254 /* PatternValue.UNION */)) {
+                ctx.error(`'sample' must not have wildcards or unions`, stmt.sample.pos);
+            }
+            if (n < 1 || n > sample.width || n > sample.height) {
+                ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
+                return undefined;
+            }
+            const samplePatterns = IDMap.withKey(Pattern.key);
+            const sampleWeights = [];
+            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern));
+            for (const symmetry of Symmetry.generate(sample, ctx.symmetryName, Pattern.rotate, Pattern.reflect, Pattern.key)) {
+                for (const p of Pattern.windowsOf(symmetry, n, periodic)) {
+                    const id = samplePatterns.getOrCreateID(p);
+                    if (id === sampleWeights.length) {
+                        sampleWeights.push(0);
+                    }
+                    ++sampleWeights[id];
+                }
+            }
+            const weightMap = new Map();
+            samplePatterns.forEach((p, i) => {
+                getOrCompute(weightMap, sampleWeights[i], () => []).push(p);
+            });
+            const weights = Array.from(weightMap.entries(), ([weight, v]) => ({
+                pattern: v.reduce(PatternTree.or),
+                weight,
+            }));
+            return { kind: 'stmt', stmt: { kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, pos } };
+        },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));
             stmts ??= [];
@@ -6361,10 +6441,25 @@ var IR;
             return getOrCompute(counters, key, () => {
                 const counter = IR.NAMES.counter(this, counters.size);
                 for (const pattern of patterns) {
-                    matcher.addMatchHandler({ kind: 'counter', pattern, counter });
+                    matcher.addMatchHandler({ kind: 'counter', pattern, counter, weight: 1 });
                 }
                 // need to set scale to avoid overflowing the counter
                 this.scale = Math.max(this.scale, patterns.length);
+                return counter;
+            });
+        }
+        makeWeightedCounter(weights) {
+            const { counters, matcher } = this;
+            const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n');
+            return getOrCompute(counters, key, () => {
+                const counter = IR.NAMES.counter(this, counters.size);
+                let totalWeight = 0;
+                for (const { pattern, weight } of weights) {
+                    matcher.addMatchHandler({ kind: 'counter', pattern, counter, weight });
+                    totalWeight += weight;
+                }
+                // need to set scale to avoid overflowing the counter
+                this.scale = Math.max(this.scale, totalWeight);
                 return counter;
             });
         }
@@ -6621,7 +6716,7 @@ var IR;
                     // `I - constant` allows code to be shared among consecutive match handlers
                     return h.sampler.handleMatch(f, IR.OP.addConstant(I, h.i - acceptID));
                 case 'counter':
-                    return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.ONE);
+                    return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.int(h.weight));
                 case 'convolution':
                     return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');
             }
@@ -8429,6 +8524,28 @@ class Pattern extends MJr.Pattern {
             const row = pattern.slice(offset, offset + width);
             const rowMasks = masks.slice(offset, offset + width);
             out.push(new Pattern(width, 1, p.alphabetKey, row, rowMasks, p.hasUnions));
+        }
+        return out;
+    }
+    static windowsOf(p, n, periodic) {
+        const { width, height, alphabetKey, pattern, masks, hasUnions } = p;
+        const maxX = periodic ? width - n + 1 : width;
+        const maxY = periodic ? height - n + 1 : height;
+        const out = [];
+        for (let y = 0; y < maxY; ++y) {
+            for (let x = 0; x < maxX; ++x) {
+                const qPattern = [];
+                const qMasks = [];
+                for (let dy = 0; dy < n; ++dy) {
+                    const py = (y + dy) % height;
+                    for (let dx = 0; dx < n; ++dx) {
+                        const px = (x + dx) % width;
+                        qPattern.push(pattern[px + width * py]);
+                        qMasks.push(masks[px + width * py]);
+                    }
+                }
+                out.push(new Pattern(n, n, alphabetKey, qPattern, qMasks, hasUnions));
+            }
         }
         return out;
     }

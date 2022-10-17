@@ -132,7 +132,7 @@ namespace IR {
             return this.lfsrFeedbackTerm ??= NAMES.gridVar(this, 'lfsrFeedbackTerm');
         }
         
-        public declareVars(): Stmt[] {
+        public declare(): Stmt[] {
             const {width, height, n, data, obj, buffer, origin, lfsrFeedbackTerm, grid} = this;
             const alphabetKey = grid.alphabet.key;
             const consts: VarDeclWithInitialiser[] = [];
@@ -173,6 +173,8 @@ namespace IR {
                 declVars(vars, true),
                 ...Array.from(this.convBuffers.values(), buffer => buffer.declare()),
                 ...Array.from(this.samplers.values(), sampler => sampler.declare()),
+                BLANK_LINE,
+                ...this.matcher.declareUpdateFunc(),
             ];
         }
         

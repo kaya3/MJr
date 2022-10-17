@@ -71,6 +71,10 @@ namespace Compiler {
             this.grids = asg.grids.map(g => new IR.Grid(g));
             this.flags = new IR.Flags(this.cfg.numFlags);
             this.limits = new IR.Limits(asg.limits);
+            
+            for(const g of asg.grids) {
+                if(g.periodic) { this.notSupported('periodic grid', g.pos); }
+            }
         }
         
         internLiteral(expr: IR.Expr, type: IR.IRType): IR.Expr {
@@ -92,20 +96,13 @@ namespace Compiler {
             const switchCases = nodeCompilers.map(({before, comp, after}) => IR.block([
                 before,
                 comp.compile(this),
-                after,
+                ...after,
             ]));
             
             // TODO: potentials
             
-            const gridDecls: IR.Stmt[] = [];
-            const gridUpdateDecls: IR.Stmt[] = [];
             const endGridObj = this.grids[endGridID].useObj();
-            for(const g of this.grids) {
-                if(g.grid.periodic) { this.notSupported('periodic grid', g.grid.pos); }
-                
-                gridDecls.push(...g.declareVars());
-                gridUpdateDecls.push(...g.matcher.declareUpdateFunc());
-            }
+            const gridDecls = this.grids.flatMap(g => g.declare());
             
             const mainParams: IR.NameExpr[] = [WIDTH, HEIGHT];
             const mainParamTypes: IR.IRType[] = [IR.INT_TYPE, IR.INT_TYPE];
@@ -153,10 +150,6 @@ namespace Compiler {
                 IR.BLANK_LINE,
                 
                 ...gridDecls,
-                IR.BLANK_LINE,
-                
-                ...gridUpdateDecls,
-                
                 matchesDecl,
                 ...maskDecl,
                 constDecls,
@@ -180,13 +173,13 @@ namespace Compiler {
             ]));
         }
         
-        private getStmtCompiler(node: CFG.ResetNode | CFG.BranchingStmtNode | CFG.NonBranchingStmtNode): {before: IR.Stmt, comp: StmtCompiler, after: IR.Stmt} {
+        private getStmtCompiler(node: CFG.SwitchNode): {before: IR.Stmt, comp: StmtCompiler, after: readonly IR.Stmt[]} {
             switch(node.kind) {
                 case 'reset':
                     return {
                         before: IR.comment(`reset ${node.stmt.kind} at line ${node.stmt.pos.line}, col ${node.stmt.pos.col}`),
                         comp: new Stmt_Reset(node.flagID, node.reset),
-                        after: IR.block(this.goto(node.id, node.then.nodeID)),
+                        after: this.goto(node.id, node.then.nodeID),
                     };
                 
                 case 'stmt.branching': {
@@ -204,7 +197,7 @@ namespace Compiler {
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
                         comp: new cls(stmt as never, IR.block(ifTrue), IR.block(ifFalse)),
-                        after: IR.block(eitherWay),
+                        after: eitherWay,
                     };
                 }
                 
@@ -214,7 +207,7 @@ namespace Compiler {
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
                         comp: new cls(stmt as never),
-                        after: IR.block(this.goto(node.id, node.then.nodeID)),
+                        after: this.goto(node.id, node.then.nodeID),
                     };
                 }
             }

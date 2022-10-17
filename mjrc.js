@@ -1291,6 +1291,11 @@ var Compiler;
             this.grids = asg.grids.map(g => new IR.Grid(g));
             this.flags = new IR.Flags(this.cfg.numFlags);
             this.limits = new IR.Limits(asg.limits);
+            for (const g of asg.grids) {
+                if (g.periodic) {
+                    this.notSupported('periodic grid', g.pos);
+                }
+            }
         }
         internLiteral(expr, type) {
             const id = this.internedLiterals.getOrCreateID({ expr, type });
@@ -1307,19 +1312,11 @@ var Compiler;
             const switchCases = nodeCompilers.map(({ before, comp, after }) => IR.block([
                 before,
                 comp.compile(this),
-                after,
+                ...after,
             ]));
             // TODO: potentials
-            const gridDecls = [];
-            const gridUpdateDecls = [];
             const endGridObj = this.grids[endGridID].useObj();
-            for (const g of this.grids) {
-                if (g.grid.periodic) {
-                    this.notSupported('periodic grid', g.grid.pos);
-                }
-                gridDecls.push(...g.declareVars());
-                gridUpdateDecls.push(...g.matcher.declareUpdateFunc());
-            }
+            const gridDecls = this.grids.flatMap(g => g.declare());
             const mainParams = [WIDTH, HEIGHT];
             const mainParamTypes = [IR.INT_TYPE, IR.INT_TYPE];
             if (params.size > 0) {
@@ -1346,8 +1343,6 @@ var Compiler;
                 IR.preamble(this.dictType(params), this.config.emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,
                 ...gridDecls,
-                IR.BLANK_LINE,
-                ...gridUpdateDecls,
                 matchesDecl,
                 ...maskDecl,
                 constDecls,
@@ -1370,7 +1365,7 @@ var Compiler;
                     return {
                         before: IR.comment(`reset ${node.stmt.kind} at line ${node.stmt.pos.line}, col ${node.stmt.pos.col}`),
                         comp: new Stmt_Reset(node.flagID, node.reset),
-                        after: IR.block(this.goto(node.id, node.then.nodeID)),
+                        after: this.goto(node.id, node.then.nodeID),
                     };
                 case 'stmt.branching': {
                     const ifTrue = this.goto(node.id, node.ifChanged.nodeID), ifFalse = this.goto(node.id, node.then.nodeID), eitherWay = [];
@@ -1384,7 +1379,7 @@ var Compiler;
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
                         comp: new cls(stmt, IR.block(ifTrue), IR.block(ifFalse)),
-                        after: IR.block(eitherWay),
+                        after: eitherWay,
                     };
                 }
                 case 'stmt.nonbranching': {
@@ -1393,7 +1388,7 @@ var Compiler;
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
                         comp: new cls(stmt),
-                        after: IR.block(this.goto(node.id, node.then.nodeID)),
+                        after: this.goto(node.id, node.then.nodeID),
                     };
                 }
             }
@@ -6690,7 +6685,7 @@ var IR;
         useLsfrFeedbackTerm() {
             return this.lfsrFeedbackTerm ??= IR.NAMES.gridVar(this, 'lfsrFeedbackTerm');
         }
-        declareVars() {
+        declare() {
             const { width, height, n, data, obj, buffer, origin, lfsrFeedbackTerm, grid } = this;
             const alphabetKey = grid.alphabet.key;
             const consts = [];
@@ -6725,6 +6720,8 @@ var IR;
                 IR.declVars(vars, true),
                 ...Array.from(this.convBuffers.values(), buffer => buffer.declare()),
                 ...Array.from(this.samplers.values(), sampler => sampler.declare()),
+                IR.BLANK_LINE,
+                ...this.matcher.declareUpdateFunc(),
             ];
         }
         attr(attr) {

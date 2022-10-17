@@ -1,3 +1,5 @@
+///<reference path="./ir.ts"/>
+
 namespace IR {
     export const NAMES = {
         WIDTH: nameExpr('width'),
@@ -53,8 +55,8 @@ namespace IR {
         tmpPattern(id: number): NameExpr {
             return nameExpr(`p${id}`);
         },
-        variable(v: string, n: number): NameExpr {
-            return nameExpr(n > 0 ? `_${v}_${n}` : `_${v}`);
+        variable(v: ASG.FormalVariable): NameExpr {
+            return nameExpr(`_${v.uniqueName}`);
         },
         
         convBufferVar(g: Grid, id: number, v: ConvBufferVar): NameExpr {

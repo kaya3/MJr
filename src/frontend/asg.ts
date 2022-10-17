@@ -53,6 +53,7 @@ namespace ASG {
     export interface FormalVariable extends Readonly<{
         id: number,
         name: string,
+        uniqueName: string,
         type: Type.Type,
         flags: ExprFlags,
         initialiser: Expression | undefined,
@@ -116,7 +117,7 @@ namespace ASG {
     export interface DictExpr extends _ExprNode<'dict', {type: Type.OfKind<'dict'>, entryExprs: ReadonlyMap<string, Expression>}> {}
     export interface KeywordNameExpr extends _ExprNode<'name.keyword', {name: AST.KeywordName}> {}
     export interface ParamExpr extends _ExprNode<'param', {name: string, otherwise: Expression}> {}
-    export interface SimpleNameExpr extends _ExprNode<'name.simple', {variableID: number}> {}
+    export interface SimpleNameExpr extends _ExprNode<'name.simple', {variable: ASG.FormalVariable}> {}
     
     export interface DeclarationExpr extends _ExprNode<'decl', {decl: AssignStmt, child: Expression}> {}
     

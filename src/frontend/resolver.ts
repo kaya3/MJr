@@ -147,6 +147,7 @@ namespace Resolver {
             potentials: [],
             variables: [],
         };
+        private readonly uniqueVariableNames = new Set<string>();
         
         public reset: BlockReset | undefined = undefined;
         public symmetryName: Symmetry.SymmetryName = 'all';
@@ -270,9 +271,16 @@ namespace Resolver {
                 this.error(`cannot redeclare parameter '${name}'`, pos);
             }
             
+            const {uniqueVariableNames} = this;
+            let uniqueName = name, i = 1;
+            while(uniqueVariableNames.has(uniqueName)) {
+                uniqueName = `${name}_${++i}`;
+            }
+            uniqueVariableNames.add(uniqueName);
+            
             if(isParam) { this.globals.params.set(name, type); }
             flags |= ExprFlags.LOCALLY_DETERMINISTIC | ExprFlags.POSITION_INDEPENDENT | ExprFlags.GRID_INDEPENDENT;
-            return withNextID(this.globals.variables, {name, type, initialiser, flags, references: 0});
+            return withNextID(this.globals.variables, {name, uniqueName, type, initialiser, flags, references: 0});
         }
         
         withOutGrid<T>(outGrid: FormalGrid, inputPatternPos: SourcePosition, f: () => T): T | undefined {
@@ -1064,12 +1072,12 @@ namespace Resolver {
             const variable = ctx.variables.get(name);
             if(variable === undefined) { ctx.error(`no such variable '${name}'`, pos); return undefined; }
             
-            const {id: variableID, type, initialiser} = variable;
+            const {type, initialiser} = variable;
             if(initialiser !== undefined && initialiser.kind === 'expr.constant') {
                 return _makeConstantExpr(type, initialiser.constant.value, pos);
             } else {
                 ++variable.references;
-                return {kind: 'expr.name.simple', type, flags: variable.flags, variableID, pos};
+                return {kind: 'expr.name.simple', type, flags: variable.flags, variable, pos};
             }
         },
         'expr.op.binary': (expr, ctx) => {

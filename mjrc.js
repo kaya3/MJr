@@ -232,9 +232,9 @@ var IR;
             // omit redundant `if` statement guarding a `for` loop
             return then;
         }
-        else if (then.kind === 'stmt.if' && otherwise === undefined && then.otherwise === undefined) {
-            // collapse nested `if` statements
-            return if_(IR.OP.and(condition, then.condition), then.then);
+        else if (then.kind === 'stmt.if' && equals(otherwise, then.otherwise)) {
+            // replace `if(c1) { if(c2) A else B } else B` with `if(c1 && c2) A else B`
+            return if_(IR.OP.and(condition, then.condition), then.then, otherwise);
         }
         else {
             return { kind: 'stmt.if', condition, then, otherwise };
@@ -924,12 +924,12 @@ var Compiler;
             case 'dict': {
                 const type = c.dictType(constant.type.entryTypes);
                 const values = Array.from(type.keys, k => compileLiteral(c, constant.value.get(k), pos));
-                return c.internLiteral(IR.dict(type, values), type);
+                return c.constants.intern(IR.dict(type, values), type);
             }
             case 'fraction': {
                 const expr = OP.fraction(IR.int(constant.value.p), IR.int(constant.value.q));
                 c.opsUsed.add(expr.op);
-                return c.internLiteral(expr, IR.FRACTION_TYPE);
+                return c.constants.intern(expr, IR.FRACTION_TYPE);
             }
             case 'grid': {
                 return c.grids[constant.value].useObj();
@@ -941,12 +941,12 @@ var Compiler;
             case 'pattern.out': {
                 const { width, height, pattern } = constant.value;
                 const patternExpr = IR.constArray(pattern, Math.max(...pattern) + 1, width);
-                return c.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
+                return c.constants.intern(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
             }
             case 'position': {
                 const { x, y, inGrid } = constant.value;
                 const g = c.grids[inGrid];
-                return c.internLiteral(g.checkedIndex(IR.int(x), IR.int(y)), IR.INT_TYPE);
+                return c.constants.intern(g.checkedIndex(IR.int(x), IR.int(y)), IR.INT_TYPE);
             }
         }
     }
@@ -1277,11 +1277,12 @@ var Compiler;
         opsUsed = new Set(ALWAYS_USED_OPS);
         cfg;
         switchNodes;
-        internedLiterals = IDMap.withKey(entry => IR.key(entry.expr));
-        grids;
-        mask = new IR.Mask();
+        nodeCompilers = new Map();
+        constants = new IR.Constants();
         flags;
+        grids;
         limits;
+        mask = new IR.Mask();
         matches = new IR.MatchesArray();
         constructor(asg, config) {
             this.asg = asg;
@@ -1296,10 +1297,6 @@ var Compiler;
                     this.notSupported('periodic grid', g.pos);
                 }
             }
-        }
-        internLiteral(expr, type) {
-            const id = this.internedLiterals.getOrCreateID({ expr, type });
-            return IR.NAMES.constant(id);
         }
         notSupported(s, pos) {
             this.diagnostics.compilationError(`${s} is not currently supported`, pos);
@@ -1330,17 +1327,18 @@ var Compiler;
             mainParams.push(RNG);
             mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
             // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
-            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({ name: IR.NAMES.constant(i), type: s.type, initialiser: s.expr }))), varDecls = Compiler.declareASGVariables(this, this.asg.variables), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this);
+            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this);
             // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
             // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
             // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
             const maxScale = Math.max(this.matches.scale, ...this.grids.map(g => g.getScale()));
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
-            const { maxIterations } = this.config;
-            return IR.declFunc(IR.nameExpr(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+            const checkDims = IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`)));
+            const { animate, emitChecks, entryPointName, maxIterations } = this.config;
+            return IR.declFunc(IR.nameExpr(entryPointName), animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${Compiler.COMPILER_VERSION} on ${date}`),
-                this.config.emitChecks ? IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`))) : IR.PASS,
-                IR.preamble(this.dictType(params), this.config.emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
+                emitChecks ? checkDims : IR.PASS,
+                IR.preamble(this.dictType(params), emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,
                 ...gridDecls,
                 matchesDecl,
@@ -1361,12 +1359,14 @@ var Compiler;
         }
         getStmtCompiler(node) {
             switch (node.kind) {
-                case 'reset':
+                case 'reset': {
+                    const { stmt } = node;
                     return {
-                        before: IR.comment(`reset ${node.stmt.kind} at line ${node.stmt.pos.line}, col ${node.stmt.pos.col}`),
-                        comp: new Stmt_Reset(node.flagID, node.reset),
+                        before: IR.comment(`reset ${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
+                        comp: new Stmt_Reset(node),
                         after: this.goto(node.id, node.then.nodeID),
                     };
+                }
                 case 'stmt.branching': {
                     const ifTrue = this.goto(node.id, node.ifChanged.nodeID), ifFalse = this.goto(node.id, node.then.nodeID), eitherWay = [];
                     while (ifTrue.length > 0 && ifFalse.length > 0 && IR.equals(ifTrue[ifTrue.length - 1], ifFalse[ifFalse.length - 1])) {
@@ -1376,18 +1376,22 @@ var Compiler;
                     }
                     const { stmt } = node;
                     const cls = STMT_COMPILERS[stmt.kind];
+                    const comp = new cls(stmt, IR.block(ifTrue), IR.block(ifFalse));
+                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp: new cls(stmt, IR.block(ifTrue), IR.block(ifFalse)),
+                        comp,
                         after: eitherWay,
                     };
                 }
                 case 'stmt.nonbranching': {
                     const { stmt } = node;
                     const cls = STMT_COMPILERS[stmt.kind];
+                    const comp = new cls(stmt);
+                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp: new cls(stmt),
+                        comp,
                         after: this.goto(node.id, node.then.nodeID),
                     };
                 }
@@ -1413,7 +1417,7 @@ var Compiler;
             let cur;
             while (true) {
                 cur = nodes[toNodeID];
-                if (cur.kind === 'stmt.branching' || cur.kind === 'stmt.nonbranching' || (cur.kind === 'reset' && cur.reset !== undefined) || cur.kind === 'stop') {
+                if (cur.kind === 'stmt.branching' || cur.kind === 'stmt.nonbranching' || (cur.kind === 'reset' && cur.stmt.anyResets) || cur.kind === 'stop') {
                     break;
                 }
                 else if (cur.kind === 'checklimit') {
@@ -1473,19 +1477,23 @@ var Compiler;
         str: IR.STR_TYPE,
     };
     class Stmt_Reset {
-        flagID;
-        reset;
-        constructor(flagID, reset) {
-            this.flagID = flagID;
-            this.reset = reset;
+        node;
+        constructor(node) {
+            this.node = node;
         }
         compile(c) {
-            const { reset } = this;
-            const out = [];
-            if (reset !== undefined) {
-                out.push(...reset.limitIDs.map(limitID => c.limits.reset(limitID, c)));
+            const { node } = this;
+            const out = [c.flags.clear(node.flagID)];
+            for (const childID of node.childIDs) {
+                const comp = c.nodeCompilers.get(childID);
+                const r = comp?.compileReset?.(c);
+                if (r !== undefined) {
+                    out.push(r);
+                }
             }
-            out.push(c.flags.clear(this.flagID));
+            for (const limitID of node.limitIDs) {
+                out.push(c.limits.reset(limitID, c));
+            }
             return IR.block(out);
         }
     }
@@ -2802,12 +2810,18 @@ var CFG;
     class CFGBuilder {
         animate;
         nodes = [];
+        childIDs = undefined;
+        limitIDs = undefined;
         numFlags = 0;
         constructor(animate) {
             this.animate = animate;
         }
         makeNode(partialNode) {
-            return withNextID(this.nodes, partialNode);
+            const node = withNextID(this.nodes, partialNode);
+            if (node.kind === 'stmt.branching' || node.kind === 'stmt.nonbranching') {
+                this.childIDs?.push(node.id);
+            }
+            return node;
         }
         buildBlock(stmt, flagID, then) {
             const { kind, children } = stmt;
@@ -2832,15 +2846,23 @@ var CFG;
                     if (stmt.children.length === 0) {
                         return this.makeNode({ kind: 'pass', then });
                     }
-                    else if (stmt.kind === 'stmt.block.markov' && parentKind === 'stmt.block.sequence' && stmt.reset === undefined) {
+                    else if (stmt.kind === 'stmt.block.markov' && parentKind === 'stmt.block.sequence' && !stmt.anyResets) {
                         // optimisation: don't need a separate reset node for this
                         return this.buildBlock(stmt, parentFlagID, then);
                     }
                     const flagID = this.numFlags++;
                     const beginLabel = newLabel();
                     const endLabel = newLabel();
-                    const begin = this.makeNode({ kind: 'reset', stmt, flagID, reset: stmt.reset, then: beginLabel });
+                    const childIDs = [];
+                    const limitIDs = [];
+                    const begin = this.makeNode({ kind: 'reset', stmt, flagID, childIDs, limitIDs, then: beginLabel });
+                    const oldChildIDs = this.childIDs;
+                    const oldLimitIDs = this.limitIDs;
+                    this.childIDs = childIDs;
+                    this.limitIDs = limitIDs;
                     beginLabel.nodeID = this.buildBlock(stmt, flagID, endLabel).id;
+                    this.childIDs = oldChildIDs;
+                    this.limitIDs = oldLimitIDs;
                     if (parentFlagID >= 0) {
                         const setFlagLabel = newLabel();
                         endLabel.nodeID = this.makeNode({ kind: 'checkflag', flagID, ifTrue: setFlagLabel, then }).id;
@@ -2858,6 +2880,7 @@ var CFG;
                         return this.buildChild(stmt.child, parentKind, parentFlagID, then, then);
                     }
                     const limitID = limit.id;
+                    this.limitIDs?.push(limitID);
                     const childLabel = newLabel(), decrementLimitLabel = newLabel();
                     const r = this.makeNode({ kind: 'checklimit', limitID, ifTrue: childLabel, then });
                     childLabel.nodeID = this.buildChild(stmt.child, parentKind, parentFlagID, decrementLimitLabel, then).id;
@@ -4403,7 +4426,7 @@ var Resolver;
             variables: [],
         };
         uniqueVariableNames = new Set();
-        reset = undefined;
+        parentKind = undefined;
         symmetryName = 'all';
         variables = new Map();
         errorVariables = new Set();
@@ -4416,7 +4439,7 @@ var Resolver;
         rewriteScaleY = FRACTION_ONE;
         resolveRoot(root) {
             const children = this.resolveStmts(root.stmts, false);
-            return { kind: 'stmt.block.sequence', children, reset: undefined, pos: root.pos };
+            return { kind: 'stmt.block.sequence', children, anyResets: false, pos: root.pos };
         }
         resolveDecl(node, callback) {
             const f = DECL_RESOLVE_FUNCS[node.kind];
@@ -4497,15 +4520,14 @@ var Resolver;
             this.error(`expected ${quoteJoin(expected, ' | ')}, was '${Type.toStr(expr.type)}'`, expr.pos);
         }
         makeLimit(initialiser) {
-            const { reset } = this;
-            const canReset = reset !== undefined;
-            const isTransparent = (!canReset || reset.kind === 'stmt.block.sequence')
+            const { parentKind } = this;
+            const canReset = parentKind !== undefined;
+            const isTransparent = (!canReset || parentKind === 'stmt.block.sequence')
                 && initialiser.kind === 'expr.constant'
                 && initialiser.constant.value === 1;
             let limit = { id: -1, initialiser, canReset, isTransparent };
             if (!isTransparent) {
                 limit = withNextID(this.globals.limits, limit);
-                this.reset?.limitIDs.push(limit.id);
             }
             return limit;
         }
@@ -5097,20 +5119,27 @@ var Resolver;
         }
         return { rules };
     }
-    function _resetIsTrivial(reset) {
-        return reset === undefined || reset.limitIDs.length === 0;
+    function _needsReset(stmt) {
+        switch (stmt.kind) {
+            case 'stmt.convchain':
+                return true;
+            case 'stmt.modified.limit':
+                return !stmt.limit.isTransparent || _needsReset(stmt.child);
+            default:
+                return false;
+        }
     }
     function _resolveBlockStmt(stmt, ctx, canReset) {
         const { kind, pos } = stmt;
-        const oldReset = ctx.reset;
-        const reset = canReset ? { kind, limitIDs: [] } : undefined;
-        ctx.reset = reset;
+        const oldParentKind = ctx.parentKind;
+        ctx.parentKind = stmt.kind;
         const children = ctx.resolveStmts(stmt.children, true);
-        ctx.reset = oldReset;
+        ctx.parentKind = oldParentKind;
+        const anyResets = canReset && children.some(_needsReset);
         if (children.length === 0) {
             return undefined;
         }
-        return { kind: 'stmt', stmt: { kind, children, reset: _resetIsTrivial(reset) ? undefined : reset, pos } };
+        return { kind: 'stmt', stmt: { kind, children, anyResets, pos } };
     }
     function _resolvePropsStmt(stmt, ctx) {
         if (!ctx.expectGrid(stmt.pos)) {
@@ -6326,6 +6355,32 @@ var IR;
         };
     }
     IR.makeMutableArray2D = makeMutableArray2D;
+})(IR || (IR = {}));
+var IR;
+(function (IR) {
+    class Constants {
+        names = [];
+        types = [];
+        interned = IDMap.withKey(IR.key);
+        intern(expr, type) {
+            const { names, types, interned } = this;
+            const id = interned.getOrCreateID(expr);
+            if (id >= names.length) {
+                names.push(IR.NAMES.constant(id));
+                types.push(type);
+            }
+            return names[id];
+        }
+        declare() {
+            const { names, types, interned } = this;
+            return IR.declVars(interned.map((expr, i) => ({
+                name: names[i],
+                type: types[i],
+                initialiser: expr,
+            })));
+        }
+    }
+    IR.Constants = Constants;
 })(IR || (IR = {}));
 ///<reference path="./names.ts"/>
 var IR;

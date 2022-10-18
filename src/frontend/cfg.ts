@@ -25,7 +25,7 @@ namespace CFG {
     interface DecrementLimitNode extends _Node<'decrementlimit', {limitID: number, then: JumpLabel}> {}
     interface SetFlagNode extends _Node<'setflag', {flagID: number, then: JumpLabel}> {}
     interface PassNode extends _Node<'pass', {then: JumpLabel}> {}
-    export interface ResetNode extends _Node<'reset', {stmt: ASG.BlockStmt, flagID: number, reset: ASG.BlockReset | undefined, then: JumpLabel}> {}
+    export interface ResetNode extends _Node<'reset', {stmt: ASG.BlockStmt, flagID: number, childIDs: readonly number[], limitIDs: readonly number[], then: JumpLabel}> {}
     export interface BranchingStmtNode extends _Node<'stmt.branching', {stmt: ASG.BranchingStmt, ifChanged: JumpLabel, then: JumpLabel}> {}
     export interface NonBranchingStmtNode extends _Node<'stmt.nonbranching', {stmt: ASG.NonBranchingStmt, then: JumpLabel}> {}
     interface StopNode extends _Node<'stop', {}> {}
@@ -34,12 +34,18 @@ namespace CFG {
     
     class CFGBuilder implements CFG {
         readonly nodes: Node[] = [];
+        private childIDs: number[] | undefined = undefined;
+        private limitIDs: number[] | undefined = undefined;
         numFlags = 0;
         
         constructor(readonly animate: boolean) {}
         
         makeNode<K extends Kind>(partialNode: {kind: K} & Omit<NodeOfKind<K>, 'id'>): Node {
-            return withNextID(this.nodes, partialNode);
+            const node = withNextID(this.nodes, partialNode);
+            if(node.kind === 'stmt.branching' || node.kind === 'stmt.nonbranching') {
+                this.childIDs?.push(node.id);
+            }
+            return node;
         }
         
         buildBlock(stmt: ASG.BlockStmt, flagID: number, then: JumpLabel): Node {
@@ -68,7 +74,7 @@ namespace CFG {
                 case 'stmt.block.sequence': {
                     if(stmt.children.length === 0) {
                         return this.makeNode({kind: 'pass', then});
-                    } else if(stmt.kind === 'stmt.block.markov' && parentKind === 'stmt.block.sequence' && stmt.reset === undefined) {
+                    } else if(stmt.kind === 'stmt.block.markov' && parentKind === 'stmt.block.sequence' && !stmt.anyResets) {
                         // optimisation: don't need a separate reset node for this
                         return this.buildBlock(stmt, parentFlagID, then);
                     }
@@ -76,8 +82,18 @@ namespace CFG {
                     const flagID = this.numFlags++;
                     const beginLabel = newLabel();
                     const endLabel = newLabel();
-                    const begin = this.makeNode({kind: 'reset', stmt, flagID, reset: stmt.reset, then: beginLabel});
+                    const childIDs: number[] = [];
+                    const limitIDs: number[] = [];
+                    const begin = this.makeNode({kind: 'reset', stmt, flagID, childIDs, limitIDs, then: beginLabel});
+                    
+                    const oldChildIDs = this.childIDs;
+                    const oldLimitIDs = this.limitIDs;
+                    this.childIDs = childIDs;
+                    this.limitIDs = limitIDs;
                     beginLabel.nodeID = this.buildBlock(stmt, flagID, endLabel).id;
+                    this.childIDs = oldChildIDs;
+                    this.limitIDs = oldLimitIDs;
+                    
                     if(parentFlagID >= 0) {
                         const setFlagLabel = newLabel();
                         endLabel.nodeID = this.makeNode({kind: 'checkflag', flagID, ifTrue: setFlagLabel, then}).id;
@@ -95,6 +111,7 @@ namespace CFG {
                         return this.buildChild(stmt.child, parentKind, parentFlagID, then, then);
                     }
                     const limitID = limit.id;
+                    this.limitIDs?.push(limitID);
                     
                     const childLabel = newLabel(), decrementLimitLabel = newLabel();
                     const r = this.makeNode({kind: 'checklimit', limitID, ifTrue: childLabel, then});

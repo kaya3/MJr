@@ -269,9 +269,9 @@ namespace IR {
         } else if(then.kind === 'stmt.for.range' && then.low === ZERO && (equals(condition, OP.gt(then.high, ZERO)) || equals(condition, OP.lt(ZERO, then.high))) && otherwise === undefined) {
             // omit redundant `if` statement guarding a `for` loop
             return then;
-        } else if(then.kind === 'stmt.if' && otherwise === undefined && then.otherwise === undefined) {
-            // collapse nested `if` statements
-            return if_(OP.and(condition, then.condition), then.then);
+        } else if(then.kind === 'stmt.if' && equals(otherwise, then.otherwise)) {
+            // replace `if(c1) { if(c2) A else B } else B` with `if(c1 && c2) A else B`
+            return if_(OP.and(condition, then.condition), then.then, otherwise);
         } else {
             return {kind: 'stmt.if', condition, then, otherwise};
         }

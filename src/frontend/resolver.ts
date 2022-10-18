@@ -89,11 +89,6 @@ namespace Resolver {
     type RuleResolveFunc<K extends AST.Rule['kind']> = (node: AST.Node & {kind: K}, ctx: GridContext, outGrid: FormalGrid) => RuleResolveResult
     type StmtResolveFunc<K extends AST.Statement['kind']> = (node: AST.Node & {kind: K}, ctx: Context, canReset: boolean) => StmtResolveResult<K>
     
-    type BlockReset = Readonly<{
-        kind: ASG.BlockStmt['kind'],
-        limitIDs: number[],
-    }>
-    
     interface GlobalDeclarations extends Readonly<{
         grids: FormalGrid[],
         limits: ASG.FormalLimit[],
@@ -149,7 +144,7 @@ namespace Resolver {
         };
         private readonly uniqueVariableNames = new Set<string>();
         
-        public reset: BlockReset | undefined = undefined;
+        public parentKind: ASG.BlockStmt['kind'] | undefined = undefined;
         public symmetryName: Symmetry.SymmetryName = 'all';
         public readonly variables = new Map<string, FormalVariable>();
         public readonly errorVariables = new Set<string>();
@@ -164,7 +159,7 @@ namespace Resolver {
         
         resolveRoot(root: AST.CompilationUnit): ASG.SequenceStmt {
             const children = this.resolveStmts(root.stmts, false);
-            return {kind: 'stmt.block.sequence', children, reset: undefined, pos: root.pos};
+            return {kind: 'stmt.block.sequence', children, anyResets: false, pos: root.pos};
         }
         
         resolveDecl<K extends AST.Declaration['kind'], T>(node: AST.Declaration & {kind: K}, callback: () => T): DeclResolveResult<T> {
@@ -251,15 +246,14 @@ namespace Resolver {
         }
         
         makeLimit(initialiser: ASG.Prop<'int'>): ASG.FormalLimit {
-            const {reset} = this;
-            const canReset = reset !== undefined;
-            const isTransparent = (!canReset || reset.kind === 'stmt.block.sequence')
+            const {parentKind} = this;
+            const canReset = parentKind !== undefined;
+            const isTransparent = (!canReset || parentKind === 'stmt.block.sequence')
                 && initialiser.kind === 'expr.constant'
                 && initialiser.constant.value === 1;
             let limit: ASG.FormalLimit = {id: -1, initialiser, canReset, isTransparent};
             if(!isTransparent) {
                 limit = withNextID(this.globals.limits, limit);
-                this.reset?.limitIDs.push(limit.id);
             }
             return limit;
         }
@@ -840,21 +834,29 @@ namespace Resolver {
         return {rules};
     }
     
-    function _resetIsTrivial(reset: BlockReset | undefined): boolean {
-        return reset === undefined || reset.limitIDs.length === 0;
+    function _needsReset(stmt: ASG.Statement): boolean {
+        switch(stmt.kind) {
+            case 'stmt.convchain':
+                return true;
+            case 'stmt.modified.limit':
+                return !stmt.limit.isTransparent || _needsReset(stmt.child);
+            default:
+                return false;
+        }
     }
+    
     function _resolveBlockStmt(stmt: AST.BlockStmt, ctx: Context, canReset: boolean): StmtResolveResult<AST.BlockStmt['kind']> {
         const {kind, pos} = stmt;
         
-        const oldReset = ctx.reset;
-        const reset: BlockReset | undefined = canReset ? {kind, limitIDs: []} : undefined;
-        
-        ctx.reset = reset;
+        const oldParentKind = ctx.parentKind;
+        ctx.parentKind = stmt.kind;
         const children = ctx.resolveStmts(stmt.children, true);
-        ctx.reset = oldReset;
+        ctx.parentKind = oldParentKind;
+        
+        const anyResets = canReset && children.some(_needsReset);
         
         if(children.length === 0) { return undefined; }
-        return {kind: 'stmt', stmt: {kind, children, reset: _resetIsTrivial(reset) ? undefined : reset, pos}};
+        return {kind: 'stmt', stmt: {kind, children, anyResets, pos}};
     }
     function _resolvePropsStmt<T extends AST.Node, K extends keyof PropTypesMap>(stmt: T & {kind: K} & ASTProps<K>, ctx: Context): {kind: 'stmt', stmt: {kind: K, inGrid: number, pos: SourcePosition} & ResolvedProps<K>} | undefined {
         if(!ctx.expectGrid(stmt.pos)) { return undefined; }

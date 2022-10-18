@@ -130,12 +130,8 @@ namespace ASG {
     // statements
     type _StmtNode<K extends string, T> = _Node<`stmt.${K}`, T>
     
-    export interface BlockReset extends Readonly<{
-        limitIDs: readonly number[],
-    }> {}
-    
     export type BlockStmt = MarkovStmt | SequenceStmt
-    type _BlockStmtNode<K extends string> = _StmtNode<`block.${K}`, {children: readonly Statement[], reset: BlockReset | undefined}>
+    type _BlockStmtNode<K extends string> = _StmtNode<`block.${K}`, {children: readonly Statement[], anyResets: boolean}>
     export interface MarkovStmt extends _BlockStmtNode<'markov'> {}
     export interface SequenceStmt extends _BlockStmtNode<'sequence'> {}
     

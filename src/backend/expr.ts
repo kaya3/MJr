@@ -11,11 +11,6 @@ namespace Compiler {
         PRNG,
     } = IR;
     
-    export interface Compiler {
-        internLiteral(expr: IR.Expr, type: IR.IRType): IR.Expr;
-        dictType(entryTypes: ReadonlyMap<string, Type.Type>): IR.DictType;
-    }
-    
     export function compileExpr(c: Compiler, expr: ASG.Expression): IR.Expr {
         switch(expr.kind) {
             case 'expr.attr.dict':
@@ -126,12 +121,12 @@ namespace Compiler {
             case 'dict': {
                 const type = c.dictType(constant.type.entryTypes);
                 const values = Array.from(type.keys, k => compileLiteral(c, constant.value.get(k)!, pos));
-                return c.internLiteral(IR.dict(type, values), type);
+                return c.constants.intern(IR.dict(type, values), type);
             }
             case 'fraction': {
                 const expr = OP.fraction(IR.int(constant.value.p), IR.int(constant.value.q));
                 c.opsUsed.add(expr.op);
-                return c.internLiteral(expr, IR.FRACTION_TYPE);
+                return c.constants.intern(expr, IR.FRACTION_TYPE);
             }
             case 'grid': {
                 return c.grids[constant.value].useObj();
@@ -143,12 +138,12 @@ namespace Compiler {
             case 'pattern.out': {
                 const {width, height, pattern} = constant.value;
                 const patternExpr = IR.constArray(pattern, Math.max(...pattern) + 1, width);
-                return c.internLiteral(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
+                return c.constants.intern(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
             }
             case 'position': {
                 const {x, y, inGrid} = constant.value;
                 const g = c.grids[inGrid];
-                return c.internLiteral(g.checkedIndex(IR.int(x), IR.int(y)), IR.INT_TYPE);
+                return c.constants.intern(g.checkedIndex(IR.int(x), IR.int(y)), IR.INT_TYPE);
             }
         }
     }

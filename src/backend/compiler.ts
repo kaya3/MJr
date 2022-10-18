@@ -34,8 +34,10 @@ namespace Compiler {
     export interface Compiler extends IR.IRCompiler {
         readonly config: Config;
         readonly diagnostics: Diagnostics;
+        readonly nodeCompilers: ReadonlyMap<number, StmtCompiler>;
         readonly opsUsed: Set<IR.Op>;
         
+        readonly constants: IR.Constants;
         readonly flags: IR.Flags;
         readonly grids: readonly IR.Grid[];
         readonly limits: IR.Limits;
@@ -43,6 +45,7 @@ namespace Compiler {
         readonly matches: IR.MatchesArray;
         
         notSupported(msg: string, pos: SourcePosition): void;
+        dictType(entryTypes: ReadonlyMap<string, Type.Type>): IR.DictType;
     }
     
     /**
@@ -54,12 +57,13 @@ namespace Compiler {
         
         private readonly cfg: CFG.CFG;
         private readonly switchNodes: ReadonlyIDMap<CFG.SwitchNode>;
-        readonly internedLiterals = IDMap.withKey<{expr: IR.Expr, type: IR.IRType}>(entry => IR.key(entry.expr));
+        readonly nodeCompilers = new Map<number, StmtCompiler>();
         
-        readonly grids: readonly IR.Grid[];
-        readonly mask = new IR.Mask();
+        readonly constants = new IR.Constants();
         readonly flags: IR.Flags;
+        readonly grids: readonly IR.Grid[];
         readonly limits: IR.Limits;
+        readonly mask = new IR.Mask();
         readonly matches = new IR.MatchesArray();
         
         constructor(
@@ -75,11 +79,6 @@ namespace Compiler {
             for(const g of asg.grids) {
                 if(g.periodic) { this.notSupported('periodic grid', g.pos); }
             }
-        }
-        
-        internLiteral(expr: IR.Expr, type: IR.IRType): IR.Expr {
-            const id = this.internedLiterals.getOrCreateID({expr, type});
-            return IR.NAMES.constant(id);
         }
         
         notSupported(s: string, pos: SourcePosition): void {
@@ -120,7 +119,7 @@ namespace Compiler {
             // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
             const matchesDecl = this.matches.declare(),
                 maskDecl = this.mask.declare(),
-                constDecls = IR.declVars(this.internedLiterals.map((s, i) => ({name: IR.NAMES.constant(i), type: s.type, initialiser: s.expr}))),
+                constDecls = this.constants.declare(),
                 varDecls = declareASGVariables(this, this.asg.variables),
                 flagDecls = this.flags.declare(),
                 limitDecls = this.limits.declare(this);
@@ -133,20 +132,21 @@ namespace Compiler {
                 ...this.grids.map(g => g.getScale()),
             );
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
-            const {maxIterations} = this.config;
+            const checkDims = IR.if_(
+                OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)),
+                IR.throw_('Grid dimensions must be positive'),
+                IR.if_(
+                    OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)),
+                    IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`),
+                ),
+            );
             
-            return IR.declFunc(IR.nameExpr(this.config.entryPointName), this.config.animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+            const {animate, emitChecks, entryPointName, maxIterations} = this.config;
+            return IR.declFunc(IR.nameExpr(entryPointName), animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
                 IR.comment(`compiled by mjrc-${COMPILER_VERSION} on ${date}`),
-                this.config.emitChecks ? IR.if_(
-                    OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)),
-                    IR.throw_('Grid dimensions must be positive'),
-                    IR.if_(
-                        OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)),
-                        IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`),
-                    ),
-                ) : IR.PASS,
+                emitChecks ? checkDims : IR.PASS,
                 
-                IR.preamble(this.dictType(params), this.config.emitChecks, REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
+                IR.preamble(this.dictType(params), emitChecks, REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,
                 
                 ...gridDecls,
@@ -175,12 +175,14 @@ namespace Compiler {
         
         private getStmtCompiler(node: CFG.SwitchNode): {before: IR.Stmt, comp: StmtCompiler, after: readonly IR.Stmt[]} {
             switch(node.kind) {
-                case 'reset':
+                case 'reset': {
+                    const {stmt} = node;
                     return {
-                        before: IR.comment(`reset ${node.stmt.kind} at line ${node.stmt.pos.line}, col ${node.stmt.pos.col}`),
-                        comp: new Stmt_Reset(node.flagID, node.reset),
+                        before: IR.comment(`reset ${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
+                        comp: new Stmt_Reset(node),
                         after: this.goto(node.id, node.then.nodeID),
                     };
+                }
                 
                 case 'stmt.branching': {
                     const ifTrue = this.goto(node.id, node.ifChanged.nodeID),
@@ -194,9 +196,11 @@ namespace Compiler {
                     
                     const {stmt} = node;
                     const cls = STMT_COMPILERS[stmt.kind];
+                    const comp = new cls(stmt as never, IR.block(ifTrue), IR.block(ifFalse));
+                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp: new cls(stmt as never, IR.block(ifTrue), IR.block(ifFalse)),
+                        comp,
                         after: eitherWay,
                     };
                 }
@@ -204,9 +208,11 @@ namespace Compiler {
                 case 'stmt.nonbranching': {
                     const {stmt} = node;
                     const cls = STMT_COMPILERS[stmt.kind];
+                    const comp = new cls(stmt as never);
+                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp: new cls(stmt as never),
+                        comp,
                         after: this.goto(node.id, node.then.nodeID),
                     };
                 }
@@ -236,7 +242,7 @@ namespace Compiler {
             let cur: CFG.Node | undefined;
             while(true) {
                 cur = nodes[toNodeID];
-                if(cur.kind === 'stmt.branching' || cur.kind === 'stmt.nonbranching' || (cur.kind === 'reset' && cur.reset !== undefined) || cur.kind === 'stop') {
+                if(cur.kind === 'stmt.branching' || cur.kind === 'stmt.nonbranching' || (cur.kind === 'reset' && cur.stmt.anyResets) || cur.kind === 'stop') {
                     break;
                 } else if(cur.kind === 'checklimit') {
                     if(initial) { toNodeID = cur.ifTrue.nodeID; continue; }
@@ -293,17 +299,18 @@ namespace Compiler {
     }
     
     class Stmt_Reset implements StmtCompiler {
-        constructor(
-            readonly flagID: number,
-            readonly reset: ASG.BlockReset | undefined,
-        ) {}
+        constructor(readonly node: CFG.ResetNode) {}
         compile(c: Compiler): IR.Stmt {
-            const {reset} = this;
-            const out: IR.Stmt[] = [];
-            if(reset !== undefined) {
-                out.push(...reset.limitIDs.map(limitID => c.limits.reset(limitID, c)));
+            const {node} = this;
+            const out: IR.Stmt[] = [c.flags.clear(node.flagID)];
+            for(const childID of node.childIDs) {
+                const comp = c.nodeCompilers.get(childID);
+                const r = comp?.compileReset?.(c);
+                if(r !== undefined) { out.push(r); }
             }
-            out.push(c.flags.clear(this.flagID));
+            for(const limitID of node.limitIDs) {
+                out.push(c.limits.reset(limitID, c));
+            }
             return IR.block(out);
         }
     }

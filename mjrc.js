@@ -1414,8 +1414,18 @@ var Compiler;
             ]));
         }
         getStmtCompiler(node) {
-            return getOrCompute(this.nodeCompilers, node.id, () => node.kind === 'reset' ? new Stmt_Reset(node)
-                : new STMT_COMPILERS[node.stmt.kind](node.stmt, node.id, this));
+            return getOrCompute(this.nodeCompilers, node.id, () => {
+                if (node.kind === 'reset') {
+                    const { nodes } = this.cfg;
+                    return new Compiler.Stmt_Reset(node.flagID, node.childIDs.map(id => {
+                        const node = nodes[id];
+                        return CFG.isSwitchNode(node) ? this.getStmtCompiler(node) : fail();
+                    }), node.limitIDs);
+                }
+                else {
+                    return new Compiler.STMT_COMPILERS[node.stmt.kind](node.stmt, node.id, this);
+                }
+            });
         }
         getNodeTransitions(node) {
             switch (node.kind) {
@@ -1529,27 +1539,57 @@ var Compiler;
         position: IR.INT_TYPE,
         str: IR.STR_TYPE,
     };
+    function compile(src, targetLanguage, config) {
+        const ast = Parser.parse(src);
+        const asg = Resolver.resolve(ast);
+        const compiler = new CompilerImpl(asg, config !== undefined ? { ...Compiler.DEFAULT_CONFIG, ...config } : Compiler.DEFAULT_CONFIG);
+        const result = compiler.compile();
+        compiler.diagnostics.throwIfAnyErrors();
+        const cls = CodeGen[targetLanguage];
+        const gen = new cls(compiler.config);
+        gen.writeStmt(result);
+        gen.diagnostics.throwIfAnyErrors();
+        return gen.render();
+    }
+    Compiler.compile = compile;
+})(Compiler || (Compiler = {}));
+var Compiler;
+(function (Compiler) {
+    Compiler.DEFAULT_CONFIG = {
+        indentSpaces: 4,
+        emitComments: true,
+        emitChecks: true,
+        entryPointName: 'main',
+        maxIterations: 0,
+        animate: false,
+    };
+})(Compiler || (Compiler = {}));
+var Compiler;
+(function (Compiler) {
     class Stmt_Reset {
-        node;
-        constructor(node) {
-            this.node = node;
+        flagID;
+        childCompilers;
+        limitIDs;
+        constructor(flagID, childCompilers, limitIDs) {
+            this.flagID = flagID;
+            this.childCompilers = childCompilers;
+            this.limitIDs = limitIDs;
         }
         compile(c) {
-            const { node } = this;
-            const out = [c.flags.clear(node.flagID)];
-            for (const childID of node.childIDs) {
-                const comp = c.nodeCompilers.get(childID);
+            const out = [c.flags.clear(this.flagID)];
+            for (const comp of this.childCompilers) {
                 const r = comp?.compileReset?.(c);
                 if (r !== undefined) {
                     out.push(r);
                 }
             }
-            for (const limitID of node.limitIDs) {
+            for (const limitID of this.limitIDs) {
                 out.push(c.limits.reset(limitID, c));
             }
             return IR.block(out);
         }
     }
+    Compiler.Stmt_Reset = Stmt_Reset;
     class Stmt_NotSupported {
         stmt;
         constructor(stmt) {
@@ -1591,7 +1631,7 @@ var Compiler;
             return c.config.animate ? c.grids[grid].yield_() : fail();
         }
     }
-    const STMT_COMPILERS = {
+    Compiler.STMT_COMPILERS = {
         // non-branching
         'stmt.assign': Stmt_Assign,
         'stmt.log': Stmt_Log,
@@ -1609,30 +1649,6 @@ var Compiler;
         'stmt.rules.convolution': Compiler.Stmt_Convolution,
         'stmt.rules.search.all': Stmt_NotSupported,
         'stmt.rules.search.one': Stmt_NotSupported,
-    };
-    function compile(src, targetLanguage, config) {
-        const ast = Parser.parse(src);
-        const asg = Resolver.resolve(ast);
-        const compiler = new CompilerImpl(asg, config !== undefined ? { ...Compiler.DEFAULT_CONFIG, ...config } : Compiler.DEFAULT_CONFIG);
-        const result = compiler.compile();
-        compiler.diagnostics.throwIfAnyErrors();
-        const cls = CodeGen[targetLanguage];
-        const gen = new cls(compiler.config);
-        gen.writeStmt(result);
-        gen.diagnostics.throwIfAnyErrors();
-        return gen.render();
-    }
-    Compiler.compile = compile;
-})(Compiler || (Compiler = {}));
-var Compiler;
-(function (Compiler) {
-    Compiler.DEFAULT_CONFIG = {
-        indentSpaces: 4,
-        emitComments: true,
-        emitChecks: true,
-        entryPointName: 'main',
-        maxIterations: 0,
-        animate: false,
     };
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>

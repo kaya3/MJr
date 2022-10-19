@@ -185,10 +185,21 @@ namespace Compiler {
         }
         
         getStmtCompiler(node: CFG.SwitchNode): StmtCompiler {
-            return getOrCompute(this.nodeCompilers, node.id, () =>
-                node.kind === 'reset' ? new Stmt_Reset(node)
-                : new STMT_COMPILERS[node.stmt.kind](node.stmt as never, node.id, this)
-            );
+            return getOrCompute(this.nodeCompilers, node.id, () => {
+                if(node.kind === 'reset') {
+                    const {nodes} = this.cfg;
+                    return new Stmt_Reset(
+                        node.flagID,
+                        node.childIDs.map(id => {
+                            const node = nodes[id];
+                            return CFG.isSwitchNode(node) ? this.getStmtCompiler(node) : fail();
+                        }),
+                        node.limitIDs,
+                    );
+                } else {
+                    return new STMT_COMPILERS[node.stmt.kind](node.stmt as never, node.id, this);
+                }
+            });
         }
         
         private getNodeTransitions(node: CFG.SwitchNode): {before: IR.Stmt, ifTrue?: IR.Stmt, ifFalse?: IR.Stmt, after: readonly IR.Stmt[]} {
@@ -300,87 +311,6 @@ namespace Compiler {
         'pattern.out': IR.PATTERN_TYPE,
         position: IR.INT_TYPE,
         str: IR.STR_TYPE,
-    };
-    
-    type StmtKind = (ASG.BranchingStmt | ASG.NonBranchingStmt)['kind']
-    
-    export interface StmtCompiler {
-        declare?(): IR.Stmt;
-        compileReset?(c: Compiler): IR.Stmt;
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt;
-    }
-    
-    class Stmt_Reset implements StmtCompiler {
-        constructor(readonly node: CFG.ResetNode) {}
-        compile(c: Compiler): IR.Stmt {
-            const {node} = this;
-            const out: IR.Stmt[] = [c.flags.clear(node.flagID)];
-            for(const childID of node.childIDs) {
-                const comp = c.nodeCompilers.get(childID);
-                const r = comp?.compileReset?.(c);
-                if(r !== undefined) { out.push(r); }
-            }
-            for(const limitID of node.limitIDs) {
-                out.push(c.limits.reset(limitID, c));
-            }
-            return IR.block(out);
-        }
-    }
-    
-    class Stmt_NotSupported implements StmtCompiler {
-        constructor(readonly stmt: ASG.Statement) {}
-        compile(c: Compiler): IR.Stmt {
-            const {kind, pos} = this.stmt;
-            c.notSupported(`'${kind}'`, pos);
-            return IR.PASS;
-        }
-    }
-    
-    class Stmt_Assign implements StmtCompiler {
-        constructor(readonly stmt: ASG.AssignStmt) {}
-        compile(c: Compiler) {
-            const {variable, rhs} = this.stmt;
-            return IR.assign(IR.NAMES.variable(variable), '=', c.expr(rhs));
-        }
-    }
-    
-    class Stmt_Log implements StmtCompiler {
-        constructor(readonly stmt: ASG.LogStmt) {}
-        compile(c: Compiler) {
-            const {expr} = this.stmt;
-            return IR.log(c.expr(expr));
-        }
-    }
-    
-    class Stmt_Use implements StmtCompiler {
-        constructor(readonly stmt: ASG.UseStmt) {}
-        compile(c: Compiler) {
-            const {grid} = this.stmt;
-            return c.config.animate ? c.grids[grid].yield_() : fail();
-        }
-    }
-    
-    type StmtCompileClass<K extends StmtKind> = new (stmt: Extract<ASG.Statement, {readonly kind: K}>, stmtID: number, c: Compiler) => StmtCompiler
-    
-    const STMT_COMPILERS: {readonly [K in StmtKind]: StmtCompileClass<K>} = {
-        // non-branching
-        'stmt.assign': Stmt_Assign,
-        'stmt.log': Stmt_Log,
-        'stmt.rules.map': Stmt_NotSupported,
-        'stmt.put': Stmt_Put,
-        'stmt.use': Stmt_Use,
-        
-        // branching
-        'stmt.convchain': Stmt_ConvChain,
-        'stmt.path': Stmt_NotSupported,
-        'stmt.rules.basic.all': Stmt_BasicAllPrl,
-        'stmt.rules.basic.one': Stmt_BasicOne,
-        'stmt.rules.basic.prl': Stmt_BasicAllPrl,
-        'stmt.rules.biased.all': Stmt_NotSupported,
-        'stmt.rules.biased.one': Stmt_NotSupported,
-        'stmt.rules.convolution': Stmt_Convolution,
-        'stmt.rules.search.all': Stmt_NotSupported,
-        'stmt.rules.search.one': Stmt_NotSupported,
     };
     
     type CodeGenClass = new (config: Config) => {diagnostics: Diagnostics, writeStmt(stmt: IR.Stmt): void, render(): string}

@@ -20,7 +20,7 @@
         .buttonrow > span:not(:first-child) { flex-grow: 1; text-align: right; align-self: center; }
         .hidden { display: none; }
         input[type="number"] { width: 2.5em; text-align: right; }
-        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-inner-spin-button,
         input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     </style>
     <script src="../mjrc.js"></script>
@@ -84,6 +84,7 @@ function getConfig() {
         _targetLanguage: targetLanguageElem.value,
         emitChecks: emitChecksCheckbox.checked,
         animate: animateCheckbox.checked,
+        maxIterations: animateCheckbox.checked ? 0 : 65536,
     };
 }
 

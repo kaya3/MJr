@@ -2,11 +2,6 @@
 ///<reference path="../ir/ops.ts"/>
 ///<reference path="../ir/types.ts"/>
 ///<reference path="./expr.ts"/>
-///<reference path="./stmt_all.ts"/>
-///<reference path="./stmt_convchain.ts"/>
-///<reference path="./stmt_convolution.ts"/>
-///<reference path="./stmt_one.ts"/>
-///<reference path="./stmt_put.ts"/>
 
 /**
  * Compiles MJr source code to a specified target language.

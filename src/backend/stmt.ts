@@ -1,6 +1,10 @@
+///<reference path="./stmt_all.ts"/>
+///<reference path="./stmt_convchain.ts"/>
+///<reference path="./stmt_convolution.ts"/>
+///<reference path="./stmt_one.ts"/>
+///<reference path="./stmt_put.ts"/>
+
 namespace Compiler {
-    type StmtKind = (ASG.BranchingStmt | ASG.NonBranchingStmt)['kind']
-    
     export interface StmtCompiler {
         declare?(): IR.Stmt;
         compileReset?(c: Compiler): IR.Stmt;
@@ -28,7 +32,7 @@ namespace Compiler {
     }
     
     class Stmt_NotSupported implements StmtCompiler {
-        constructor(readonly stmt: ASG.Statement) {}
+        constructor(private readonly stmt: ASG.Statement) {}
         
         compile(c: Compiler): IR.Stmt {
             const {kind, pos} = this.stmt;
@@ -38,7 +42,7 @@ namespace Compiler {
     }
     
     class Stmt_Assign implements StmtCompiler {
-        constructor(readonly stmt: ASG.AssignStmt) {}
+        constructor(private readonly stmt: ASG.AssignStmt) {}
         
         compile(c: Compiler) {
             const {variable, rhs} = this.stmt;
@@ -47,7 +51,7 @@ namespace Compiler {
     }
     
     class Stmt_Log implements StmtCompiler {
-        constructor(readonly stmt: ASG.LogStmt) {}
+        constructor(private readonly stmt: ASG.LogStmt) {}
         
         compile(c: Compiler) {
             const {expr} = this.stmt;
@@ -56,7 +60,7 @@ namespace Compiler {
     }
     
     class Stmt_Use implements StmtCompiler {
-        constructor(readonly stmt: ASG.UseStmt) {}
+        constructor(private readonly stmt: ASG.UseStmt) {}
         
         compile(c: Compiler) {
             const {grid} = this.stmt;
@@ -64,6 +68,7 @@ namespace Compiler {
         }
     }
     
+    type StmtKind = (ASG.BranchingStmt | ASG.NonBranchingStmt)['kind']
     type StmtCompileClass<K extends StmtKind> = new (stmt: Extract<ASG.Statement, {readonly kind: K}>, stmtID: number, c: Compiler) => StmtCompiler
     
     export const STMT_COMPILERS: {readonly [K in StmtKind]: StmtCompileClass<K>} = {

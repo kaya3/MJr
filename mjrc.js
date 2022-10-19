@@ -138,6 +138,9 @@ var IR;
         else if (condition === IR.FALSE) {
             return otherwise;
         }
+        else if (equals(then, otherwise)) {
+            return then;
+        }
         else if (condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
             condition = condition.child;
             const tmp = then;
@@ -961,342 +964,8 @@ var Compiler;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
 ///<reference path="../ir/ops.ts"/>
-var Compiler;
-(function (Compiler) {
-    const { NAMES: { AT, I, P, MATCH, ANY, }, OP, } = IR;
-    function _exprIs(expr, flags) {
-        return (expr.flags & flags) === flags;
-    }
-    class Stmt_BasicAllPrl {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c, ifChanged, then) {
-            const { stmt } = this;
-            const { rewrites } = stmt;
-            const g = c.grids[stmt.inGrid];
-            const k = rewrites.length;
-            const out = [];
-            const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ExprFlags.SAME_EVERYWHERE */)
-                && rule.to.kind === 'expr.constant');
-            const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ExprFlags.SAME_EVERYWHERE */));
-            // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, 16 /* ExprFlags.GRID_INDEPENDENT */));
-            rewrites.forEach((rule, i) => {
-                if (patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
-                    c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
-                }
-            });
-            c.matches.use(g, k);
-            const useMask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
-                if (rule.to.kind === 'expr.constant') {
-                    const { value } = rule.to.constant;
-                    return value.effectiveWidth > 1 || value.effectiveHeight > 1;
-                }
-                else {
-                    const { type } = rule.to;
-                    return type.width > 1 || type.height > 1;
-                }
-            }));
-            if (useMask) {
-                c.mask.use(g);
-            }
-            const shuffle = useMask || !stmt.commutative;
-            out.push(IR.declVars(rewrites.flatMap((rule, i) => !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
-                ? [{ name: IR.NAMES.tmpPattern(i), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to) }]
-                : [])));
-            const firstPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? rule.to : undefined, IR.NAMES.tmpPattern(i), rule.condition));
-            const secondPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, undefined));
-            // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
-            // but no flag needed if this statement isn't branching anyway
-            const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
-            // optimisation for common case: all rewrites are unconditional and definitely effective
-            if (firstPassConditions.every(c => c === IR.TRUE)) {
-                const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-                if (shuffle) {
-                    out.push(c.matches.declareCount(IR.ZERO, true), sampler.shuffleInto(c.matches));
-                }
-                else {
-                    out.push(sampler.copyInto(c.matches.array), c.matches.declareCount(sampler.count, true));
-                }
-            }
-            else {
-                out.push(c.matches.declareCount(IR.ZERO, true));
-                for (let i = 0; i < k; ++i) {
-                    const rule = rewrites[i];
-                    const sampler = g.makeSampler([rule.from]);
-                    const condition = firstPassConditions[i];
-                    const match = OP.multAddConstant(AT, k, IR.int(i));
-                    out.push(
-                    // if condition is same-everywhere, then we only need to check it once for all matches of this rule
-                    conditionIsSameEverywhere[i]
-                        ? IR.if_(condition, shuffle
-                            ? sampler.shuffleIntoOffset(c.matches, k, i)
-                            : sampler.copyIntoOffset(c.matches.array, c.matches.count, k, i))
-                        // otherwise, need to check the condition separately for each match
-                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? c.matches.insertShuffled(match) : c.matches.push(match)))]));
-                }
-            }
-            const doWrites = rewrites.map((rule, i) => IR.block([
-                outPatternIsConstant[i] ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, 
-                // TODO: `c.expr(rule.to)` is only correct when `rule.to` is grid-independent (see above)
-                outPatternIsSameEverywhere[i] ? IR.NAMES.tmpPattern(i) : c.expr(rule.to)),
-                IR.if_(OP.and(secondPassConditions[i], useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE), Compiler.doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false)),
-            ]));
-            if (c.config.animate) {
-                ifChanged = IR.block([g.yield_(), ifChanged]);
-            }
-            out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
-                useMask ? c.mask.clear(g) : IR.PASS,
-                IR.forRange(I, IR.ZERO, c.matches.count, [
-                    IR.declVar(MATCH, IR.INT_TYPE, c.matches.get(I)),
-                    g.declareAtIndex(OP.divConstant(MATCH, k)),
-                    IR.switch_(OP.modConstant(MATCH, k), doWrites),
-                ]),
-                useFlag ? IR.PASS : ifChanged,
-            ]), useFlag ? undefined : then), useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS);
-            return IR.block(out);
-        }
-    }
-    Compiler.Stmt_BasicAllPrl = Stmt_BasicAllPrl;
-})(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
-var Compiler;
-(function (Compiler) {
-    const { NAMES: { AT, AT_X, AT_Y, I, OLD_S, ANY, }, OP, PRNG, } = IR;
-    class Stmt_ConvChain {
-        stmt;
-        colourArray;
-        c2iArray;
-        c2iOffset;
-        matchesArray;
-        matchesCount;
-        score;
-        temperature;
-        constructor(stmt, stmtID, c) {
-            this.stmt = stmt;
-            const g = c.grids[stmt.inGrid];
-            const alphabetSize = g.grid.alphabet.key.length;
-            const colours = stmt.output;
-            this.c2iOffset = colours[0];
-            const colourRange = colours[colours.length - 1] + 1 - colours[0];
-            const colourToIndex = emptyArray(colourRange, 0);
-            for (let i = 0; i < colours.length; ++i) {
-                const d = colours[i] - colours[0];
-                colourToIndex[d] = i + 1;
-            }
-            this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
-            this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
-            this.matchesArray = IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
-            this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
-            const logEpsilon = Math.log2(stmt.epsilon);
-            this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
-                pattern: w.pattern,
-                weight: Math.log2(w.weight) - logEpsilon,
-            })), true);
-            this.temperature = stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
-        }
-        declare() {
-            return IR.block([
-                IR.declVars([
-                    ...this.colourArray.decl,
-                    ...this.c2iArray.decl,
-                    ...this.matchesArray.decl,
-                ]),
-                IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
-                this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
-            ]);
-        }
-        compileReset(c) {
-            return IR.assign(this.matchesCount, '=', IR.MINUS_ONE);
-        }
-        compile(c, ifChanged, then) {
-            const { stmt } = this;
-            const g = c.grids[stmt.inGrid];
-            const output = stmt.output;
-            if (output.some(x => ISet.has(stmt.on.masks[0], x))) {
-                // TODO
-                c.notSupported(`'convchain' with overlapping 'on' and output`, stmt.pos);
-            }
-            const sampler = g.makeSampler([stmt.on]);
-            const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
-            const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature } = this;
-            // TODO
-            const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
-                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))), score);
-            const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
-            const getRandomDifferentColour = colourArray.get(OP.modConstant(OP.add(c2iArray.get(OP.minusConstant(OLD_S, c2iOffset)), PRNG.nextInt(IR.int(output.length - 1))), output.length));
-            const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
-            if (c.config.animate) {
-                ifChanged = IR.block([g.yield_(), ifChanged]);
-            }
-            const shouldInit = OP.lt(matchesCount, IR.ZERO);
-            const doInit = IR.block([
-                IR.assign(matchesCount, '=', sampler.count),
-                temperature !== undefined ? IR.block([
-                    IR.assign(temperature, '=', temperatureInit),
-                    IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`temperature must be non-negative`)),
-                ]) : IR.PASS,
-                IR.if_(OP.gt(matchesCount, IR.ZERO), IR.block([
-                    sampler.copyInto(matchesArray.name),
-                    IR.forRange(I, IR.ZERO, matchesCount, [
-                        // TODO: if `on` and `output` overlap, only randomise if existing colour is not in `output`
-                        g.write(matchesArray.get(I), getRandomColour),
-                    ]),
-                    ifChanged,
-                ]), then),
-            ]);
-            const doMain = IR.block([
-                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                IR.forRange(I, IR.ZERO, matchesCount, [
-                    g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
-                    IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
-                    IR.assign(score, '=', IR.FLOAT_ZERO),
-                    g.write(AT, getRandomDifferentColour),
-                    update1x1,
-                    IR.if_(OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability), IR.assign(ANY, '=', IR.TRUE), IR.block([
-                        g.write(AT, OLD_S),
-                        update1x1,
-                    ])),
-                ]),
-                IR.if_(ANY, ifChanged, then),
-            ]);
-            return IR.if_(shouldInit, doInit, doMain);
-        }
-    }
-    Compiler.Stmt_ConvChain = Stmt_ConvChain;
-})(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-var Compiler;
-(function (Compiler) {
-    const { NAMES: { AT, AT_X, AT_Y, AT_CONV, P, ANY, }, } = IR;
-    class Stmt_Convolution {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c, ifChanged, then) {
-            const { stmt } = this;
-            const g = c.grids[stmt.inGrid];
-            const buffer = g.makeConvBuffer(stmt.kernel);
-            const cases = emptyArray(g.grid.alphabet.key.length, IR.PASS);
-            for (const rule of stmt.rewrites) {
-                const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
-                const caseHandler = IR.block([
-                    rule.to.kind === 'expr.constant' ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)),
-                    IR.if_(Compiler.writeCondition(c, g, rule.to, P, rule.condition), Compiler.doWrite(c, g, rule.from, rule.to, false, ANY, false, false)),
-                ]);
-                ISet.forEach(mask, i => {
-                    if (cases[i] !== IR.PASS) {
-                        fail();
-                    }
-                    cases[i] = caseHandler;
-                });
-            }
-            // TODO: different strategy if rules don't cover the whole alphabet?
-            return IR.block([
-                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
-                        g.declareAtXY(AT_X, AT_Y),
-                        IR.declVar(AT_CONV, IR.INT_TYPE, buffer.index(AT_X, AT_Y)),
-                        IR.switch_(g.data.get(AT), cases),
-                    ])]),
-                IR.if_(ANY, IR.block([
-                    // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
-                    g.update(IR.ZERO, IR.ZERO, g.width, g.height),
-                    c.config.animate ? g.yield_() : IR.PASS,
-                    ifChanged,
-                ]), then),
-            ]);
-        }
-    }
-    Compiler.Stmt_Convolution = Stmt_Convolution;
-})(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
-var Compiler;
-(function (Compiler) {
-    const { NAMES: { P, ANY, }, OP, } = IR;
-    class Stmt_BasicOne {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c, ifChanged, then) {
-            const { rewrites } = this.stmt;
-            const g = c.grids[this.stmt.inGrid];
-            const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            const writeConditions = rewrites.map(rule => Compiler.writeCondition(c, g, rule.to, P, rule.condition));
-            // optimisation for common case: all rewrites are unconditional and definitely effective
-            const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
-            const cases = rewrites.map((rule, i) => IR.block([
-                rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
-                IR.if_(writeConditions[i], Compiler.doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
-            ]));
-            return allUnconditionalAndEffective
-                ? IR.if_(OP.gt(sampler.count, IR.ZERO), IR.block([
-                    sampler.sampleWithReplacement(cases),
-                    ifChanged,
-                ]), then)
-                : IR.block([
-                    sampler.beginSamplingWithoutReplacement(),
-                    c.matches.declareCount(sampler.count, true),
-                    IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                    IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), sampler.sampleWithoutReplacement(cases, c.matches.count)),
-                    IR.if_(ANY, ifChanged, then),
-                ]);
-        }
-    }
-    Compiler.Stmt_BasicOne = Stmt_BasicOne;
-})(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
-var Compiler;
-(function (Compiler) {
-    const { NAMES: { AT_X, AT_Y, P, }, OP, } = IR;
-    class Stmt_Put {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c) {
-            const { stmt } = this;
-            const g = c.grids[stmt.inGrid];
-            const { pattern } = this.stmt;
-            // check whether pattern is effective
-            let isEffective;
-            if (pattern.kind === 'expr.constant') {
-                const { value } = pattern.constant;
-                const checks = value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
-                isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
-            }
-            else {
-                // non-constant pattern will be checked in _writeCondition
-                isEffective = IR.TRUE;
-            }
-            return IR.block([
-                g.declareAtIndex(c.expr(stmt.at)),
-                // check bounds, given size of pattern
-                g.grid.periodic ? IR.PASS : IR.if_(OP.or(pattern.type.width > 1 ? OP.ge(OP.addConstant(AT_X, pattern.type.width - 1), g.width) : IR.FALSE, pattern.type.height > 1 ? OP.ge(OP.addConstant(AT_Y, pattern.type.height - 1), g.height) : IR.FALSE), IR.throw_('pattern would be out of bounds')),
-                pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
-                IR.if_(OP.and(isEffective, Compiler.writeCondition(c, g, pattern, P, stmt.condition)), Compiler.doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
-            ]);
-        }
-    }
-    Compiler.Stmt_Put = Stmt_Put;
-})(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
 ///<reference path="../ir/types.ts"/>
 ///<reference path="./expr.ts"/>
-///<reference path="./stmt_all.ts"/>
-///<reference path="./stmt_convchain.ts"/>
-///<reference path="./stmt_convolution.ts"/>
-///<reference path="./stmt_one.ts"/>
-///<reference path="./stmt_put.ts"/>
 /**
  * Compiles MJr source code to a specified target language.
  */
@@ -1564,6 +1233,355 @@ var Compiler;
         animate: false,
     };
 })(Compiler || (Compiler = {}));
+///<reference path="../ir/names.ts"/>
+///<reference path="../ir/ops.ts"/>
+var Compiler;
+(function (Compiler) {
+    const { NAMES: { AT, I, P, MATCH, ANY, }, OP, } = IR;
+    function _exprIs(expr, flags) {
+        return (expr.flags & flags) === flags;
+    }
+    class Stmt_BasicAllPrl {
+        stmt;
+        constructor(stmt) {
+            this.stmt = stmt;
+        }
+        compile(c, ifChanged, then) {
+            const { stmt } = this;
+            const { rewrites } = stmt;
+            const g = c.grids[stmt.inGrid];
+            const k = rewrites.length;
+            const out = [];
+            const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ExprFlags.SAME_EVERYWHERE */)
+                && rule.to.kind === 'expr.constant');
+            const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
+            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ExprFlags.SAME_EVERYWHERE */));
+            // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
+            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, 16 /* ExprFlags.GRID_INDEPENDENT */));
+            rewrites.forEach((rule, i) => {
+                if (patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
+                    c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
+                }
+            });
+            c.matches.use(g, k);
+            const useMask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
+                if (rule.to.kind === 'expr.constant') {
+                    const { value } = rule.to.constant;
+                    return value.effectiveWidth > 1 || value.effectiveHeight > 1;
+                }
+                else {
+                    const { type } = rule.to;
+                    return type.width > 1 || type.height > 1;
+                }
+            }));
+            if (useMask) {
+                c.mask.use(g);
+            }
+            const shuffle = useMask || !stmt.commutative;
+            out.push(IR.declVars(rewrites.flatMap((rule, i) => !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
+                ? [{ name: IR.NAMES.tmpPattern(i), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to) }]
+                : [])));
+            const firstPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? rule.to : undefined, IR.NAMES.tmpPattern(i), rule.condition));
+            const secondPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, undefined));
+            // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
+            // but no flag needed if this statement isn't branching anyway
+            const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
+            // optimisation for common case: all rewrites are unconditional and definitely effective
+            if (firstPassConditions.every(c => c === IR.TRUE)) {
+                const sampler = g.makeSampler(rewrites.map(rule => rule.from));
+                if (shuffle) {
+                    out.push(c.matches.declareCount(IR.ZERO, true), sampler.shuffleInto(c.matches));
+                }
+                else {
+                    out.push(sampler.copyInto(c.matches.array), c.matches.declareCount(sampler.count, true));
+                }
+            }
+            else {
+                out.push(c.matches.declareCount(IR.ZERO, true));
+                for (let i = 0; i < k; ++i) {
+                    const rule = rewrites[i];
+                    const sampler = g.makeSampler([rule.from]);
+                    const condition = firstPassConditions[i];
+                    const match = OP.multAddConstant(AT, k, IR.int(i));
+                    out.push(
+                    // if condition is same-everywhere, then we only need to check it once for all matches of this rule
+                    conditionIsSameEverywhere[i]
+                        ? IR.if_(condition, shuffle
+                            ? sampler.shuffleIntoOffset(c.matches, k, i)
+                            : sampler.copyIntoOffset(c.matches.array, c.matches.count, k, i))
+                        // otherwise, need to check the condition separately for each match
+                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? c.matches.insertShuffled(match) : c.matches.push(match)))]));
+                }
+            }
+            const doWrites = rewrites.map((rule, i) => IR.block([
+                outPatternIsConstant[i] ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, 
+                // TODO: `c.expr(rule.to)` is only correct when `rule.to` is grid-independent (see above)
+                outPatternIsSameEverywhere[i] ? IR.NAMES.tmpPattern(i) : c.expr(rule.to)),
+                IR.if_(OP.and(secondPassConditions[i], useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE), Compiler.doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false)),
+            ]));
+            if (c.config.animate) {
+                ifChanged = IR.block([g.yield_(), ifChanged]);
+            }
+            out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
+                useMask ? c.mask.clear(g) : IR.PASS,
+                IR.forRange(I, IR.ZERO, c.matches.count, [
+                    IR.declVar(MATCH, IR.INT_TYPE, c.matches.get(I)),
+                    g.declareAtIndex(OP.divConstant(MATCH, k)),
+                    IR.switch_(OP.modConstant(MATCH, k), doWrites),
+                ]),
+                useFlag ? IR.PASS : ifChanged,
+            ]), useFlag ? undefined : then), useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS);
+            return IR.block(out);
+        }
+    }
+    Compiler.Stmt_BasicAllPrl = Stmt_BasicAllPrl;
+})(Compiler || (Compiler = {}));
+///<reference path="../ir/names.ts"/>
+///<reference path="../ir/ops.ts"/>
+var Compiler;
+(function (Compiler) {
+    const { NAMES: { AT, AT_X, AT_Y, I, OLD_S, ANY, }, OP, PRNG, } = IR;
+    class Stmt_ConvChain {
+        stmt;
+        colourArray;
+        c2iArray;
+        c2iOffset;
+        matchesArray;
+        matchesCount;
+        score;
+        temperature;
+        anneal;
+        constructor(stmt, stmtID, c) {
+            this.stmt = stmt;
+            const g = c.grids[stmt.inGrid];
+            const alphabetSize = g.grid.alphabet.key.length;
+            const colours = stmt.output;
+            this.c2iOffset = colours[0];
+            const colourRange = colours[colours.length - 1] + 1 - colours[0];
+            const colourToIndex = emptyArray(colourRange, 0);
+            for (let i = 0; i < colours.length; ++i) {
+                const d = colours[i] - colours[0];
+                colourToIndex[d] = i + 1;
+            }
+            this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
+            this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
+            this.matchesArray = IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
+            this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
+            const logEpsilon = Math.log2(stmt.epsilon);
+            this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
+                pattern: w.pattern,
+                weight: Math.log2(w.weight) - logEpsilon,
+            })), true);
+            this.temperature = (stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant') || stmt.anneal !== undefined ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
+            this.anneal = stmt.anneal !== undefined && stmt.anneal.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'anneal') : undefined;
+            for (const op of [
+                'float_plus', 'float_minus', 'float_mult', 'float_log2',
+                'float_eq', 'float_ne', 'float_lt', 'float_le', 'float_gt', 'float_ge',
+            ]) {
+                c.opsUsed.add(op);
+            }
+        }
+        declare() {
+            return IR.block([
+                IR.declVars([
+                    ...this.colourArray.decl,
+                    ...this.c2iArray.decl,
+                    ...this.matchesArray.decl,
+                ]),
+                IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
+                this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
+                this.anneal !== undefined ? IR.declVar(this.anneal, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
+            ]);
+        }
+        compileReset(c) {
+            return IR.assign(this.matchesCount, '=', IR.MINUS_ONE);
+        }
+        compile(c, ifChanged, then) {
+            const { stmt } = this;
+            const g = c.grids[stmt.inGrid];
+            const output = stmt.output;
+            if (output.some(x => ISet.has(stmt.on.masks[0], x))) {
+                // TODO
+                c.notSupported(`'convchain' with overlapping 'on' and output`, stmt.pos);
+            }
+            const sampler = g.makeSampler([stmt.on]);
+            const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+            const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
+            const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal } = this;
+            // TODO
+            const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
+                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))), score);
+            const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
+            const getRandomDifferentColour = colourArray.get(OP.modConstant(OP.add(c2iArray.get(OP.minusConstant(OLD_S, c2iOffset)), PRNG.nextInt(IR.int(output.length - 1))), output.length));
+            const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
+            if (c.config.animate) {
+                ifChanged = IR.block([g.yield_(), ifChanged]);
+            }
+            const shouldInit = OP.lt(matchesCount, IR.ZERO);
+            const doInit = IR.block([
+                IR.assign(matchesCount, '=', sampler.count),
+                temperature !== undefined ? IR.block([
+                    IR.assign(temperature, '=', temperatureInit),
+                    temperatureInit.kind !== 'expr.literal.float' ? IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`'temperature' must be non-negative`)) : IR.PASS,
+                ]) : IR.PASS,
+                anneal !== undefined ? IR.block([
+                    IR.assign(anneal, '=', annealInit),
+                    IR.if_(IR.binaryOp('float_lt', anneal, IR.FLOAT_ZERO), IR.throw_(`'anneal' must be non-negative`)),
+                ]) : IR.PASS,
+                IR.if_(OP.gt(matchesCount, IR.ZERO), IR.block([
+                    sampler.copyInto(matchesArray.name),
+                    IR.forRange(I, IR.ZERO, matchesCount, [
+                        // TODO: if `on` and `output` overlap, only randomise if existing colour is not in `output`
+                        g.write(matchesArray.get(I), getRandomColour),
+                    ]),
+                    ifChanged,
+                ]), then),
+            ]);
+            const doMain = IR.block([
+                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
+                IR.forRange(I, IR.ZERO, matchesCount, [
+                    g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
+                    IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
+                    IR.assign(score, '=', IR.FLOAT_ZERO),
+                    g.write(AT, getRandomDifferentColour),
+                    update1x1,
+                    IR.if_(OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability), IR.assign(ANY, '=', IR.TRUE), IR.block([
+                        g.write(AT, OLD_S),
+                        update1x1,
+                    ])),
+                ]),
+                temperature !== undefined && annealInit !== IR.FLOAT_ZERO ? IR.assign(temperature, '=', IR.ternary(IR.binaryOp('float_gt', temperature, anneal ?? annealInit), IR.binaryOp('float_minus', temperature, anneal ?? annealInit), IR.FLOAT_ZERO)) : IR.PASS,
+                IR.if_(ANY, ifChanged, then),
+            ]);
+            return IR.if_(shouldInit, doInit, doMain);
+        }
+    }
+    Compiler.Stmt_ConvChain = Stmt_ConvChain;
+})(Compiler || (Compiler = {}));
+///<reference path="../ir/names.ts"/>
+var Compiler;
+(function (Compiler) {
+    const { NAMES: { AT, AT_X, AT_Y, AT_CONV, P, ANY, }, } = IR;
+    class Stmt_Convolution {
+        stmt;
+        constructor(stmt) {
+            this.stmt = stmt;
+        }
+        compile(c, ifChanged, then) {
+            const { stmt } = this;
+            const g = c.grids[stmt.inGrid];
+            const buffer = g.makeConvBuffer(stmt.kernel);
+            const cases = emptyArray(g.grid.alphabet.key.length, IR.PASS);
+            for (const rule of stmt.rewrites) {
+                const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
+                const caseHandler = IR.block([
+                    rule.to.kind === 'expr.constant' ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)),
+                    IR.if_(Compiler.writeCondition(c, g, rule.to, P, rule.condition), Compiler.doWrite(c, g, rule.from, rule.to, false, ANY, false, false)),
+                ]);
+                ISet.forEach(mask, i => {
+                    if (cases[i] !== IR.PASS) {
+                        fail();
+                    }
+                    cases[i] = caseHandler;
+                });
+            }
+            // TODO: different strategy if rules don't cover the whole alphabet?
+            return IR.block([
+                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
+                IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
+                        g.declareAtXY(AT_X, AT_Y),
+                        IR.declVar(AT_CONV, IR.INT_TYPE, buffer.index(AT_X, AT_Y)),
+                        IR.switch_(g.data.get(AT), cases),
+                    ])]),
+                IR.if_(ANY, IR.block([
+                    // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
+                    g.update(IR.ZERO, IR.ZERO, g.width, g.height),
+                    c.config.animate ? g.yield_() : IR.PASS,
+                    ifChanged,
+                ]), then),
+            ]);
+        }
+    }
+    Compiler.Stmt_Convolution = Stmt_Convolution;
+})(Compiler || (Compiler = {}));
+///<reference path="../ir/names.ts"/>
+///<reference path="../ir/ops.ts"/>
+var Compiler;
+(function (Compiler) {
+    const { NAMES: { P, ANY, }, OP, } = IR;
+    class Stmt_BasicOne {
+        stmt;
+        constructor(stmt) {
+            this.stmt = stmt;
+        }
+        compile(c, ifChanged, then) {
+            const { rewrites } = this.stmt;
+            const g = c.grids[this.stmt.inGrid];
+            const sampler = g.makeSampler(rewrites.map(rule => rule.from));
+            const writeConditions = rewrites.map(rule => Compiler.writeCondition(c, g, rule.to, P, rule.condition));
+            // optimisation for common case: all rewrites are unconditional and definitely effective
+            const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
+            const cases = rewrites.map((rule, i) => IR.block([
+                rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
+                IR.if_(writeConditions[i], Compiler.doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
+            ]));
+            return allUnconditionalAndEffective
+                ? IR.if_(OP.gt(sampler.count, IR.ZERO), IR.block([
+                    sampler.sampleWithReplacement(cases),
+                    ifChanged,
+                ]), then)
+                : IR.block([
+                    sampler.beginSamplingWithoutReplacement(),
+                    c.matches.declareCount(sampler.count, true),
+                    IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
+                    IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), sampler.sampleWithoutReplacement(cases, c.matches.count)),
+                    IR.if_(ANY, ifChanged, then),
+                ]);
+        }
+    }
+    Compiler.Stmt_BasicOne = Stmt_BasicOne;
+})(Compiler || (Compiler = {}));
+///<reference path="../ir/names.ts"/>
+///<reference path="../ir/ops.ts"/>
+var Compiler;
+(function (Compiler) {
+    const { NAMES: { AT_X, AT_Y, P, }, OP, } = IR;
+    class Stmt_Put {
+        stmt;
+        constructor(stmt) {
+            this.stmt = stmt;
+        }
+        compile(c) {
+            const { stmt } = this;
+            const g = c.grids[stmt.inGrid];
+            const { pattern } = this.stmt;
+            // check whether pattern is effective
+            let isEffective;
+            if (pattern.kind === 'expr.constant') {
+                const { value } = pattern.constant;
+                const checks = value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
+                isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
+            }
+            else {
+                // non-constant pattern will be checked in _writeCondition
+                isEffective = IR.TRUE;
+            }
+            return IR.block([
+                g.declareAtIndex(c.expr(stmt.at)),
+                // check bounds, given size of pattern
+                g.grid.periodic ? IR.PASS : IR.if_(OP.or(pattern.type.width > 1 ? OP.ge(OP.addConstant(AT_X, pattern.type.width - 1), g.width) : IR.FALSE, pattern.type.height > 1 ? OP.ge(OP.addConstant(AT_Y, pattern.type.height - 1), g.height) : IR.FALSE), IR.throw_('pattern would be out of bounds')),
+                pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
+                IR.if_(OP.and(isEffective, Compiler.writeCondition(c, g, pattern, P, stmt.condition)), Compiler.doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
+            ]);
+        }
+    }
+    Compiler.Stmt_Put = Stmt_Put;
+})(Compiler || (Compiler = {}));
+///<reference path="./stmt_all.ts"/>
+///<reference path="./stmt_convchain.ts"/>
+///<reference path="./stmt_convolution.ts"/>
+///<reference path="./stmt_one.ts"/>
+///<reference path="./stmt_put.ts"/>
 var Compiler;
 (function (Compiler) {
     class Stmt_Reset {
@@ -3495,7 +3513,7 @@ var Parser;
      */
     const ARGS = ((specs) => specs)({
         all: { temperature: false, search: false, maxStates: false, depthCoefficient: false },
-        convchain: { sample: true, n: true, on: true, temperature: false, epsilon: false, periodic: false },
+        convchain: { sample: true, n: true, on: true, temperature: false, anneal: false, epsilon: false, periodic: false },
         convolution: { kernel: true, boundary: false },
         field: { for_: true, on: true, from: false, to: false, essential: false, recompute: false },
         grid: { scaleX: false, scaleY: false, periodic: false },
@@ -4426,6 +4444,7 @@ var Resolver;
             sample: 'const pattern.out',
             n: 'const int',
             temperature: 'float?',
+            anneal: 'float?',
             on: 'const charset.in',
             epsilon: 'const float?',
             periodic: 'const bool?',
@@ -5667,7 +5686,7 @@ var Resolver;
             if (props === undefined) {
                 return undefined;
             }
-            const { on, sample, n, periodic = true, temperature, epsilon = 0.125 } = props;
+            const { on, sample, n, periodic = true, temperature, anneal, epsilon = 0.125 } = props;
             // 1x1 patterns should be folded
             if (on.kind !== 'leaf' && on.kind !== 'top') {
                 fail();
@@ -5678,6 +5697,12 @@ var Resolver;
             if (n < 1 || n > sample.width || n > sample.height) {
                 ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
                 return undefined;
+            }
+            if (temperature !== undefined && temperature.kind === 'expr.constant' && temperature.constant.value < 0) {
+                ctx.error(`'temperature' must be non-negative`, stmt.temperature.pos);
+            }
+            if (anneal !== undefined && anneal.kind === 'expr.constant' && anneal.constant.value < 0) {
+                ctx.error(`'anneal' must be non-negative`, stmt.anneal.pos);
             }
             const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern)).sort();
             if (output.length < 2) {
@@ -5703,7 +5728,7 @@ var Resolver;
                 pattern: v.reduce(PatternTree.or),
                 weight,
             }));
-            return { kind: 'stmt', stmt: { kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, epsilon, pos } };
+            return { kind: 'stmt', stmt: { kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, anneal, epsilon, pos } };
         },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));

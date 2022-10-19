@@ -21,7 +21,8 @@ namespace Compiler {
         private readonly matchesCount: IR.NameExpr;
         private readonly score: IR.NameExpr;
         private readonly temperature: IR.NameExpr | undefined;
-
+        private readonly anneal: IR.NameExpr | undefined;
+        
         constructor(
             readonly stmt: ASG.ConvChainStmt,
             stmtID: number,
@@ -50,7 +51,16 @@ namespace Compiler {
                 pattern: w.pattern,
                 weight: Math.log2(w.weight) - logEpsilon,
             })), true);
-            this.temperature = stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
+            
+            this.temperature = (stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant') || stmt.anneal !== undefined ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
+            this.anneal = stmt.anneal !== undefined && stmt.anneal.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'anneal') : undefined;
+            
+            for(const op of [
+                'float_plus', 'float_minus', 'float_mult', 'float_log2',
+                'float_eq', 'float_ne', 'float_lt', 'float_le', 'float_gt', 'float_ge',
+            ] as const) {
+                c.opsUsed.add(op);
+            }
         }
         
         declare(): IR.Stmt {
@@ -62,6 +72,7 @@ namespace Compiler {
                 ]),
                 IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
                 this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
+                this.anneal !== undefined ? IR.declVar(this.anneal, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
             ]);
         }
         
@@ -81,8 +92,9 @@ namespace Compiler {
             
             const sampler = g.makeSampler([stmt.on]);
             const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+            const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
             
-            const {colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature} = this;
+            const {colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal} = this;
             // TODO
             const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
                 : IR.binaryOp(
@@ -115,7 +127,11 @@ namespace Compiler {
                 IR.assign(matchesCount, '=', sampler.count),
                 temperature !== undefined ? IR.block([
                     IR.assign(temperature, '=', temperatureInit),
-                    IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`temperature must be non-negative`)),
+                    temperatureInit.kind !== 'expr.literal.float' ? IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`'temperature' must be non-negative`)) : IR.PASS,
+                ]): IR.PASS,
+                anneal !== undefined ? IR.block([
+                    IR.assign(anneal, '=', annealInit),
+                    IR.if_(IR.binaryOp('float_lt', anneal, IR.FLOAT_ZERO), IR.throw_(`'anneal' must be non-negative`)),
                 ]): IR.PASS,
                 IR.if_(
                     OP.gt(matchesCount, IR.ZERO),
@@ -147,6 +163,11 @@ namespace Compiler {
                         ]),
                     ),
                 ]),
+                temperature !== undefined && annealInit !== IR.FLOAT_ZERO ? IR.assign(temperature, '=', IR.ternary(
+                    IR.binaryOp('float_gt', temperature, anneal ?? annealInit),
+                    IR.binaryOp('float_minus', temperature, anneal ?? annealInit),
+                    IR.FLOAT_ZERO,
+                )) : IR.PASS,
                 IR.if_(ANY, ifChanged, then),
             ]);
             

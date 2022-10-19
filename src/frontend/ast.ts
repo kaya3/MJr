@@ -85,7 +85,7 @@ namespace AST {
     export interface PrlStmt extends _RuleStmtNode<'prl', {kernel?: undefined}> {}
     
     export type LineStmt = ConvChainStmt | LogStmt | PassStmt | PathStmt | PutStmt | UseExprStmt | UseLetStmt
-    export interface ConvChainStmt extends _StmtNode<'convchain', {sample: Expression, n: Expression, temperature?: Expression, on: Expression, periodic?: Expression}> {}
+    export interface ConvChainStmt extends _StmtNode<'convchain', {sample: Expression, n: Expression, temperature?: Expression, anneal?: Expression, on: Expression, periodic?: Expression}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Expression}> {}
     export interface PassStmt extends _StmtNode<'pass', {}> {}
     export interface PathStmt extends _StmtNode<'path', {from: Expression, to: Expression, input: Expression, output: Expression, longest?: Expression, inertia?: Expression}> {}

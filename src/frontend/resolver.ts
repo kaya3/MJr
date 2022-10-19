@@ -31,6 +31,7 @@ namespace Resolver {
             sample: 'const pattern.out',
             n: 'const int',
             temperature: 'float?',
+            anneal: 'float?',
             on: 'const charset.in',
             epsilon: 'const float?',
             periodic: 'const bool?',
@@ -1275,7 +1276,7 @@ namespace Resolver {
             const props = _resolveProps(stmt, ctx);
             if(props === undefined) { return undefined; }
             
-            const {on, sample, n, periodic = true, temperature, epsilon = 0.125} = props;
+            const {on, sample, n, periodic = true, temperature, anneal, epsilon = 0.125} = props;
             // 1x1 patterns should be folded
             if(on.kind !== 'leaf' && on.kind !== 'top') { fail(); }
             
@@ -1285,6 +1286,12 @@ namespace Resolver {
             if(n < 1 || n > sample.width || n > sample.height) {
                 ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
                 return undefined;
+            }
+            if(temperature !== undefined && temperature.kind === 'expr.constant' && temperature.constant.value < 0) {
+                ctx.error(`'temperature' must be non-negative`, stmt.temperature!.pos);
+            }
+            if(anneal !== undefined && anneal.kind === 'expr.constant' && anneal.constant.value < 0) {
+                ctx.error(`'anneal' must be non-negative`, stmt.anneal!.pos);
             }
             
             const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern)).sort();
@@ -1312,7 +1319,7 @@ namespace Resolver {
                 weight,
             }));
             
-            return {kind: 'stmt', stmt: {kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, epsilon, pos}};
+            return {kind: 'stmt', stmt: {kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, anneal, epsilon, pos}};
         },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));

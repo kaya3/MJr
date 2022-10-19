@@ -187,6 +187,8 @@ namespace IR {
             return then;
         } else if(condition === FALSE) {
             return otherwise;
+        } else if(equals(then, otherwise)) {
+            return then;
         } else if(condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
             condition = condition.child;
             const tmp = then; then = otherwise; otherwise = tmp;

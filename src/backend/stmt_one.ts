@@ -33,7 +33,7 @@ namespace Compiler {
             
             return allUnconditionalAndEffective
                 ? IR.if_(
-                    OP.gt(sampler.count, IR.ZERO),
+                    sampler.isNotEmpty,
                     IR.block([
                         sampler.sampleWithReplacement(cases),
                         ifChanged,

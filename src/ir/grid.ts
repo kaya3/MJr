@@ -105,6 +105,8 @@ namespace IR {
                 if(patterns.length === 1 && patterns[0].kind === 'top') {
                     const {width, height} = patterns[0];
                     return new TrivialSampler(this, width, height);
+                } else if(patterns.length === 1 && patterns[0].kind === 'bottom') {
+                    return new EmptySampler();
                 }
                 
                 const sampler = new Sampler(samplers.size, this, patterns.length);

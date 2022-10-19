@@ -132,13 +132,14 @@ A `convchain` statement runs the [ConvChain algorithm](https://github.com/mxgmn/
 - `sample`: the sample image. Must be a compile-time constant `pattern.out` with at least two distinct alphabet symbols, and no wildcards.
 - `n`: the size of subpatterns used to determine "local similarity". Must be a compile-time constant `int` which is at least 2 and at most the width and height of `sample`.
 - `periodic`: an optional `bool` indicating whether `sample` is a periodic image (default `true`). Must be a compile-time constant.
-- `on`: a `charset.in` determining which grid cells may be modified. Must be a compile-time constant.
+- `on`: an optional `charset.in` determining which grid cells may be modified (default `[.]`). Must be a compile-time constant.
+- `epsilon`: an optional `float` which determines the weight of subpatterns which are not present in `sample` (default `0.125`). Must be a compile-time constant, and positive.
 - `temperature`: an optional `float` which controls the probability of changes which decrease local similarity (default `1.0`). Must be non-negative.
 - `anneal`: an optional `float` which is subtracted from the temperature on each iteration (default `0.0`). Must be non-negative.
 
 The alphabet symbols present in `sample` form the "output set".
 
-On the first iteration of a `convchain` statement, a set of grid cells is initialised containing those cells which match the pattern `on`. Each cell in this set which does not already have a symbol in the output set is replaced with pseudorandom symbol from the output set. If `on` is a subset of the output set, then the statement continues executing as below, otherwise it "returns true" if any replacements were made and "returns false" otherwise.
+On the first iteration of a `convchain` statement, a set of grid cells is initialised containing those cells which match the pattern `on`. Each cell in this set which does not already have a symbol in the output set is replaced with pseudorandom symbol from the output set. If any replacements were made, then the statement completes and "returns true", otherwise it continues executing as below.
 
 After initialisation, on each iteration the grid cells which originally matched `on` are pseudorandomly replaced with different symbols the output set, biased towards local similarity with `sample`. The statement "returns true" if any replacements were made, and "returns false" otherwise.
 

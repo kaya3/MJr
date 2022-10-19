@@ -159,6 +159,15 @@ namespace ISet {
     }
     
     /**
+     * Returns a new set which is the difference of `a` and `b`, in O(N) time.
+     */
+    export function difference(a: ISet, b: ISet): MutableISet {
+        const out = new Uint32Array(a);
+        removeAll(out, b);
+        return out;
+    }
+    
+    /**
      * Determines whether the two sets are disjoint (i.e. they have no elements
      * in common).
      */

@@ -3,6 +3,7 @@
 namespace IR {
     export interface AbstractSampler {
         readonly count: Expr;
+        readonly isNotEmpty: Expr;
         declare(): Stmt,
         handleMatch(f: 'add' | 'del', patternIndex: Expr): Stmt;
         sampleWithReplacement(cases: readonly Stmt[]): Stmt;
@@ -25,6 +26,7 @@ namespace IR {
     export class Sampler implements AbstractSampler {
         private readonly name: NameExpr;
         public readonly count: Expr;
+        public readonly isNotEmpty: Expr;
         private readonly arr: Expr;
         private readonly capacity: Expr;
         private readonly declareMatchAt: Stmt;
@@ -37,6 +39,7 @@ namespace IR {
         ) {
             this.name = NAMES.sampler(g, id);
             this.count = attr(this.name, 'count');
+            this.isNotEmpty = OP.gt(this.count, ZERO);
             this.arr = attr(this.name, 'arr');
             this.capacity = OP.multConstant(g.n, numPatterns);
             
@@ -116,6 +119,7 @@ namespace IR {
     
     export class TrivialSampler implements AbstractSampler {
         public readonly count: Expr;
+        public readonly isNotEmpty: Expr = TRUE;
         private readonly width: Expr;
         private readonly height: Expr;
         private readonly is1x1: boolean;
@@ -218,5 +222,41 @@ namespace IR {
                     ])
                 ]);
         }
+    }
+    
+    export class EmptySampler implements AbstractSampler {
+        public readonly count: Expr = ZERO;
+        public readonly isNotEmpty: Expr = FALSE;
+        declare(): Stmt {
+            return PASS;
+        }
+        handleMatch(f: "add" | "del", patternIndex: Expr): Stmt {
+            fail();
+        }
+        sampleWithReplacement(cases: readonly Stmt[]): Stmt {
+            return throw_(`empty sampler`);
+        }
+        beginSamplingWithoutReplacement(): Stmt {
+            return PASS;
+        }
+        sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt {
+            return throw_(`empty sampler`);
+        }
+        copyInto(matchesArray: NameExpr): Stmt {
+            return PASS;
+        }
+        copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
+            return PASS;
+        }
+        shuffleInto(matches: MatchesArray): Stmt {
+            return PASS;
+        }
+        shuffleIntoOffset(matches: MatchesArray, m: number, c: number): Stmt {
+            return PASS;
+        }
+        forEach(then: readonly Stmt[]): Stmt {
+            return PASS;
+        }
+        
     }
 }

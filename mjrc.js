@@ -1365,7 +1365,7 @@ var Compiler;
             }
             this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
             this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
-            this.matchesArray = IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
+            this.matchesArray = stmt.on.kind === 'top' ? undefined : IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
             this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
             const logEpsilon = Math.log2(stmt.epsilon);
             this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
@@ -1381,12 +1381,16 @@ var Compiler;
                 c.opsUsed.add(op);
             }
         }
+        getFromMatchesArray(index) {
+            const { matchesArray } = this;
+            return matchesArray !== undefined ? matchesArray.get(index) : index;
+        }
         declare() {
             return IR.block([
                 IR.declVars([
                     ...this.colourArray.decl,
                     ...this.c2iArray.decl,
-                    ...this.matchesArray.decl,
+                    ...this.matchesArray?.decl ?? [],
                 ]),
                 IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
                 this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
@@ -1399,12 +1403,16 @@ var Compiler;
         compile(c, ifChanged, then) {
             const { stmt } = this;
             const g = c.grids[stmt.inGrid];
+            const alphabetKey = g.grid.alphabet.key;
+            const on = stmt.on.masks[0];
             const output = stmt.output;
-            if (output.some(x => ISet.has(stmt.on.masks[0], x))) {
-                // TODO
-                c.notSupported(`'convchain' with overlapping 'on' and output`, stmt.pos);
-            }
+            const outputMask = ISet.of(alphabetKey.length, output);
+            const initIsDefinitelyEffective = ISet.isDisjoint(on, outputMask);
+            const initIsDefinitelyIneffective = ISet.isSubset(on, outputMask);
             const sampler = g.makeSampler([stmt.on]);
+            const initSampler = initIsDefinitelyIneffective ? new IR.EmptySampler() : g.makeSampler([
+                new Pattern(1, 1, alphabetKey, [-2], [ISet.difference(on, outputMask)], true),
+            ]);
             const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
             const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
             const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal } = this;
@@ -1417,8 +1425,12 @@ var Compiler;
             if (c.config.animate) {
                 ifChanged = IR.block([g.yield_(), ifChanged]);
             }
+            const declareFlag = IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true);
+            const setFlag = IR.assign(ANY, '=', IR.TRUE);
+            const branchOnFlag = IR.if_(ANY, ifChanged, then);
             const shouldInit = OP.lt(matchesCount, IR.ZERO);
             const doInit = IR.block([
+                matchesArray !== undefined ? sampler.copyInto(matchesArray.name) : IR.PASS,
                 IR.assign(matchesCount, '=', sampler.count),
                 temperature !== undefined ? IR.block([
                     IR.assign(temperature, '=', temperatureInit),
@@ -1428,19 +1440,17 @@ var Compiler;
                     IR.assign(anneal, '=', annealInit),
                     IR.if_(IR.binaryOp('float_lt', anneal, IR.FLOAT_ZERO), IR.throw_(`'anneal' must be non-negative`)),
                 ]) : IR.PASS,
-                IR.if_(OP.gt(matchesCount, IR.ZERO), IR.block([
-                    sampler.copyInto(matchesArray.name),
-                    IR.forRange(I, IR.ZERO, matchesCount, [
-                        // TODO: if `on` and `output` overlap, only randomise if existing colour is not in `output`
-                        g.write(matchesArray.get(I), getRandomColour),
-                    ]),
-                    ifChanged,
-                ]), then),
+                initIsDefinitelyIneffective ? IR.PASS : IR.if_(initSampler === sampler ? OP.gt(matchesCount, IR.ZERO) : initSampler.isNotEmpty, IR.block([
+                    initSampler === sampler
+                        ? IR.forRange(I, IR.ZERO, matchesCount, [g.write(this.getFromMatchesArray(I), getRandomColour)])
+                        : initSampler.forEach([g.write(AT, getRandomColour)]),
+                    g.update(IR.ZERO, IR.ZERO, g.width, g.height),
+                    setFlag,
+                ])),
             ]);
             const doMain = IR.block([
-                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.forRange(I, IR.ZERO, matchesCount, [
-                    g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
+                    g.declareAtIndex(this.getFromMatchesArray(PRNG.nextInt(matchesCount))),
                     IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
                     IR.assign(score, '=', IR.FLOAT_ZERO),
                     g.write(AT, getRandomDifferentColour),
@@ -1451,9 +1461,24 @@ var Compiler;
                     ])),
                 ]),
                 temperature !== undefined && annealInit !== IR.FLOAT_ZERO ? IR.assign(temperature, '=', IR.ternary(IR.binaryOp('float_gt', temperature, anneal ?? annealInit), IR.binaryOp('float_minus', temperature, anneal ?? annealInit), IR.FLOAT_ZERO)) : IR.PASS,
-                IR.if_(ANY, ifChanged, then),
             ]);
-            return IR.if_(shouldInit, doInit, doMain);
+            return initIsDefinitelyEffective ? IR.block([
+                declareFlag,
+                IR.if_(shouldInit, doInit, doMain),
+                branchOnFlag,
+            ])
+                : initIsDefinitelyIneffective ? IR.block([
+                    IR.if_(shouldInit, doInit),
+                    declareFlag,
+                    doMain,
+                    branchOnFlag,
+                ])
+                    : IR.block([
+                        declareFlag,
+                        IR.if_(shouldInit, doInit),
+                        IR.if_(OP.not(ANY), doMain),
+                        branchOnFlag,
+                    ]);
         }
     }
     Compiler.Stmt_ConvChain = Stmt_ConvChain;
@@ -1526,7 +1551,7 @@ var Compiler;
                 IR.if_(writeConditions[i], Compiler.doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
             ]));
             return allUnconditionalAndEffective
-                ? IR.if_(OP.gt(sampler.count, IR.ZERO), IR.block([
+                ? IR.if_(sampler.isNotEmpty, IR.block([
                     sampler.sampleWithReplacement(cases),
                     ifChanged,
                 ]), then)
@@ -3513,7 +3538,7 @@ var Parser;
      */
     const ARGS = ((specs) => specs)({
         all: { temperature: false, search: false, maxStates: false, depthCoefficient: false },
-        convchain: { sample: true, n: true, on: true, temperature: false, anneal: false, epsilon: false, periodic: false },
+        convchain: { sample: true, n: true, on: false, temperature: false, anneal: false, epsilon: false, periodic: false },
         convolution: { kernel: true, boundary: false },
         field: { for_: true, on: true, from: false, to: false, essential: false, recompute: false },
         grid: { scaleX: false, scaleY: false, periodic: false },
@@ -4445,7 +4470,7 @@ var Resolver;
             n: 'const int',
             temperature: 'float?',
             anneal: 'float?',
-            on: 'const charset.in',
+            on: 'const charset.in?',
             epsilon: 'const float?',
             periodic: 'const bool?',
         },
@@ -5688,7 +5713,7 @@ var Resolver;
             }
             const { on, sample, n, periodic = true, temperature, anneal, epsilon = 0.125 } = props;
             // 1x1 patterns should be folded
-            if (on.kind !== 'leaf' && on.kind !== 'top') {
+            if (on !== undefined && on.kind !== 'leaf' && on.kind !== 'top') {
                 fail();
             }
             if (sample.pattern.some(c => c === 255 /* PatternValue.WILDCARD */ || c === 254 /* PatternValue.UNION */)) {
@@ -5697,6 +5722,9 @@ var Resolver;
             if (n < 1 || n > sample.width || n > sample.height) {
                 ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
                 return undefined;
+            }
+            if (epsilon <= 0) {
+                ctx.error(`'epsilon' must be positive`, stmt.epsilon.pos);
             }
             if (temperature !== undefined && temperature.kind === 'expr.constant' && temperature.constant.value < 0) {
                 ctx.error(`'temperature' must be non-negative`, stmt.temperature.pos);
@@ -5728,7 +5756,13 @@ var Resolver;
                 pattern: v.reduce(PatternTree.or),
                 weight,
             }));
-            return { kind: 'stmt', stmt: { kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, anneal, epsilon, pos } };
+            return { kind: 'stmt', stmt: {
+                    kind: 'stmt.convchain',
+                    inGrid: ctx.grid.id,
+                    on: on ?? PatternTree.top(1, 1, ctx.grid.alphabet.key),
+                    weights, output, temperature, anneal, epsilon,
+                    pos,
+                } };
         },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));
@@ -6834,6 +6868,9 @@ var IR;
                     const { width, height } = patterns[0];
                     return new IR.TrivialSampler(this, width, height);
                 }
+                else if (patterns.length === 1 && patterns[0].kind === 'bottom') {
+                    return new IR.EmptySampler();
+                }
                 const sampler = new IR.Sampler(samplers.size, this, patterns.length);
                 for (let i = 0; i < patterns.length; ++i) {
                     const pattern = patterns[i];
@@ -7460,6 +7497,7 @@ var IR;
         numPatterns;
         name;
         count;
+        isNotEmpty;
         arr;
         capacity;
         declareMatchAt;
@@ -7469,6 +7507,7 @@ var IR;
             this.numPatterns = numPatterns;
             this.name = IR.NAMES.sampler(g, id);
             this.count = IR.attr(this.name, 'count');
+            this.isNotEmpty = IR.OP.gt(this.count, IR.ZERO);
             this.arr = IR.attr(this.name, 'arr');
             this.capacity = IR.OP.multConstant(g.n, numPatterns);
             this.declareMatchAt = this.g.declareAtIndex(IR.OP.divConstant(MATCH, this.numPatterns));
@@ -7530,6 +7569,7 @@ var IR;
     class TrivialSampler {
         g;
         count;
+        isNotEmpty = IR.TRUE;
         width;
         height;
         is1x1;
@@ -7613,6 +7653,41 @@ var IR;
         }
     }
     IR.TrivialSampler = TrivialSampler;
+    class EmptySampler {
+        count = IR.ZERO;
+        isNotEmpty = IR.FALSE;
+        declare() {
+            return IR.PASS;
+        }
+        handleMatch(f, patternIndex) {
+            fail();
+        }
+        sampleWithReplacement(cases) {
+            return IR.throw_(`empty sampler`);
+        }
+        beginSamplingWithoutReplacement() {
+            return IR.PASS;
+        }
+        sampleWithoutReplacement(cases, count) {
+            return IR.throw_(`empty sampler`);
+        }
+        copyInto(matchesArray) {
+            return IR.PASS;
+        }
+        copyIntoOffset(matchesArray, offset, m, c) {
+            return IR.PASS;
+        }
+        shuffleInto(matches) {
+            return IR.PASS;
+        }
+        shuffleIntoOffset(matches, m, c) {
+            return IR.PASS;
+        }
+        forEach(then) {
+            return IR.PASS;
+        }
+    }
+    IR.EmptySampler = EmptySampler;
 })(IR || (IR = {}));
 var Convolution;
 (function (Convolution) {
@@ -8456,6 +8531,15 @@ var ISet;
         return out;
     }
     ISet.intersection = intersection;
+    /**
+     * Returns a new set which is the difference of `a` and `b`, in O(N) time.
+     */
+    function difference(a, b) {
+        const out = new Uint32Array(a);
+        removeAll(out, b);
+        return out;
+    }
+    ISet.difference = difference;
     /**
      * Determines whether the two sets are disjoint (i.e. they have no elements
      * in common).

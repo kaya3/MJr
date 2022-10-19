@@ -32,7 +32,7 @@ namespace Resolver {
             n: 'const int',
             temperature: 'float?',
             anneal: 'float?',
-            on: 'const charset.in',
+            on: 'const charset.in?',
             epsilon: 'const float?',
             periodic: 'const bool?',
         },
@@ -1278,7 +1278,7 @@ namespace Resolver {
             
             const {on, sample, n, periodic = true, temperature, anneal, epsilon = 0.125} = props;
             // 1x1 patterns should be folded
-            if(on.kind !== 'leaf' && on.kind !== 'top') { fail(); }
+            if(on !== undefined && on.kind !== 'leaf' && on.kind !== 'top') { fail(); }
             
             if(sample.pattern.some(c => c === PatternValue.WILDCARD || c === PatternValue.UNION)) {
                 ctx.error(`'sample' must not have wildcards or unions`, stmt.sample.pos);
@@ -1286,6 +1286,9 @@ namespace Resolver {
             if(n < 1 || n > sample.width || n > sample.height) {
                 ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
                 return undefined;
+            }
+            if(epsilon <= 0) {
+                ctx.error(`'epsilon' must be positive`, stmt.epsilon!.pos);
             }
             if(temperature !== undefined && temperature.kind === 'expr.constant' && temperature.constant.value < 0) {
                 ctx.error(`'temperature' must be non-negative`, stmt.temperature!.pos);
@@ -1319,7 +1322,13 @@ namespace Resolver {
                 weight,
             }));
             
-            return {kind: 'stmt', stmt: {kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, anneal, epsilon, pos}};
+            return {kind: 'stmt', stmt: {
+                kind: 'stmt.convchain',
+                inGrid: ctx.grid.id,
+                on: on ?? PatternTree.top(1, 1, ctx.grid.alphabet.key),
+                weights, output, temperature, anneal, epsilon,
+                pos,
+            }};
         },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));

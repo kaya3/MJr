@@ -11,13 +11,9 @@ namespace Compiler {
     } = IR;
     
     export class Stmt_BasicOne implements StmtCompiler {
-        constructor(
-            readonly stmt: ASG.BasicRulesStmt,
-            readonly ifChanged: IR.Stmt,
-            readonly then: IR.Stmt,
-        ) {}
+        constructor(readonly stmt: ASG.BasicRulesStmt) {}
         
-        compile(c: Compiler): IR.Stmt {
+        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {rewrites} = this.stmt;
             const g = c.grids[this.stmt.inGrid];
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
@@ -40,9 +36,9 @@ namespace Compiler {
                     OP.gt(sampler.count, IR.ZERO),
                     IR.block([
                         sampler.sampleWithReplacement(cases),
-                        this.ifChanged,
+                        ifChanged,
                     ]),
-                    this.then,
+                    then,
                 )
                 : IR.block([
                     sampler.beginSamplingWithoutReplacement(),
@@ -52,7 +48,7 @@ namespace Compiler {
                         OP.and(c.matches.isNotEmpty, OP.not(ANY)),
                         sampler.sampleWithoutReplacement(cases, c.matches.count),
                     ),
-                    IR.if_(ANY, this.ifChanged, this.then),
+                    IR.if_(ANY, ifChanged, then),
                 ]);
         }
     }

@@ -28,11 +28,6 @@ namespace IR {
     export type Expr = AttrExpr | LetInExpr | LiteralExpr | NameExpr | ObjectExpr | OpExpr | ParamExpr
     export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | ContinueStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
     
-    export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
-    export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
-    export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz'
-    export type Op = BinaryOp | UnaryOp
-    
     type LibClass = KeysMatching<typeof MJr, new (...args: never[]) => unknown>
     type LibMethod<K extends LibClass | 'PRNG'>
         = K extends LibClass

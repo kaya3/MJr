@@ -68,6 +68,10 @@ namespace IR {
         matcherVar(g: Grid, id: number, v: MatcherVar): NameExpr {
             return nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
         },
+        
+        otherVar(stmtID: number, name: string): NameExpr {
+            return nameExpr(`stmt${stmtID}_${name}`);
+        },
     };
     
     type ConvBufferVar = 'width' | 'height' | 'n' | 'buffer'

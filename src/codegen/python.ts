@@ -149,6 +149,10 @@ namespace CodeGen {
                     out.beginLine();
                     out.write('from fractions import Fraction');
                 }
+                if(stmt.opsUsed.includes('float_log2')) {
+                    out.beginLine();
+                    out.write('import math');
+                }
             },
             'stmt.return': (out, stmt) => {
                 out.beginLine();
@@ -374,7 +378,7 @@ namespace CodeGen {
             function _intOp(p: Precedence, op: string): UnaryOpSpec {
                 return unaryOp(Precedence.ATTR_ACCESS_CALL, `int32(${op}`, p, ')');
             }
-            function _func(name: 'float' | 'Fraction' | 'int_ctz' | 'str'): UnaryOpSpec {
+            function _func(name: 'float' | 'Fraction' | 'math.log2' | 'int_ctz' | 'str'): UnaryOpSpec {
                 return unaryOp(Precedence.ATTR_ACCESS_CALL, `${name}(`, Precedence.MIN, ')');
             }
             
@@ -387,6 +391,7 @@ namespace CodeGen {
                 
                 float_uminus: UMINUS,
                 float_checkzero: NOOP,
+                float_log2: _func('math.log2'),
                 
                 fraction_uminus: UMINUS,
                 fraction_checkzero: NOOP,

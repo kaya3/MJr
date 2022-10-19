@@ -32,6 +32,7 @@ namespace Resolver {
             n: 'const int',
             temperature: 'float?',
             on: 'const charset.in',
+            epsilon: 'const float?',
             periodic: 'const bool?',
         },
         'stmt.log': {
@@ -1274,7 +1275,10 @@ namespace Resolver {
             const props = _resolveProps(stmt, ctx);
             if(props === undefined) { return undefined; }
             
-            const {on, sample, n, periodic = true, temperature} = props;
+            const {on, sample, n, periodic = true, temperature, epsilon = 0.125} = props;
+            // 1x1 patterns should be folded
+            if(on.kind !== 'leaf' && on.kind !== 'top') { fail(); }
+            
             if(sample.pattern.some(c => c === PatternValue.WILDCARD || c === PatternValue.UNION)) {
                 ctx.error(`'sample' must not have wildcards or unions`, stmt.sample.pos);
             }
@@ -1283,10 +1287,14 @@ namespace Resolver {
                 return undefined;
             }
             
+            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern)).sort();
+            if(output.length < 2) {
+                ctx.error(`'sample' must use at least two different alphabet symbols`, stmt.sample.pos);
+                return undefined;
+            }
+            
             const samplePatterns = IDMap.withKey(Pattern.key);
             const sampleWeights: number[] = [];
-            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern));
-            
             for(const symmetry of Symmetry.generate(sample, ctx.symmetryName, Pattern.rotate, Pattern.reflect, Pattern.key)) {
                 for(const p of Pattern.windowsOf(symmetry, n, periodic)) {
                     const id = samplePatterns.getOrCreateID(p);
@@ -1304,7 +1312,7 @@ namespace Resolver {
                 weight,
             }));
             
-            return {kind: 'stmt', stmt: {kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, pos}};
+            return {kind: 'stmt', stmt: {kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, epsilon, pos}};
         },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));

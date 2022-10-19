@@ -4,7 +4,7 @@ namespace IR {
     // TODO: more kinds of match handler (e.g. conditional on a boolean expression)
     export type MatchHandler = Readonly<
         | {kind: 'sampler', pattern: PatternTree, sampler: AbstractSampler, i: number}
-        | {kind: 'counter', pattern: PatternTree, counter: NameExpr, weight: number}
+        | {kind: 'counter', pattern: PatternTree, counter: NameExpr, weight: Expr}
         | {kind: 'convolution', pattern: Pattern, buffer: ConvBuffer, i: number}
     >
     
@@ -36,7 +36,7 @@ namespace IR {
                     return h.sampler.handleMatch(f, OP.addConstant(I, h.i - acceptID));
                 
                 case 'counter':
-                    return assign(h.counter, f === 'add' ? '+=' : '-=', int(h.weight));
+                    return assign(h.counter, f === 'add' ? '+=' : '-=', h.weight);
                 
                 case 'convolution':
                     return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');

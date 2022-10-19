@@ -391,6 +391,9 @@ var IR;
         matcherVar(g, id, v) {
             return IR.nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
         },
+        otherVar(stmtID, name) {
+            return IR.nameExpr(`stmt${stmtID}_${name}`);
+        },
     };
 })(IR || (IR = {}));
 var IR;
@@ -726,6 +729,10 @@ var IR;
             return IR.isInt(expr) ? IR.int(MJr.OPS.int_ctz(expr.value))
                 : _unOp('int_ctz', expr);
         },
+        log2(expr) {
+            return expr.kind === 'expr.literal.float' ? IR.float(Math.log2(expr.value))
+                : _unOp('float_log2', expr);
+        },
         eq(left, right) {
             if (IR.isInt(left) && IR.isInt(right)) {
                 return left.value === right.value ? IR.TRUE : IR.FALSE;
@@ -799,7 +806,8 @@ var IR;
     const { RNG } = IR.NAMES;
     IR.PRNG = {
         nextInt(n) {
-            return IR.libMethodCall('PRNG', 'nextInt', RNG, [n]);
+            return IR.isInt(n) && n.value === 1 ? IR.ZERO
+                : IR.libMethodCall('PRNG', 'nextInt', RNG, [n]);
         },
         nextIntChecked(n) {
             return IR.libFunctionCall('nextIntChecked', [RNG, n]);
@@ -961,14 +969,10 @@ var Compiler;
     }
     class Stmt_BasicAllPrl {
         stmt;
-        ifChanged;
-        then;
-        constructor(stmt, ifChanged, then) {
+        constructor(stmt) {
             this.stmt = stmt;
-            this.ifChanged = ifChanged;
-            this.then = then;
         }
-        compile(c) {
+        compile(c, ifChanged, then) {
             const { stmt } = this;
             const { rewrites } = stmt;
             const g = c.grids[stmt.inGrid];
@@ -1007,7 +1011,7 @@ var Compiler;
             const secondPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, undefined));
             // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
             // but no flag needed if this statement isn't branching anyway
-            const useFlag = (this.ifChanged !== IR.PASS || this.then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
+            const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
             // optimisation for common case: all rewrites are unconditional and definitely effective
             if (firstPassConditions.every(c => c === IR.TRUE)) {
                 const sampler = g.makeSampler(rewrites.map(rule => rule.from));
@@ -1041,7 +1045,9 @@ var Compiler;
                 outPatternIsSameEverywhere[i] ? IR.NAMES.tmpPattern(i) : c.expr(rule.to)),
                 IR.if_(OP.and(secondPassConditions[i], useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE), Compiler.doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false)),
             ]));
-            const ifChanged = c.config.animate ? IR.block([g.yield_(), this.ifChanged]) : this.ifChanged;
+            if (c.config.animate) {
+                ifChanged = IR.block([g.yield_(), ifChanged]);
+            }
             out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
                 useMask ? c.mask.clear(g) : IR.PASS,
                 IR.forRange(I, IR.ZERO, c.matches.count, [
@@ -1050,7 +1056,7 @@ var Compiler;
                     IR.switch_(OP.modConstant(MATCH, k), doWrites),
                 ]),
                 useFlag ? IR.PASS : ifChanged,
-            ]), useFlag ? undefined : this.then), useFlag ? IR.if_(ANY, ifChanged, this.then) : IR.PASS);
+            ]), useFlag ? undefined : then), useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS);
             return IR.block(out);
         }
     }
@@ -1060,61 +1066,108 @@ var Compiler;
 ///<reference path="../ir/ops.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT, AT_X, AT_Y, I, OLD_S, OLD_T, ANY, }, OP, PRNG, } = IR;
-    class stmt_convchain {
+    const { NAMES: { AT, AT_X, AT_Y, I, OLD_S, ANY, }, OP, PRNG, } = IR;
+    class Stmt_ConvChain {
         stmt;
-        ifChanged;
-        then;
-        constructor(stmt, ifChanged, then) {
+        colourArray;
+        c2iArray;
+        c2iOffset;
+        matchesArray;
+        matchesCount;
+        score;
+        temperature;
+        constructor(stmt, stmtID, c) {
             this.stmt = stmt;
-            this.ifChanged = ifChanged;
-            this.then = then;
+            const g = c.grids[stmt.inGrid];
+            const alphabetSize = g.grid.alphabet.key.length;
+            const colours = stmt.output;
+            this.c2iOffset = colours[0];
+            const colourRange = colours[colours.length - 1] + 1 - colours[0];
+            const colourToIndex = emptyArray(colourRange, 0);
+            for (let i = 0; i < colours.length; ++i) {
+                const d = colours[i] - colours[0];
+                colourToIndex[d] = i + 1;
+            }
+            this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
+            this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
+            this.matchesArray = IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
+            this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
+            const logEpsilon = Math.log2(stmt.epsilon);
+            this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
+                pattern: w.pattern,
+                weight: Math.log2(w.weight) - logEpsilon,
+            })), true);
+            this.temperature = stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
         }
-        compile(c) {
+        declare() {
+            return IR.block([
+                IR.declVars([
+                    ...this.colourArray.decl,
+                    ...this.c2iArray.decl,
+                    ...this.matchesArray.decl,
+                ]),
+                IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
+                this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
+            ]);
+        }
+        compileReset(c) {
+            return IR.assign(this.matchesCount, '=', IR.MINUS_ONE);
+        }
+        compile(c, ifChanged, then) {
             const { stmt } = this;
             const g = c.grids[stmt.inGrid];
-            const sampler = g.makeSampler([stmt.on]);
-            const counter = g.makeWeightedCounter(stmt.weights);
             const output = stmt.output;
-            const temperature = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+            if (output.some(x => ISet.has(stmt.on.masks[0], x))) {
+                // TODO
+                c.notSupported(`'convchain' with overlapping 'on' and output`, stmt.pos);
+            }
+            const sampler = g.makeSampler([stmt.on]);
+            const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+            const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature } = this;
             // TODO
-            const colourArrayName = null;
-            const matchesArrayName = null;
-            const matchesCount = null;
-            const doReset = null;
-            const setFlagToNotDoResetNextTime = null;
-            const keepProbability = null;
-            const colourArray = IR.makeConstArray(colourArrayName, output, g.grid.alphabet.key.length);
-            const matchesArray = IR.makeMutableArray(matchesArrayName, g.n, IR.INT32_ARRAY_TYPE.domainSize);
+            const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
+                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))), score);
             const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
+            const getRandomDifferentColour = colourArray.get(OP.modConstant(OP.add(c2iArray.get(OP.minusConstant(OLD_S, c2iOffset)), PRNG.nextInt(IR.int(output.length - 1))), output.length));
             const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
-            return IR.if_(doReset, IR.if_(OP.gt(matchesCount, IR.ZERO), IR.block([
-                sampler.copyInto(matchesArrayName),
+            if (c.config.animate) {
+                ifChanged = IR.block([g.yield_(), ifChanged]);
+            }
+            const shouldInit = OP.lt(matchesCount, IR.ZERO);
+            const doInit = IR.block([
                 IR.assign(matchesCount, '=', sampler.count),
-                IR.forRange(I, IR.ZERO, matchesCount, [
-                    g.write(matchesArray.get(I), getRandomColour),
-                ]),
-                setFlagToNotDoResetNextTime,
-                this.ifChanged,
-            ]), this.then), IR.block([
+                temperature !== undefined ? IR.block([
+                    IR.assign(temperature, '=', temperatureInit),
+                    IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`temperature must be non-negative`)),
+                ]) : IR.PASS,
+                IR.if_(OP.gt(matchesCount, IR.ZERO), IR.block([
+                    sampler.copyInto(matchesArray.name),
+                    IR.forRange(I, IR.ZERO, matchesCount, [
+                        // TODO: if `on` and `output` overlap, only randomise if existing colour is not in `output`
+                        g.write(matchesArray.get(I), getRandomColour),
+                    ]),
+                    ifChanged,
+                ]), then),
+            ]);
+            const doMain = IR.block([
                 IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                 IR.forRange(I, IR.ZERO, matchesCount, [
                     g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
                     IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
-                    IR.declVar(OLD_T, IR.INT_TYPE, counter),
-                    g.write(AT, getRandomColour),
+                    IR.assign(score, '=', IR.FLOAT_ZERO),
+                    g.write(AT, getRandomDifferentColour),
                     update1x1,
-                    IR.if_(OP.and(OP.lt(counter, OLD_T), OP.ge(PRNG.NEXT_DOUBLE, keepProbability)), IR.block([
+                    IR.if_(OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability), IR.assign(ANY, '=', IR.TRUE), IR.block([
                         g.write(AT, OLD_S),
                         update1x1,
-                        IR.assign(ANY, '=', IR.TRUE),
                     ])),
                 ]),
-                IR.if_(ANY, IR.block([c.config.animate ? g.yield_() : IR.PASS, this.ifChanged]), this.then),
-            ]));
+                IR.if_(ANY, ifChanged, then),
+            ]);
+            return IR.if_(shouldInit, doInit, doMain);
         }
     }
-    Compiler.stmt_convchain = stmt_convchain;
+    Compiler.Stmt_ConvChain = Stmt_ConvChain;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
 var Compiler;
@@ -1122,14 +1175,10 @@ var Compiler;
     const { NAMES: { AT, AT_X, AT_Y, AT_CONV, P, ANY, }, } = IR;
     class Stmt_Convolution {
         stmt;
-        ifChanged;
-        then;
-        constructor(stmt, ifChanged, then) {
+        constructor(stmt) {
             this.stmt = stmt;
-            this.ifChanged = ifChanged;
-            this.then = then;
         }
-        compile(c) {
+        compile(c, ifChanged, then) {
             const { stmt } = this;
             const g = c.grids[stmt.inGrid];
             const buffer = g.makeConvBuffer(stmt.kernel);
@@ -1159,8 +1208,8 @@ var Compiler;
                     // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
                     g.update(IR.ZERO, IR.ZERO, g.width, g.height),
                     c.config.animate ? g.yield_() : IR.PASS,
-                    this.ifChanged,
-                ]), this.then),
+                    ifChanged,
+                ]), then),
             ]);
         }
     }
@@ -1173,14 +1222,10 @@ var Compiler;
     const { NAMES: { P, ANY, }, OP, } = IR;
     class Stmt_BasicOne {
         stmt;
-        ifChanged;
-        then;
-        constructor(stmt, ifChanged, then) {
+        constructor(stmt) {
             this.stmt = stmt;
-            this.ifChanged = ifChanged;
-            this.then = then;
         }
-        compile(c) {
+        compile(c, ifChanged, then) {
             const { rewrites } = this.stmt;
             const g = c.grids[this.stmt.inGrid];
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
@@ -1194,14 +1239,14 @@ var Compiler;
             return allUnconditionalAndEffective
                 ? IR.if_(OP.gt(sampler.count, IR.ZERO), IR.block([
                     sampler.sampleWithReplacement(cases),
-                    this.ifChanged,
-                ]), this.then)
+                    ifChanged,
+                ]), then)
                 : IR.block([
                     sampler.beginSamplingWithoutReplacement(),
                     c.matches.declareCount(sampler.count, true),
                     IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                     IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), sampler.sampleWithoutReplacement(cases, c.matches.count)),
-                    IR.if_(ANY, this.ifChanged, this.then),
+                    IR.if_(ANY, ifChanged, then),
                 ]);
         }
     }
@@ -1306,11 +1351,15 @@ var Compiler;
             const date = new Date().toLocaleString('en-SE', { timeZoneName: 'short' });
             const { params, endGridID } = this.asg;
             const nodeCompilers = this.switchNodes.map(node => this.getStmtCompiler(node));
-            const switchCases = nodeCompilers.map(({ before, comp, after }) => IR.block([
-                before,
-                comp.compile(this),
-                ...after,
-            ]));
+            const switchCases = this.switchNodes.map((node, i) => {
+                const { before, ifTrue, ifFalse, after } = this.getNodeTransitions(node);
+                const nc = nodeCompilers[i];
+                return IR.block([
+                    before,
+                    nc.compile(this, ifTrue ?? IR.PASS, ifFalse ?? IR.PASS),
+                    ...after,
+                ]);
+            });
             // TODO: potentials
             const endGridObj = this.grids[endGridID].useObj();
             const gridDecls = this.grids.flatMap(g => g.declare());
@@ -1327,7 +1376,13 @@ var Compiler;
             mainParams.push(RNG);
             mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
             // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
-            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this);
+            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this), otherDecls = [];
+            for (const nc of nodeCompilers) {
+                const r = nc.declare?.();
+                if (r !== undefined) {
+                    otherDecls.push(r);
+                }
+            }
             // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
             // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
             // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
@@ -1345,6 +1400,7 @@ var Compiler;
                 ...maskDecl,
                 constDecls,
                 ...varDecls,
+                ...otherDecls,
                 flagDecls,
                 limitDecls,
                 maxIterations !== 0 ? IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true) : IR.PASS,
@@ -1358,12 +1414,15 @@ var Compiler;
             ]));
         }
         getStmtCompiler(node) {
+            return getOrCompute(this.nodeCompilers, node.id, () => node.kind === 'reset' ? new Stmt_Reset(node)
+                : new STMT_COMPILERS[node.stmt.kind](node.stmt, node.id, this));
+        }
+        getNodeTransitions(node) {
             switch (node.kind) {
                 case 'reset': {
                     const { stmt } = node;
                     return {
                         before: IR.comment(`reset ${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp: new Stmt_Reset(node),
                         after: this.goto(node.id, node.then.nodeID),
                     };
                 }
@@ -1375,23 +1434,17 @@ var Compiler;
                         eitherWay.push(s);
                     }
                     const { stmt } = node;
-                    const cls = STMT_COMPILERS[stmt.kind];
-                    const comp = new cls(stmt, IR.block(ifTrue), IR.block(ifFalse));
-                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp,
+                        ifTrue: IR.block(ifTrue),
+                        ifFalse: IR.block(ifFalse),
                         after: eitherWay,
                     };
                 }
                 case 'stmt.nonbranching': {
                     const { stmt } = node;
-                    const cls = STMT_COMPILERS[stmt.kind];
-                    const comp = new cls(stmt);
-                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp,
                         after: this.goto(node.id, node.then.nodeID),
                     };
                 }
@@ -1546,7 +1599,7 @@ var Compiler;
         'stmt.put': Compiler.Stmt_Put,
         'stmt.use': Stmt_Use,
         // branching
-        'stmt.convchain': Stmt_NotSupported,
+        'stmt.convchain': Compiler.Stmt_ConvChain,
         'stmt.path': Stmt_NotSupported,
         'stmt.rules.basic.all': Compiler.Stmt_BasicAllPrl,
         'stmt.rules.basic.one': Compiler.Stmt_BasicOne,
@@ -2209,6 +2262,7 @@ var CodeGen;
                 // need space to avoid incorrect parse of `- - x`
                 float_uminus: CodeGen.prefixOp(14 /* Precedence.UPLUS_UMINUS */, '- '),
                 float_checkzero: _func('float_checkzero'),
+                float_log2: _func('Math.log2'),
                 fraction_uminus: _func('fraction_uminus'),
                 fraction_checkzero: CodeGen.NOOP,
                 // need space to avoid incorrect parse of `- - x`
@@ -2473,6 +2527,10 @@ var CodeGen;
                     out.beginLine();
                     out.write('from fractions import Fraction');
                 }
+                if (stmt.opsUsed.includes('float_log2')) {
+                    out.beginLine();
+                    out.write('import math');
+                }
             },
             'stmt.return': (out, stmt) => {
                 out.beginLine();
@@ -2687,6 +2745,7 @@ var CodeGen;
                 bool_not: CodeGen.prefixOp(6 /* Precedence.BOOL_NOT */, 'not '),
                 float_uminus: UMINUS,
                 float_checkzero: CodeGen.NOOP,
+                float_log2: _func('math.log2'),
                 fraction_uminus: UMINUS,
                 fraction_checkzero: CodeGen.NOOP,
                 int_uminus: _intOp(14 /* Precedence.UPLUS_UMINUS */, '-'),
@@ -3420,7 +3479,7 @@ var Parser;
      */
     const ARGS = ((specs) => specs)({
         all: { temperature: false, search: false, maxStates: false, depthCoefficient: false },
-        convchain: { sample: true, n: true, on: true, temperature: false, periodic: false },
+        convchain: { sample: true, n: true, on: true, temperature: false, epsilon: false, periodic: false },
         convolution: { kernel: true, boundary: false },
         field: { for_: true, on: true, from: false, to: false, essential: false, recompute: false },
         grid: { scaleX: false, scaleY: false, periodic: false },
@@ -4352,6 +4411,7 @@ var Resolver;
             n: 'const int',
             temperature: 'float?',
             on: 'const charset.in',
+            epsilon: 'const float?',
             periodic: 'const bool?',
         },
         'stmt.log': {
@@ -5591,7 +5651,11 @@ var Resolver;
             if (props === undefined) {
                 return undefined;
             }
-            const { on, sample, n, periodic = true, temperature } = props;
+            const { on, sample, n, periodic = true, temperature, epsilon = 0.125 } = props;
+            // 1x1 patterns should be folded
+            if (on.kind !== 'leaf' && on.kind !== 'top') {
+                fail();
+            }
             if (sample.pattern.some(c => c === 255 /* PatternValue.WILDCARD */ || c === 254 /* PatternValue.UNION */)) {
                 ctx.error(`'sample' must not have wildcards or unions`, stmt.sample.pos);
             }
@@ -5599,9 +5663,13 @@ var Resolver;
                 ctx.error(`'n' must be at least 1 and at most the sample dimensions`, stmt.n.pos);
                 return undefined;
             }
+            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern)).sort();
+            if (output.length < 2) {
+                ctx.error(`'sample' must use at least two different alphabet symbols`, stmt.sample.pos);
+                return undefined;
+            }
             const samplePatterns = IDMap.withKey(Pattern.key);
             const sampleWeights = [];
-            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern));
             for (const symmetry of Symmetry.generate(sample, ctx.symmetryName, Pattern.rotate, Pattern.reflect, Pattern.key)) {
                 for (const p of Pattern.windowsOf(symmetry, n, periodic)) {
                     const id = samplePatterns.getOrCreateID(p);
@@ -5619,7 +5687,7 @@ var Resolver;
                 pattern: v.reduce(PatternTree.or),
                 weight,
             }));
-            return { kind: 'stmt', stmt: { kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, pos } };
+            return { kind: 'stmt', stmt: { kind: 'stmt.convchain', inGrid: ctx.grid.id, on, weights, output, temperature, epsilon, pos } };
         },
         'stmt.decl': (stmt, ctx, canReset) => {
             let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));
@@ -6680,27 +6748,42 @@ var IR;
             return getOrCompute(counters, key, () => {
                 const counter = IR.NAMES.counter(this, counters.size);
                 for (const pattern of patterns) {
-                    matcher.addMatchHandler({ kind: 'counter', pattern, counter, weight: 1 });
+                    matcher.addMatchHandler({ kind: 'counter', pattern, counter, weight: IR.ONE });
                 }
                 // need to set scale to avoid overflowing the counter
                 this.scale = Math.max(this.scale, patterns.length);
-                return counter;
-            });
+                return {
+                    name: counter,
+                    type: IR.INT_TYPE,
+                    initialiser: IR.ZERO,
+                };
+            }).name;
         }
-        makeWeightedCounter(weights) {
+        makeWeightedCounter(weights, useFloat) {
             const { counters, matcher } = this;
-            const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n');
+            const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n') + `\nuseFloat=${useFloat}`;
             return getOrCompute(counters, key, () => {
                 const counter = IR.NAMES.counter(this, counters.size);
                 let totalWeight = 0;
                 for (const { pattern, weight } of weights) {
-                    matcher.addMatchHandler({ kind: 'counter', pattern, counter, weight });
+                    matcher.addMatchHandler({
+                        kind: 'counter',
+                        pattern,
+                        counter,
+                        weight: useFloat ? IR.float(weight) : IR.int(weight),
+                    });
                     totalWeight += weight;
                 }
                 // need to set scale to avoid overflowing the counter
-                this.scale = Math.max(this.scale, totalWeight);
-                return counter;
-            });
+                if (!useFloat) {
+                    this.scale = Math.max(this.scale, totalWeight);
+                }
+                return {
+                    name: counter,
+                    type: useFloat ? IR.FLOAT_TYPE : IR.INT_TYPE,
+                    initialiser: useFloat ? IR.FLOAT_ZERO : IR.ZERO,
+                };
+            }).name;
         }
         makeSampler(patterns) {
             const { samplers, matcher } = this;
@@ -6765,11 +6848,7 @@ var IR;
             if (lfsrFeedbackTerm !== undefined) {
                 consts.push({ name: lfsrFeedbackTerm, type: IR.INT_TYPE, initialiser: IR.libFunctionCall('lfsrFeedbackTerm', [n]) });
             }
-            vars.push(...Array.from(this.counters.values(), counter => ({
-                name: counter,
-                type: IR.INT_TYPE,
-                initialiser: IR.ZERO,
-            })));
+            vars.push(...Array.from(this.counters.values()));
             return [
                 IR.declVars(consts),
                 IR.declVars(vars, true),
@@ -6957,7 +7036,7 @@ var IR;
                     // `I - constant` allows code to be shared among consecutive match handlers
                     return h.sampler.handleMatch(f, IR.OP.addConstant(I, h.i - acceptID));
                 case 'counter':
-                    return IR.assign(h.counter, f === 'add' ? '+=' : '-=', IR.int(h.weight));
+                    return IR.assign(h.counter, f === 'add' ? '+=' : '-=', h.weight);
                 case 'convolution':
                     return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');
             }
@@ -7298,6 +7377,8 @@ var IR;
                         return IR.OP.bitwiseNot(child);
                     case 'int_ctz':
                         return IR.OP.countTrailingZeros(child);
+                    case 'float_log2':
+                        return IR.OP.log2(child);
                     default:
                         return IR.unaryOp(node.op, child);
                 }
@@ -8741,8 +8822,8 @@ class Pattern extends MJr.Pattern {
     }
     static windowsOf(p, n, periodic) {
         const { width, height, alphabetKey, pattern, masks, hasUnions } = p;
-        const maxX = periodic ? width - n + 1 : width;
-        const maxY = periodic ? height - n + 1 : height;
+        const maxX = periodic ? width : width - n + 1;
+        const maxY = periodic ? height : height - n + 1;
         const out = [];
         for (let y = 0; y < maxY; ++y) {
             for (let x = 0; x < maxX; ++x) {

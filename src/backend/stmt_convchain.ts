@@ -6,82 +6,151 @@ namespace Compiler {
         NAMES: {
             AT, AT_X, AT_Y,
             I,
-            OLD_S, OLD_T,
+            OLD_S,
             ANY,
         },
         OP,
         PRNG,
     } = IR;
     
-    export class stmt_convchain implements StmtCompiler {
+    export class Stmt_ConvChain implements StmtCompiler {
+        private readonly colourArray: IR.ConstArray;
+        private readonly c2iArray: IR.ConstArray;
+        private readonly c2iOffset: number;
+        private readonly matchesArray: IR.MutableArray;
+        private readonly matchesCount: IR.NameExpr;
+        private readonly score: IR.NameExpr;
+        private readonly temperature: IR.NameExpr | undefined;
+
         constructor(
             readonly stmt: ASG.ConvChainStmt,
-            readonly ifChanged: IR.Stmt,
-            readonly then: IR.Stmt,
-        ) {}
+            stmtID: number,
+            c: Compiler,
+        ) {
+            const g = c.grids[stmt.inGrid];
+            const alphabetSize = g.grid.alphabet.key.length;
+            const colours = stmt.output;
+            
+            this.c2iOffset = colours[0];
+            const colourRange = colours[colours.length - 1] + 1 - colours[0];
+            const colourToIndex = emptyArray(colourRange, 0);
+            for(let i = 0; i < colours.length; ++i) {
+                const d = colours[i] - colours[0];
+                colourToIndex[d] = i + 1;
+            }
+            
+            this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
+            this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
+            
+            this.matchesArray = IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
+            this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
+            
+            const logEpsilon = Math.log2(stmt.epsilon);
+            this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
+                pattern: w.pattern,
+                weight: Math.log2(w.weight) - logEpsilon,
+            })), true);
+            this.temperature = stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
+        }
         
-        compile(c: Compiler): IR.Stmt {
+        declare(): IR.Stmt {
+            return IR.block([
+                IR.declVars([
+                    ...this.colourArray.decl,
+                    ...this.c2iArray.decl,
+                    ...this.matchesArray.decl,
+                ]),
+                IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
+                this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
+            ]);
+        }
+        
+        compileReset(c: Compiler): IR.Stmt {
+            return IR.assign(this.matchesCount, '=', IR.MINUS_ONE);
+        }
+        
+        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {stmt} = this;
             const g = c.grids[stmt.inGrid];
             
-            const sampler = g.makeSampler([stmt.on]);
-            const counter = g.makeWeightedCounter(stmt.weights);
             const output = stmt.output;
-            const temperature = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+            if(output.some(x => ISet.has(stmt.on.masks[0], x))) {
+                // TODO
+                c.notSupported(`'convchain' with overlapping 'on' and output`, stmt.pos);
+            }
             
+            const sampler = g.makeSampler([stmt.on]);
+            const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
+            
+            const {colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature} = this;
             // TODO
-            const colourArrayName = null!;
-            const matchesArrayName = null!;
-            const matchesCount = null!;
-            const doReset = null!;
-            const setFlagToNotDoResetNextTime = null!;
-            const keepProbability = null!;
-            
-            const colourArray = IR.makeConstArray(colourArrayName, output, g.grid.alphabet.key.length);
-            const matchesArray = IR.makeMutableArray(matchesArrayName, g.n, IR.INT32_ARRAY_TYPE.domainSize);
-            
+            const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
+                : IR.binaryOp(
+                    'float_lt',
+                    IR.binaryOp(
+                        'float_mult',
+                        temperature ?? temperatureInit,
+                        OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))
+                    ),
+                    score,
+                );
             const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
+            const getRandomDifferentColour = colourArray.get(
+                OP.modConstant(
+                    OP.add(
+                        c2iArray.get(OP.minusConstant(OLD_S, c2iOffset)),
+                        PRNG.nextInt(IR.int(output.length - 1))
+                    ),
+                    output.length,
+                )
+            );
             const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
             
-            return IR.if_(
-                doReset,
+            if(c.config.animate) {
+                ifChanged = IR.block([g.yield_(), ifChanged]);
+            }
+            
+            const shouldInit = OP.lt(matchesCount, IR.ZERO);
+            const doInit = IR.block([
+                IR.assign(matchesCount, '=', sampler.count),
+                temperature !== undefined ? IR.block([
+                    IR.assign(temperature, '=', temperatureInit),
+                    IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`temperature must be non-negative`)),
+                ]): IR.PASS,
                 IR.if_(
                     OP.gt(matchesCount, IR.ZERO),
                     IR.block([
-                        sampler.copyInto(matchesArrayName),
-                        IR.assign(matchesCount, '=', sampler.count),
+                        sampler.copyInto(matchesArray.name),
                         IR.forRange(I, IR.ZERO, matchesCount, [
+                            // TODO: if `on` and `output` overlap, only randomise if existing colour is not in `output`
                             g.write(matchesArray.get(I), getRandomColour),
                         ]),
-                        setFlagToNotDoResetNextTime,
-                        this.ifChanged,
+                        ifChanged,
                     ]),
-                    this.then,
+                    then,
                 ),
-                IR.block([
-                    IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                    IR.forRange(I, IR.ZERO, matchesCount, [
-                        g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
-                        IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
-                        IR.declVar(OLD_T, IR.INT_TYPE, counter),
-                        g.write(AT, getRandomColour),
-                        update1x1,
-                        IR.if_(
-                            OP.and(OP.lt(counter, OLD_T), OP.ge(PRNG.NEXT_DOUBLE, keepProbability)),
-                            IR.block([
-                                g.write(AT, OLD_S),
-                                update1x1,
-                                IR.assign(ANY, '=', IR.TRUE),
-                            ]),
-                        ),
-                    ]),
+            ]);
+            const doMain = IR.block([
+                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
+                IR.forRange(I, IR.ZERO, matchesCount, [
+                    g.declareAtIndex(matchesArray.get(PRNG.nextInt(matchesCount))),
+                    IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
+                    IR.assign(score, '=', IR.FLOAT_ZERO),
+                    g.write(AT, getRandomDifferentColour),
+                    update1x1,
                     IR.if_(
-                        ANY,
-                        IR.block([c.config.animate ? g.yield_() : IR.PASS, this.ifChanged]),
-                        this.then,
+                        OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability),
+                        IR.assign(ANY, '=', IR.TRUE),
+                        IR.block([
+                            g.write(AT, OLD_S),
+                            update1x1,
+                        ]),
                     ),
                 ]),
-            );
+                IR.if_(ANY, ifChanged, then),
+            ]);
+            
+            return IR.if_(shouldInit, doInit, doMain);
         }
     }
 }

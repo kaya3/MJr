@@ -5,7 +5,8 @@ namespace IR {
     
     export const PRNG = {
         nextInt(n: Expr): Expr {
-            return libMethodCall('PRNG', 'nextInt', RNG, [n]);
+            return isInt(n) && n.value === 1 ? ZERO
+                : libMethodCall('PRNG', 'nextInt', RNG, [n]);
         },
         
         nextIntChecked(n: Expr): Expr {

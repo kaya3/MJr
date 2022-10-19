@@ -16,13 +16,9 @@ namespace Compiler {
     }
     
     export class Stmt_BasicAllPrl implements StmtCompiler {
-        constructor(
-            readonly stmt: ASG.BasicRulesStmt,
-            readonly ifChanged: IR.Stmt,
-            readonly then: IR.Stmt,
-        ) {}
+        constructor(readonly stmt: ASG.BasicRulesStmt) {}
         
-        compile(c: Compiler): IR.Stmt {
+        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {stmt} = this;
             const {rewrites} = stmt;
             const g = c.grids[stmt.inGrid];
@@ -80,7 +76,7 @@ namespace Compiler {
             
             // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
             // but no flag needed if this statement isn't branching anyway
-            const useFlag = (this.ifChanged !== IR.PASS || this.then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
+            const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
             
             // optimisation for common case: all rewrites are unconditional and definitely effective
             if(firstPassConditions.every(c => c === IR.TRUE)) {
@@ -133,7 +129,9 @@ namespace Compiler {
                 ),
             ]));
             
-            const ifChanged = c.config.animate ? IR.block([g.yield_(), this.ifChanged]) : this.ifChanged;
+            if(c.config.animate) {
+                ifChanged = IR.block([g.yield_(), ifChanged]);
+            }
             
             out.push(
                 useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS,
@@ -148,9 +146,9 @@ namespace Compiler {
                         ]),
                         useFlag ? IR.PASS : ifChanged,
                     ]),
-                    useFlag ? undefined : this.then,
+                    useFlag ? undefined : then,
                 ),
-                useFlag ? IR.if_(ANY, ifChanged, this.then) : IR.PASS,
+                useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS,
             );
             return IR.block(out);
         }

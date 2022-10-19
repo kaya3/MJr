@@ -372,7 +372,7 @@ namespace CodeGen {
             function _intOp(p: Precedence, op: string): UnaryOpSpec {
                 return unaryOp(Precedence.BITWISE_OR, `(${op}`, p, ') | 0');
             }
-            function _func(name: keyof typeof MJr.OPS): UnaryOpSpec {
+            function _func(name: 'Math.log2' | keyof typeof MJr.OPS): UnaryOpSpec {
                 return unaryOp(Precedence.ATTR_ACCESS_CALL, `${name}(`, Precedence.MIN, ')');
             }
             
@@ -384,6 +384,7 @@ namespace CodeGen {
                 // need space to avoid incorrect parse of `- - x`
                 float_uminus: prefixOp(Precedence.UPLUS_UMINUS, '- '),
                 float_checkzero: _func('float_checkzero'),
+                float_log2: _func('Math.log2'),
                 
                 fraction_uminus: _func('fraction_uminus'),
                 fraction_checkzero: NOOP,

@@ -18,7 +18,7 @@ namespace IR {
         public readonly originX: Expr;
         public readonly originY: Expr;
         
-        private readonly counters = new Map<string, NameExpr>();
+        private readonly counters = new Map<string, VarDeclWithInitialiser>();
         private readonly samplers = new Map<string, AbstractSampler>();
         private readonly convBuffers = new Map<string, ConvBuffer>();
         public readonly matcher: Matcher;
@@ -56,30 +56,45 @@ namespace IR {
             return getOrCompute(counters, key, () => {
                 const counter = NAMES.counter(this, counters.size);
                 for(const pattern of patterns) {
-                    matcher.addMatchHandler({kind: 'counter', pattern, counter, weight: 1});
+                    matcher.addMatchHandler({kind: 'counter', pattern, counter, weight: ONE});
                 }
                 // need to set scale to avoid overflowing the counter
                 this.scale = Math.max(this.scale, patterns.length);
-                return counter;
-            });
+                return {
+                    name: counter,
+                    type: INT_TYPE,
+                    initialiser: ZERO,
+                };
+            }).name;
         }
         
-        public makeWeightedCounter(weights: readonly ASG.WeightedPattern[]): Expr {
+        public makeWeightedCounter(weights: readonly ASG.WeightedPattern[], useFloat: boolean): NameExpr {
             const {counters, matcher} = this;
             
-            const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n');
+            const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n') + `\nuseFloat=${useFloat}`;
             
             return getOrCompute(counters, key, () => {
                 const counter = NAMES.counter(this, counters.size);
                 let totalWeight = 0;
                 for(const {pattern, weight} of weights) {
-                    matcher.addMatchHandler({kind: 'counter', pattern, counter, weight});
+                    matcher.addMatchHandler({
+                        kind: 'counter',
+                        pattern,
+                        counter,
+                        weight: useFloat ? float(weight) : int(weight),
+                    });
                     totalWeight += weight;
                 }
                 // need to set scale to avoid overflowing the counter
-                this.scale = Math.max(this.scale, totalWeight);
-                return counter;
-            });
+                if(!useFloat) {
+                    this.scale = Math.max(this.scale, totalWeight);
+                }
+                return {
+                    name: counter,
+                    type: useFloat ? FLOAT_TYPE : INT_TYPE,
+                    initialiser: useFloat ? FLOAT_ZERO : ZERO,
+                };
+            }).name;
         }
         
         public makeSampler(patterns: readonly PatternTree[]): AbstractSampler {
@@ -162,11 +177,7 @@ namespace IR {
                 consts.push({name: lfsrFeedbackTerm, type: INT_TYPE, initialiser: libFunctionCall('lfsrFeedbackTerm', [n])});
             }
             
-            vars.push(...Array.from(this.counters.values(), counter => ({
-                name: counter,
-                type: INT_TYPE,
-                initialiser: ZERO,
-            })));
+            vars.push(...Array.from(this.counters.values()));
             
             return [
                 declVars(consts),

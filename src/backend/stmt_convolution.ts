@@ -10,13 +10,9 @@ namespace Compiler {
     } = IR;
     
     export class Stmt_Convolution implements StmtCompiler {
-        constructor(
-            readonly stmt: ASG.ConvolutionStmt,
-            readonly ifChanged: IR.Stmt,
-            readonly then: IR.Stmt,
-        ) {}
+        constructor(readonly stmt: ASG.ConvolutionStmt) {}
         
-        compile(c: Compiler): IR.Stmt {
+        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {stmt} = this;
             const g = c.grids[stmt.inGrid];
             const buffer = g.makeConvBuffer(stmt.kernel);
@@ -52,9 +48,9 @@ namespace Compiler {
                         // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
                         g.update(IR.ZERO, IR.ZERO, g.width, g.height),
                         c.config.animate ? g.yield_() : IR.PASS,
-                        this.ifChanged,
+                        ifChanged,
                     ]),
-                    this.then,
+                    then,
                 ),
             ]);
         }

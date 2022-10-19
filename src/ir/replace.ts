@@ -85,6 +85,8 @@ namespace IR {
                         return OP.bitwiseNot(child);
                     case 'int_ctz':
                         return OP.countTrailingZeros(child);
+                    case 'float_log2':
+                        return OP.log2(child);
                     default:
                         return unaryOp(node.op, child);
                 }

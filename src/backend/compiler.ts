@@ -92,11 +92,15 @@ namespace Compiler {
             const {params, endGridID} = this.asg;
             
             const nodeCompilers = this.switchNodes.map(node => this.getStmtCompiler(node));
-            const switchCases = nodeCompilers.map(({before, comp, after}) => IR.block([
-                before,
-                comp.compile(this),
-                ...after,
-            ]));
+            const switchCases = this.switchNodes.map((node, i) => {
+                const {before, ifTrue, ifFalse, after} = this.getNodeTransitions(node);
+                const nc = nodeCompilers[i];
+                return IR.block([
+                    before,
+                    nc.compile(this, ifTrue ?? IR.PASS, ifFalse ?? IR.PASS),
+                    ...after,
+                ]);
+            });
             
             // TODO: potentials
             
@@ -122,7 +126,13 @@ namespace Compiler {
                 constDecls = this.constants.declare(),
                 varDecls = declareASGVariables(this, this.asg.variables),
                 flagDecls = this.flags.declare(),
-                limitDecls = this.limits.declare(this);
+                limitDecls = this.limits.declare(this),
+                otherDecls: IR.Stmt[] = [];
+            
+            for(const nc of nodeCompilers) {
+                const r = nc.declare?.();
+                if(r !== undefined) { otherDecls.push(r); }
+            }
             
             // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
             // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
@@ -154,6 +164,7 @@ namespace Compiler {
                 ...maskDecl,
                 constDecls,
                 ...varDecls,
+                ...otherDecls,
                 flagDecls,
                 limitDecls,
                 maxIterations !== 0 ? IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true) : IR.PASS,
@@ -173,13 +184,19 @@ namespace Compiler {
             ]));
         }
         
-        private getStmtCompiler(node: CFG.SwitchNode): {before: IR.Stmt, comp: StmtCompiler, after: readonly IR.Stmt[]} {
+        getStmtCompiler(node: CFG.SwitchNode): StmtCompiler {
+            return getOrCompute(this.nodeCompilers, node.id, () =>
+                node.kind === 'reset' ? new Stmt_Reset(node)
+                : new STMT_COMPILERS[node.stmt.kind](node.stmt as never, node.id, this)
+            );
+        }
+        
+        private getNodeTransitions(node: CFG.SwitchNode): {before: IR.Stmt, ifTrue?: IR.Stmt, ifFalse?: IR.Stmt, after: readonly IR.Stmt[]} {
             switch(node.kind) {
                 case 'reset': {
                     const {stmt} = node;
                     return {
                         before: IR.comment(`reset ${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp: new Stmt_Reset(node),
                         after: this.goto(node.id, node.then.nodeID),
                     };
                 }
@@ -195,24 +212,18 @@ namespace Compiler {
                     }
                     
                     const {stmt} = node;
-                    const cls = STMT_COMPILERS[stmt.kind];
-                    const comp = new cls(stmt as never, IR.block(ifTrue), IR.block(ifFalse));
-                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp,
+                        ifTrue: IR.block(ifTrue),
+                        ifFalse: IR.block(ifFalse),
                         after: eitherWay,
                     };
                 }
                 
                 case 'stmt.nonbranching': {
                     const {stmt} = node;
-                    const cls = STMT_COMPILERS[stmt.kind];
-                    const comp = new cls(stmt as never);
-                    this.nodeCompilers.set(node.id, comp);
                     return {
                         before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        comp,
                         after: this.goto(node.id, node.then.nodeID),
                     };
                 }
@@ -294,8 +305,9 @@ namespace Compiler {
     type StmtKind = (ASG.BranchingStmt | ASG.NonBranchingStmt)['kind']
     
     export interface StmtCompiler {
+        declare?(): IR.Stmt;
         compileReset?(c: Compiler): IR.Stmt;
-        compile(c: Compiler): IR.Stmt;
+        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt;
     }
     
     class Stmt_Reset implements StmtCompiler {
@@ -348,10 +360,8 @@ namespace Compiler {
         }
     }
     
-    type StmtCompileClass<K extends StmtKind>
-        = K extends ASG.BranchingStmt['kind'] ? new (stmt: Extract<ASG.Statement, {readonly kind: K}>, ifChanged: IR.Stmt, then: IR.Stmt) => StmtCompiler
-        : K extends ASG.NonBranchingStmt['kind'] ? new (stmt: Extract<ASG.Statement, {readonly kind: K}>) => StmtCompiler
-        : never;
+    type StmtCompileClass<K extends StmtKind> = new (stmt: Extract<ASG.Statement, {readonly kind: K}>, stmtID: number, c: Compiler) => StmtCompiler
+    
     const STMT_COMPILERS: {readonly [K in StmtKind]: StmtCompileClass<K>} = {
         // non-branching
         'stmt.assign': Stmt_Assign,
@@ -361,7 +371,7 @@ namespace Compiler {
         'stmt.use': Stmt_Use,
         
         // branching
-        'stmt.convchain': Stmt_NotSupported,
+        'stmt.convchain': Stmt_ConvChain,
         'stmt.path': Stmt_NotSupported,
         'stmt.rules.basic.all': Stmt_BasicAllPrl,
         'stmt.rules.basic.one': Stmt_BasicOne,

@@ -1,5 +1,6 @@
 type Simplify<T> = T extends unknown ? {[K in keyof T]: T[K]} : never
 type ValueOf<T> = T[keyof T]
+type NoInfer<T> = [T][T extends unknown ? 0 : never]
 type KeysMatching<T, V> = ValueOf<{[K in keyof T]: T[K] extends V ? K : never}> & string & keyof T
 type IRecord<K extends PropertyKey, V> = {readonly [J in K]: V}
 type Immutable<T> = {readonly [K in keyof T]:
@@ -41,7 +42,7 @@ function withNextID<T extends {id: number}>(arr: T[], obj: Omit<T, 'id'>): T {
     return t;
 }
 
-function getOrCompute<K extends PrimitiveKey, V>(map: Map<K, V>, key: K, f: () => V): V {
+function getOrCompute<K extends PrimitiveKey, V>(map: Map<K, V>, key: NoInfer<K>, f: () => NoInfer<V>): V {
     let v = map.get(key);
     if(v === undefined) { map.set(key, v = f()); }
     return v;

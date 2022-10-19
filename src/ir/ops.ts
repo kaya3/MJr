@@ -1,4 +1,9 @@
 namespace IR {
+    export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
+    export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
+    export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz' | 'float_log2'
+    export type Op = BinaryOp | UnaryOp
+    
     export function binaryOp(op: Op.BinaryOp, left: Expr, right: Expr): Expr {
         switch(op) {
             case 'int_plus':
@@ -284,6 +289,11 @@ namespace IR {
         countTrailingZeros(expr: Expr): Expr {
             return isInt(expr) ? int(MJr.OPS.int_ctz(expr.value))
                 : _unOp('int_ctz', expr);
+        },
+        
+        log2(expr: Expr): Expr {
+            return expr.kind === 'expr.literal.float' ? float(Math.log2(expr.value))
+                : _unOp('float_log2', expr);
         },
         
         eq(left: Expr, right: Expr): Expr {

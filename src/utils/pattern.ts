@@ -253,8 +253,8 @@ class Pattern extends MJr.Pattern {
     public static windowsOf(p: Pattern, n: number, periodic: boolean): Pattern[] {
         const {width, height, alphabetKey, pattern, masks, hasUnions} = p;
         
-        const maxX = periodic ? width - n + 1 : width;
-        const maxY = periodic ? height - n + 1 : height;
+        const maxX = periodic ? width : width - n + 1;
+        const maxY = periodic ? height : height - n + 1;
         const out: Pattern[] = [];
         
         for(let y = 0; y < maxY; ++y) {

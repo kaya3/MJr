@@ -4,9 +4,9 @@
 
 A *rewrite rule* has an input pattern which can be matched in a grid, and an output pattern which can be written to a grid. The input pattern must be a compile-time constant [pattern](types.md#pattern-types) using the current alphabet.
 
-In all statements except for `map` statements, a rewrite rule writes to the same grid that the input pattern is matched in, the output pattern must have the same dimensions as the input pattern. A rewrite rule will only be applied if the output pattern is not already present at the match position.
+In all statements except for `map` statements, a rewrite rule writes to the same grid that the input pattern is matched in, and the output pattern must have the same dimensions as the input pattern. A rewrite rule is never applied if the output pattern is already present at the match position.
 
-When a rewrite rule occurs in a ['map' statement](statements.md#map-statements), the output pattern is written to a different grid which may have a different scale, and the input and output pattern dimensions must be in the same ratio as the input and output grid scales. The output pattern will be written to a position in the output grid according to the match position and the scale ratio. The rewrite rule will only be applied if the output pattern is not already present at the scaled match position.
+When a rewrite rule occurs in a ['map' statement](statements.md#map-statements), the output pattern is written to a different grid which may have a different scale, and the input and output pattern dimensions must be in the same ratio as the input and output grid scales. The output pattern will be written to a position in the output grid according to the match position and the scale ratio. The rewrite rule will not be applied if the output pattern is already present at the scaled match position.
 
 The output pattern expression is a [rule context](#rule-contexts).
 

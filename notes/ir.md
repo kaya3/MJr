@@ -47,9 +47,9 @@ This requires being able to tell when two IR nodes are equal. Currently this is 
 
 ## Other notes
 
-### 'Break' statements
+### 'Break' and 'continue' statements
 
-The IR's `stmt.break` statement is only used for escaping from `stmt.for.range` and `stmt.while` loops, not from `stmt.switch` statements. Additionally, break statements are not used inside switch statements for escaping from a loop outside of the switch statement. This is to avoid the need for labelled breaks (which some languages don't have) whether or not the language's `switch` construct interacts with `break` statements.
+The IR's `stmt.break` and `stmt.continue` statements are only used in `stmt.for.range` and `stmt.while` loops, not (directly) in `stmt.switch` statements. Additionally, break and continue statements are not used inside switch statements to control loops outside of the switch. This is to avoid the need for labelled breaks (which some languages don't have), whether or not the language's `switch` construct interacts with `break` statements.
 
 ### 'For range' statements
 

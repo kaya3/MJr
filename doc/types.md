@@ -54,6 +54,6 @@ Expressions of type `int` can be coerced to `float` or `fraction`. This coercion
 
 Expressions of type `bool`, `float`, `fraction`, `grid` or `int` can be coerced to `str`. This coercion occurs:
 
-- In a `log` statement; or 
+- In a `log` statement;
 - In a binary `+` expression where the other operand has type `str`; or
 - In a branch of a conditional expression, where the other branch has type `str`.

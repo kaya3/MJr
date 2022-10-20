@@ -24,6 +24,10 @@ namespace CodeGen {
         MIN = 0,
     }
     
+    const _literal = [Precedence.MAX, (out: Python, expr: IR.FloatLiteralExpr | IR.IntLiteralExpr | IR.StrLiteralExpr) => {
+        out.write(JSON.stringify(expr.value));
+    }] as const;
+    
     export class Python extends Base {
         public constructor(config: Compiler.Config) {
             super(config);
@@ -234,7 +238,11 @@ namespace CodeGen {
             'expr.literal.bool': [Precedence.MAX, (out, expr) => {
                 out.write(expr.value ? 'True' : 'False');
             }],
-            'expr.literal.float': _literal,
+            'expr.literal.float': [Precedence.MAX, (out, expr) => {
+                const s = `${expr.value}`;
+                out.write(s);
+                if(/^-?[0-9]+$/.test(s)) { out.write('.0'); }
+            }],
             'expr.literal.int': _literal,
             'expr.literal.str': _literal,
             'expr.literal.null': [Precedence.MAX, (out, expr) => {
@@ -498,8 +506,4 @@ namespace CodeGen {
         str: 'str',
         void: 'None',
     };
-    
-    const _literal = [Precedence.MAX, (out: Python, expr: IR.FloatLiteralExpr | IR.IntLiteralExpr | IR.StrLiteralExpr) => {
-        out.write(JSON.stringify(expr.value));
-    }] as const;
 }

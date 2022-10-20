@@ -1980,6 +1980,9 @@ var CodeGen;
 var CodeGen;
 (function (CodeGen) {
     const RUNTIME_LIB_NAME = 'MJr';
+    const _literal = [16 /* Precedence.LITERAL */, (out, expr) => {
+            out.write(JSON.stringify(expr.value));
+        }];
     class JavaScript extends CodeGen.Base {
         STMT_WRITE_FUNCS = {
             'stmt.assign': (out, stmt) => {
@@ -2448,14 +2451,14 @@ var CodeGen;
         str: 'string',
         void: 'void',
     };
-    const _literal = [16 /* Precedence.LITERAL */, (out, expr) => {
-            out.write(JSON.stringify(expr.value));
-        }];
 })(CodeGen || (CodeGen = {}));
 ///<reference path="base.ts"/>
 var CodeGen;
 (function (CodeGen) {
     const RUNTIME_LIB_NAME = 'MJr';
+    const _literal = [18 /* Precedence.MAX */, (out, expr) => {
+            out.write(JSON.stringify(expr.value));
+        }];
     class Python extends CodeGen.Base {
         constructor(config) {
             super(config);
@@ -2671,7 +2674,13 @@ var CodeGen;
             'expr.literal.bool': [18 /* Precedence.MAX */, (out, expr) => {
                     out.write(expr.value ? 'True' : 'False');
                 }],
-            'expr.literal.float': _literal,
+            'expr.literal.float': [18 /* Precedence.MAX */, (out, expr) => {
+                    const s = `${expr.value}`;
+                    out.write(s);
+                    if (/^-?[0-9]+$/.test(s)) {
+                        out.write('.0');
+                    }
+                }],
             'expr.literal.int': _literal,
             'expr.literal.str': _literal,
             'expr.literal.null': [18 /* Precedence.MAX */, (out, expr) => {
@@ -2911,9 +2920,6 @@ var CodeGen;
         str: 'str',
         void: 'None',
     };
-    const _literal = [18 /* Precedence.MAX */, (out, expr) => {
-            out.write(JSON.stringify(expr.value));
-        }];
 })(CodeGen || (CodeGen = {}));
 var CFG;
 (function (CFG) {

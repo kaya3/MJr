@@ -157,7 +157,7 @@ log <i>Expression</i>
 
 ### 'Pass' statements
 
-A `pass` statement does nothing, and always "returns false". They may be used as placeholders in blocks which are not yet written.
+A `pass` statement does nothing, and always "returns false". It may be used as a placeholder in a block which is not yet written.
 
 <pre>
 pass

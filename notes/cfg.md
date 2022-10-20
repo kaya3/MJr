@@ -23,4 +23,4 @@ There are three categories of CFG node:
   - Branching on whether a limit variable is above zero.
 - The 'stop' node, which terminates the program.
 
-Although `stmt.pass` AST nodes have already been eliminated by the resolver, it is convenient to include some new 'pass' nodes in the CFG as jump targets (and when eliding assignments to variables which are never read). These will be skipped by the compiler, when the CFG is traversed by the `goto` method.
+Although `stmt.pass` AST nodes have already been eliminated by the resolver, it is convenient to include some new 'pass' nodes in the CFG as jump targets (and when eliding unnecessary ASG statements, such as assignments to variables which are never read). These will be skipped by the compiler, when the CFG is traversed by the `goto` method.

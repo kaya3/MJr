@@ -27,6 +27,10 @@ namespace CodeGen {
         MIN = 0,
     }
     
+    const _literal = [Precedence.LITERAL, (out: JavaScript, expr: IR.BoolLiteralExpr | IR.FloatLiteralExpr | IR.IntLiteralExpr | IR.StrLiteralExpr) => {
+        out.write(JSON.stringify(expr.value));
+    }] as const;
+    
     export class JavaScript extends Base {
         readonly STMT_WRITE_FUNCS: StmtWriteFuncs<this> = {
             'stmt.assign': (out, stmt) => {
@@ -516,8 +520,4 @@ namespace CodeGen {
         str: 'string',
         void: 'void',
     };
-    
-    const _literal = [Precedence.LITERAL, (out: JavaScript, expr: IR.BoolLiteralExpr | IR.FloatLiteralExpr | IR.IntLiteralExpr | IR.StrLiteralExpr) => {
-        out.write(JSON.stringify(expr.value));
-    }] as const;
 }

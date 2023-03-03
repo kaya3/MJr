@@ -1,0 +1,37 @@
+# Author: Andrew Kay
+
+use let g = grid [BWAD]
+let parts = g.area // 64
+
+# grow stochastic Voronoi cells
+@limit parts
+one: [BBB/BBB/BBB] -> [.../.D./...]
+markov:
+    one: [DBD/.D.] -> [.D./...]
+    one: [DBBD/.DD.] -> [.DD./....]
+    one: [.D./BBB/BBB] -> [.../.D./...]
+
+# make connections at random
+@limit parts * 4
+one: [DBD] -> [.D.]
+
+# flood fill to ensure connectedness
+once: [D] -> [W]
+markov:
+    one: [WD] -> [.W]
+    one: [DBW] -> [.D.]
+
+# convert isolated walls to pillars
+one: [.W./WBW/.W.] -> [.../.D./...]
+
+# build storage racks
+@limit parts // 4
+one: [WWWW/WWWW/WWWW] -> [..../.AA./....]
+
+markov:
+    # extend a rack, or end it with a pillar
+    one:
+        [WWWW/AAWW/WWWW] -> [..../..A./....]
+        [WWWW/AAWW/WWWW] -> [..../..D./....] if random < 0.25
+    # begin a new parallel rack
+    one: [.AA./WWWW/WWWW/WWWW] -> [..../..../.AA./....]

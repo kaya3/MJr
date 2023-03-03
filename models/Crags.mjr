@@ -1,0 +1,35 @@
+# Author: Andrew Kay
+
+let minSize = 5
+let open = true
+
+grid [BWDA]
+
+# grow walls
+one:
+    [BBB/BBB] -> [D../...] if not open
+    [BBBB/BBBB] -> [D.../....] if open
+    [DBD/.D.] -> [.D./...]
+    [DBBD/.DD.] -> [.DD./....]
+
+# flood fill to ensure connectedness
+once: [B] -> [W]
+markov:
+    one: [WB] -> [.W]
+    one: [BD] -> [.B]
+
+# open up diagonals
+one: [WD/DW] -> [.W/..]
+
+# replace small sections of wall with boulders
+sequence:
+    sequence:
+        once: [D] -> [A]
+        @limit minSize - 2
+        one: [AD] -> [.A]
+        one: [AD] -> [BB]
+        one: [B[AD]] -> [.B]
+
+# randomly remove some boulders
+@limit 1
+prl: [A] -> [W] if random < 0.5

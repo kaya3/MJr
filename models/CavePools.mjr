@@ -1,0 +1,35 @@
+# Author: Andrew Kay
+
+use let g = grid [BWDRUI]
+
+# create obstacle texture
+put [D] at origin
+one: [DBB/BBB] -> [.../..D]
+
+# random walk
+put [R] at origin
+markov:
+    # enlarge area
+    @limit g.area // 3
+    one:
+        [RB] -> [WR]
+        [RD] -> [WR] if randint 16 == 0
+    # backtrack to create pools
+    @limit g.area
+    one:
+        [RW] -> [UR]
+        [R[UI]] -> [IR]
+
+# delete the walker
+once: [R] -> [W]
+
+# replace obstacles next to ground and water
+@limit 1
+all:
+    [WD] -> [.W]
+    [UD] -> [.U]
+    [ID] -> [.I]
+
+# delete obstacles
+@limit 1
+all: [D] -> [B]

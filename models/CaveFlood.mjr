@@ -1,0 +1,23 @@
+# Author: Andrew Kay
+
+grid [BWI]
+
+# build blobs of walls
+markov:
+    one: [.I./IBI] -> [.../.I.]
+    one: [BB./BBB/.B.] -> [.../.I./...]
+
+# delete isolated walls
+one: [.B./BIB/.B.] -> [.../.B./...]
+
+# T shapes are way too common; remove them, opening up more space
+one: [.BB./BIBB/BIIB/BIBB/.BB.] -> [..../.B../.BB./.B../....]
+
+# flood fill to ensure connectedness
+once: [B] -> [W]
+markov:
+    one: [WB] -> [.W]
+    one: [BI] -> [.B]
+
+# delete isolated walls again, if any were created
+one: [.W./WIW/.W.] -> [.../.W./...]

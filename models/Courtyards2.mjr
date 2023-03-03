@@ -1,0 +1,67 @@
+# Author: Andrew Kay
+
+use let g = grid [BWARGU]
+union [a] = [[WA]]
+union [c] = [[RGU]]
+
+let size = g.area // 32
+
+# grow a tree
+put [W] at origin
+one: [WBB] -> [.AW]
+
+# make cycles in the tree
+@limit size
+one: [WBW] -> [.A.]
+
+# flood fill the blank space with three colours
+once: [B] -> [R]
+markov:
+    # merge components of the same colour
+    one:
+        [RaR] -> [.R.]
+        [GaG] -> [.G.]
+        [UaU] -> [.U.]
+    # spread colours into blank space
+    one:
+        [RB] -> [.R]
+        [GB] -> [.G]
+        [UB] -> [.U]
+    # begin a new component of a different colour
+    one:
+        [[RU]AB] -> [..G]
+        [[RG]AB] -> [..U]
+        [[GU]AB] -> [..R]
+
+# convert the boundaries into walls
+@limit 1
+all: [a] -> [B]
+
+# flood fill to ensure connectedness
+put [../.W] at origin
+markov:
+    one: [W[^B]c] -> [..W]
+    one: [WBc] -> [.AW]
+
+# add random connections
+@limit size // 2
+one: [WBW] -> [.A.]
+
+# delete flood fill structure
+@limit 1
+all:
+    [WR] -> [R.]
+    [WG] -> [G.]
+    [WU] -> [U.]
+
+# cleanup
+one:
+    [.B./B.B] -> [.../.B.]
+    [ccc/ABA/ccc] -> [.../..B/...]
+    [ccc/cBA/cAc] -> [.../..B/...]
+    [WAR] -> [RR.]
+    [WAG] -> [GG.]
+    [WAU] -> [UU.]
+    [RAR] -> [.R.]
+    [GAG] -> [.G.]
+    [UAU] -> [.U.]

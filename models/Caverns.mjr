@@ -1,0 +1,35 @@
+# Author: Andrew Kay
+
+use let g = grid [BWRGU]
+
+# stochastic Voronoi diagram
+@limit g.area // 16
+one:
+    [B] -> [R]
+    [B] -> [G]
+    [B] -> [U]
+one:
+    [RB] -> [.R]
+    [GB] -> [.G]
+    [UB] -> [.U]
+
+# draw paths at cell boundaries
+@limit 1
+prl:
+    [R[GU]] -> [WW]
+    [GU] -> [WW]
+
+# replace cell interiors with walls
+@limit 1
+prl: not [W] -> [B]
+
+# flood fill to ensure connectedness
+once: [W] -> [U]
+markov:
+    one: [UW] -> [.U]
+    one: [WB] -> [.W]
+
+# clean up
+@limit 1
+all: [U] -> [W]
+one: [BW/WB] -> [W./..]

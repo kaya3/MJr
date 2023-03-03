@@ -3,6 +3,9 @@
 namespace CodeGen {
     const RUNTIME_LIB_NAME = 'MJr';
     
+    // https://docs.python.org/3/reference/lexical_analysis.html#keywords
+    const PYTHON_KEYWORDS: readonly string[] = 'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' ');
+    
     // operator precedences from https://docs.python.org/3/reference/expressions.html#operator-precedence
     const enum Precedence {
         MAX = 18,
@@ -84,7 +87,7 @@ namespace CodeGen {
             'stmt.for.range': (out, stmt) => {
                 const {low, high} = stmt;
                 out.beginLine();
-                out.write(`for ${stmt.index.name} in range(`);
+                out.write(`for ${_name(stmt.index.name)} in range(`);
                 if(stmt.reverse) {
                     out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`, `);
@@ -139,7 +142,7 @@ namespace CodeGen {
                     // TODO: add code to check params are valid at runtime
                     const {libVersion} = stmt;
                     out.beginLine();
-                    out.write(`if ${RUNTIME_LIB_NAME}.VERSION !== ${libVersion}: raise Error("Requires ${RUNTIME_LIB_NAME} runtime library version ${libVersion}")`);
+                    out.write(`if ${RUNTIME_LIB_NAME}.VERSION != ${libVersion}: raise Error("Requires ${RUNTIME_LIB_NAME} runtime library version ${libVersion}")`);
                 }
                 
                 out.beginLine();
@@ -148,6 +151,7 @@ namespace CodeGen {
                 out.write(`import array`);
                 out.beginLine();
                 out.write(`int32 = ${RUNTIME_LIB_NAME}.int32`);
+                out.beginLine();
                 out.write(`int_ctz = ${RUNTIME_LIB_NAME}.int_ctz`);
                 if(stmt.opsUsed.includes('int_truediv') || stmt.opsUsed.includes('int_to_fraction')) {
                     out.beginLine();
@@ -202,24 +206,17 @@ namespace CodeGen {
         readonly EXPR_WRITE_FUNCS: ExprWriteFuncs<this> = {
             'expr.array.const': [Precedence.MAX, (out, expr) => {
                 const {from, domainSize, rowLength} = expr;
-                const bits = uintBits(domainSize);
+                const bits = uintBitsFours(domainSize);
                 const s = arrayToHex(from, bits);
-                const f = bits === 8 ? 'bytes.fromhex' : `${RUNTIME_LIB_NAME}.hex_to_u${bits}`;
-                out.write(`${f}(`);
+                out.write(`${RUNTIME_LIB_NAME}.hex_to_arr("${_typecode(bits)}", ${bits >> 2}, `);
                 out.writeLongStringLiteral(s, rowLength * s.length / from.length, '');
-                out.write(')');
+                out.write(`)`);
             }],
             'expr.array.new': [Precedence.MULT_DIV_MOD, (out, expr) => {
                 const bits = uintBits(expr.domainSize);
-                if(bits === 8) {
-                    out.write(`bytearray(`);
-                    out.writeExpr(expr.length);
-                    out.write(')');
-                } else {
-                    // https://docs.python.org/3/library/array.html
-                    out.write(`array.array("${bits === 16 ? 'H' : 'L'}", (0,)) * `);
-                    out.writeExpr(expr.length, Precedence.MULT_DIV_MOD);
-                }
+                // https://docs.python.org/3/library/array.html
+                out.write(`array.array("${_typecode(bits)}", (0,)) * `);
+                out.writeExpr(expr.length, Precedence.MULT_DIV_MOD);
             }],
             'expr.attr': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 out.writeExpr(expr.left, Precedence.ATTR_ACCESS_CALL);
@@ -249,7 +246,7 @@ namespace CodeGen {
                 out.write('None');
             }],
             'expr.name': [Precedence.MAX, (out, expr) => {
-                out.write(expr.name);
+                out.write(_name(expr.name));
             }],
             'expr.op.access': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 out.writeExpr(expr.left, Precedence.ATTR_ACCESS_CALL);
@@ -258,20 +255,20 @@ namespace CodeGen {
                 out.write(']');
             }],
             'expr.op.call.lib.constructor': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
-                js.write(`${RUNTIME_LIB_NAME}.${expr.className}`);
+                js.write(`${RUNTIME_LIB_NAME}.${_name(expr.className)}`);
                 js.write(`(`);
                 js.writeExprList(expr.args);
                 js.write(')');
             }],
             'expr.op.call.lib.function': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
-                js.write(`${RUNTIME_LIB_NAME}.${expr.name}`);
+                js.write(`${RUNTIME_LIB_NAME}.${_name(expr.name)}`);
                 js.write(`(`);
                 js.writeExprList(expr.args);
                 js.write(')');
             }],
             'expr.op.call.lib.method': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
                 js.writeExpr(expr.obj);
-                js.write(`.${expr.name}(`);
+                js.write(`.${_name(expr.name)}(`);
                 js.writeExprList(expr.args);
                 js.write(')');
             }],
@@ -283,7 +280,7 @@ namespace CodeGen {
             }],
             'expr.param': [Precedence.TERNARY, (out, expr) => {
                 // TODO: take params as **kwargs
-                out.write(`params['${expr.name}'] if params is not None and '${expr.name}' in params else `);
+                out.write(`params['${_name(expr.name)}'] if params is not None and '${_name(expr.name)}' in params else `);
                 out.writeExpr(expr.otherwise, Precedence.TERNARY);
             }],
             'expr.op.ternary': [Precedence.TERNARY, (out, expr) => {
@@ -490,6 +487,16 @@ namespace CodeGen {
                 }
             }
         }
+    }
+    
+    function _name(ident: string): string {
+        return PYTHON_KEYWORDS.includes(ident) ? `${ident}_` : ident;
+    }
+    
+    function _typecode(bits: 4 | 8 | 12 | 16 | 20 | 24 | 28 | 32): string {
+        return bits <= 8 ? 'B'
+            : bits <= 16 ? 'I'
+            : 'L';
     }
     
     const TYPES_TO_PY = {

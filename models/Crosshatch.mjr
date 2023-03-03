@@ -1,0 +1,9 @@
+# Author: Andrew Kay
+
+grid [BWD]
+
+put [W] at origin
+one: [WBBB/BBBB/BBBB] -> [..../..../...W]
+
+@limit 1
+all: [WB] -> [.D]

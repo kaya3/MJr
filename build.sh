@@ -5,4 +5,4 @@ tsc -p test/
 
 mv out/*.js .
 
-tsc src/runtime/mjr.ts --target ESNext --outFile mjr-runtime.js
+tsc src/runtime/mjr.ts --target ESNext --declaration --outFile runtime/MJr.js

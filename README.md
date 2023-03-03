@@ -17,6 +17,32 @@ MJr is a probabilistic programming language based on pattern-rewriting, heavily 
 - [NystromDungeon.mjr](https://kaya3.github.io/MJr/playground/#IyBUcmFuc2xhdGVkIGZyb20gTWF4aW0gR3VtaW4ncyAnTnlzdHJvbUR1bmdlb24nIG1vZGVsLCB3aGljaAojIGlzIGJhc2VkIG9uIEJvYiBOeXN0cm9tJ3MgZHVuZ2VvbiBnZW5lcmF0aW9uIGFsZ29yaXRobQojIGh0dHBzOi8vZ2l0aHViLmNvbS9teGdtbi9NYXJrb3ZKdW5pb3IvYmxvYi9tYWluL21vZGVscy9OeXN0cm9tRHVuZ2Vvbi54bWwKIyBodHRwOi8vam91cm5hbC5zdHVmZndpdGhzdHVmZi5jb20vMjAxNC8xMi8yMS9yb29tcy1hbmQtbWF6ZXMvCgpsZXQgTlVNX0NZQ0xFUyA9IDUKCmdyaWQgW0JQV1JHXQoKIyBkcmF3IGEgZ3JpZApwdXQgW1BdIGF0IG9yaWdpbgphbGw6IFtQQkJdIC0+IFsuLlBdCgpsZXQgcm9vbUluID0gWwogICAgUEJQQlBCUEJQIC8KICAgIEJCQkJCQkJCQiAvCiAgICBQQlBCUEJQQlAgLwogICAgQkJCQkJCQkJCIC8KICAgIFBCUEJQQlBCUCAvCiAgICBCQkJCQkJCQkIgLwogICAgUEJQQlBCUEJQCl0KbGV0IHJvb21PdXQgPSBbCiAgICBXV1dXV1dXV1cgLwogICAgV1dXV1dXV1dXIC8KICAgIFdXV1dXV1dXVyAvCiAgICBXV1dXV1dXV1cgLwogICAgV1dXV1dXV1dXIC8KICAgIFdXV1dXV1dXVyAvCiAgICBXV1dXV1dXV1cKXQoKb25lOiByb29tSW4gLT4gcm9vbU91dAoKIyBnZW5lcmF0ZSBjb3JyaWRvcnMgd2l0aCBNYXplQmFja3RyYWNrZXIKbWFya292OgogICAgb25lOiBbUkJQXSAtPiBbR0dSXQogICAgb25lOiBbR0dSXSAtPiBbUldXXQogICAgb25lOiBbUF0gLT4gW1JdCgojIGxlYXZlIG9ubHkgb25lIHN0YXJ0Cm9uY2U6IFtSXSAtPiBbR10KCiMgZm9yZ2V0IG90aGVyIHN0YXJ0cwphbGw6IFtSXSAtPiBbV10KCiMgY29ubmVjdCBjb21wb25lbnRzCm1hcmtvdjoKICAgIGFsbDogW0dXV10gLT4gWy4uR10KICAgIG9uZTogW0dCV10gLT4gWy5XR10KCiMgaW5zZXJ0IGN5Y2xlcwpAbGltaXQgTlVNX0NZQ0xFUwpvbmU6IFtHQkddIC0+IFsuVy5dCgojIGZvcmdldCBzdHJ1Y3R1cmUKYWxsOiBbR10gLT4gW1ddCgojIHJldHJhY3QgZGVhZCBlbmRzCmFsbDogW0JCQi9CV0JdIC0+IFtCQkIvQkJCXQo=,JavaScript,1,1,39,39,0): builds a connected dungeon using [Bob Nystrom's algorithm](http://journal.stuffwithstuff.com/2014/12/21/rooms-and-mazes/).
 - [MazesAndLakes.mjr](https://kaya3.github.io/MJr/playground/#IyBBdXRob3I6IEFuZHJldyBLYXkKCnVzZSBsZXQgZyA9IGdyaWQgW0JXUkVJXQoKbGV0IExBS0VfU0VFRFMgPSA0CmxldCBMQUtFX1NJWkUgPSBnLndpZHRoICogZy5oZWlnaHQgLy8gNApsZXQgTEFORF9TRUVEUyA9IDMyCmxldCBBTklNQVRFX1dBVEVSID0gdHJ1ZQoKIyBtYWtlIGEgZmV3IGxha2VzIGJ5IHJhbmRvbSBncm93dGgKQGxpbWl0IExBS0VfU0VFRFMKb25lOiBbQl0gLT4gW0ldCgpAbGltaXQgTEFLRV9TSVpFIC0gTEFLRV9TRUVEUwpvbmU6IFtJQl0gLT4gWy5JXQoKIyBtYWtlIHNvbWUgbGFuZCBieSBhIHNlbGYtYXZvaWRpbmcgcmFuZG9tIHdhbGsgd2l0aCBiYWNrdHJhY2tpbmcKQGxpbWl0IExBTkRfU0VFRFMKb25lOiBbQl0gLT4gW1JdCgptYXJrb3Y6CiAgICBvbmU6IFtSQkJdIC0+IFtXV1JdCiAgICBvbmU6IFtSV1ddIC0+IFtFRVJdCgpvbmU6IFtSXSAtPiBbRV0KCiMgZXJvZGUgbmFycm93IHNlY3Rpb25zIG9mIGxhbmQKb25lOiBbQkJXQkJdIC0+IFsuLkIuLl0KCiMgcmVwbGFjZSB0aGUgc29saWQgbGFrZXMgd2l0aCBpc29sYXRlZCBwaXhlbHMKQGxpbWl0IExBS0VfU0laRSAvLyAyCm9uZTogW0lJXSAtPiBbQkJdCgptYXJrb3Y6CiAgICAjIGZpbGwgdW51c2VkIHNwYWNlIHdpdGggYSB3YXRlciB0ZXh0dXJlCiAgICBvbmU6CiAgICAgICAgW0JCLi9CQkIvLkIuXSAtPiBbLi4uLy5JLi8uLi5dCiAgICAgICAgWy5JLi9JQkkvLkkuXSAtPiBbLi4uLy5JLi8uLi5dCgogICAgIyBkZWxldGUgd2F0ZXIgcGl4ZWxzIGF0IHJhbmRvbSwgZm9yIGFuIGFuaW1hdGVkIGVmZmVjdAogICAgb25lOiBbSV0gLT4gW0JdIGlmIEFOSU1BVEVfV0FURVIK,JavaScript,1,1,256,256,5): generates a weird landscape of cities, forests and lakes.
 
+More examples can be found in the [models](https://github.com/kaya3/MJr/tree/main/models) folder.
+
+## Usage
+
+MJr programs can be compiled to JavaScript, TypeScript or Python 3. To use the compiled output in your project, you must also include the MJr runtime library:
+
+- JavaScript/TypeScript: [MJr.js](runtime/MJr.js)
+- TypeScript type declarations: [MJr.d.ts](runtime/MJr.d.ts)
+- Python 3: [MJr.py](runtime/MJr.py) (requires Python 3.10+)
+
+The MJr program can then be used by calling its main function, which has the following signature:
+
+```ts
+function main(width: int, height: int, rng?: PRNG): Grid;
+```
+
+The return value is a `Grid` object with the following properties:
+
+- `width` and `height`: the grid dimensions
+- `data`: the grid cells, as a flat array of unsigned integers in [row-major](https://en.wikipedia.org/wiki/Row-_and_column-major_order) order.
+- `alphabet`: a string mapping the values in `data` to the alphabet symbols used in the MJr source code.
+
+For convenience, `Grid` objects can also be converted to strings for display.
+
+The `rng` parameter is optional; if provided, it must be an object with a `nextDouble` method returning a random floating-point value in the half-open interval `[0, 1)`, and a `nextInt` method accepting a positive integer `n` and returning a random integer in the half-open interval `[0, n)`. If not provided, a default unseeded algorithm is used.
+
 ## Documentation
 
 See the [documentation](doc/) and [implementation notes](notes/) for more information.

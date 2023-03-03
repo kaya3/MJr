@@ -1,0 +1,19 @@
+# Author: Andrew Kay
+
+grid [BWD]
+
+# random noise
+@limit 1
+prl: [B] -> [D] if random < 0.5
+
+# flood fill to ensure connectedness
+once: [D] -> [W]
+markov:
+    one: [WD] -> [.W]
+    one: [DB] -> [.D]
+
+# connect all diagonals
+one: [WB/BW] -> [.W/..]
+
+# convert isolated walls into pillars
+one: [.W./WBW/.W.] -> [.../.D./...]

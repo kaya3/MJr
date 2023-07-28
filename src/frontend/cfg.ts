@@ -106,12 +106,14 @@ namespace CFG {
                 
                 case 'stmt.modified.limit': {
                     const {limit} = stmt;
-                    if(limit.isTransparent) {
+                    if(parentKind === 'stmt.block.sequence' && limit.initialiser.kind === 'expr.constant' && limit.initialiser.constant.value === 1) {
                         // optimisation for common case
                         return this.buildChild(stmt.child, parentKind, parentFlagID, then, then);
                     }
                     const limitID = limit.id;
-                    this.limitIDs?.push(limitID);
+                    if(limit.canReset) {
+                        this.limitIDs?.push(limitID);
+                    }
                     
                     const childLabel = newLabel(), decrementLimitLabel = newLabel();
                     const r = this.makeNode({kind: 'checklimit', limitID, ifTrue: childLabel, then});

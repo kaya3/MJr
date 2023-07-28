@@ -104,7 +104,7 @@ namespace Compiler {
             const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
             
             const {colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal} = this;
-            // TODO
+            // TODO: can this use integer arithmetic?
             const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
                 : IR.binaryOp(
                     'float_lt',

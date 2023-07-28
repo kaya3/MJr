@@ -21,7 +21,7 @@ namespace Compiler {
         compile(c: Compiler): IR.Stmt {
             const out: IR.Stmt[] = [c.flags.clear(this.flagID)];
             for(const comp of this.childCompilers) {
-                const r = comp?.compileReset?.(c);
+                const r = comp.compileReset?.(c);
                 if(r !== undefined) { out.push(r); }
             }
             for(const limitID of this.limitIDs) {

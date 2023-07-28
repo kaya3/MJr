@@ -146,7 +146,6 @@ namespace Resolver {
         };
         private readonly uniqueVariableNames = new Set<string>();
         
-        public parentKind: ASG.BlockStmt['kind'] | undefined = undefined;
         public symmetryName: Symmetry.SymmetryName = 'all';
         public readonly variables = new Map<string, FormalVariable>();
         public readonly errorVariables = new Set<string>();
@@ -181,7 +180,7 @@ namespace Resolver {
             return f(node, this, outGrid);
         }
         
-        resolveStmt<K extends AST.Statement['kind']>(node: AST.Statement & {kind: K}, canReset = true): StmtResolveResult<K> {
+        resolveStmt<K extends AST.Statement['kind']>(node: AST.Statement & {kind: K}, canReset: boolean): StmtResolveResult<K> {
             const f = STMT_RESOLVE_FUNCS[node.kind] as StmtResolveFunc<K>;
             return f(node, this, canReset);
         }
@@ -247,10 +246,8 @@ namespace Resolver {
             this.error(`expected ${quoteJoin(expected, ' | ')}, was '${Type.toStr(expr.type)}'`, expr.pos);
         }
         
-        makeLimit(initialiser: ASG.Prop<'int'>): ASG.FormalLimit {
-            const {parentKind} = this;
-            const canReset = parentKind !== undefined;
-            const isTransparent = (!canReset || parentKind === 'stmt.block.sequence')
+        makeLimit(initialiser: ASG.Prop<'int'>, canReset: boolean): ASG.FormalLimit {
+            const isTransparent = !canReset
                 && initialiser.kind === 'expr.constant'
                 && initialiser.constant.value === 1;
             let limit: ASG.FormalLimit = {id: -1, initialiser, canReset, isTransparent};
@@ -850,10 +847,7 @@ namespace Resolver {
     function _resolveBlockStmt(stmt: AST.BlockStmt, ctx: Context, canReset: boolean): StmtResolveResult<AST.BlockStmt['kind']> {
         const {kind, pos} = stmt;
         
-        const oldParentKind = ctx.parentKind;
-        ctx.parentKind = stmt.kind;
-        const children = ctx.resolveStmts(stmt.children, true);
-        ctx.parentKind = oldParentKind;
+        const children = ctx.resolveStmts(stmt.children, canReset || stmt.kind === 'stmt.block.markov');
         
         const anyResets = canReset && children.some(_needsReset);
         
@@ -868,7 +862,7 @@ namespace Resolver {
         
         return {kind: 'stmt', stmt: {kind: stmt.kind, inGrid: ctx.grid.id, pos: stmt.pos, ...props}};
     }
-    function _resolveAllOnceOneStmt(stmt: AST.AllStmt | AST.OnceStmt | AST.OneStmt, ctx: Context): StmtResolveResult<'stmt.rules.all' | 'stmt.rules.once' | 'stmt.rules.one'> {
+    function _resolveAllOnceOneStmt(stmt: AST.AllStmt | AST.OnceStmt | AST.OneStmt, ctx: Context, canReset: boolean): StmtResolveResult<'stmt.rules.all' | 'stmt.rules.once' | 'stmt.rules.one'> {
         const {pos} = stmt;
         if(!ctx.expectGrid(pos)) { return undefined; }
         
@@ -903,7 +897,7 @@ namespace Resolver {
         }
         
         if(stmt.kind === 'stmt.rules.once') {
-            const limit = ctx.makeLimit(_makeConstantExpr(Type.INT, 1, pos));
+            const limit = ctx.makeLimit(_makeConstantExpr(Type.INT, 1, pos), canReset);
             r = {kind: 'stmt.modified.limit', limit, child: r, pos};
         }
         
@@ -1356,7 +1350,7 @@ namespace Resolver {
             }
             
             const {assigns, stmt: child} = r;
-            const limit = ctx.makeLimit(value);
+            const limit = ctx.makeLimit(value, canReset);
             return {kind: 'stmt', assigns, stmt: {kind: 'stmt.modified.limit', limit, child, pos: stmt.pos}};
         },
         'stmt.path': _resolvePropsStmt,

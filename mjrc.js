@@ -1416,7 +1416,7 @@ var Compiler;
             const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
             const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
             const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal } = this;
-            // TODO
+            // TODO: can this use integer arithmetic?
             const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
                 : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))), score);
             const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
@@ -1621,7 +1621,7 @@ var Compiler;
         compile(c) {
             const out = [c.flags.clear(this.flagID)];
             for (const comp of this.childCompilers) {
-                const r = comp?.compileReset?.(c);
+                const r = comp.compileReset?.(c);
                 if (r !== undefined) {
                     out.push(r);
                 }
@@ -3002,12 +3002,14 @@ var CFG;
                 }
                 case 'stmt.modified.limit': {
                     const { limit } = stmt;
-                    if (limit.isTransparent) {
+                    if (parentKind === 'stmt.block.sequence' && limit.initialiser.kind === 'expr.constant' && limit.initialiser.constant.value === 1) {
                         // optimisation for common case
                         return this.buildChild(stmt.child, parentKind, parentFlagID, then, then);
                     }
                     const limitID = limit.id;
-                    this.limitIDs?.push(limitID);
+                    if (limit.canReset) {
+                        this.limitIDs?.push(limitID);
+                    }
                     const childLabel = newLabel(), decrementLimitLabel = newLabel();
                     const r = this.makeNode({ kind: 'checklimit', limitID, ifTrue: childLabel, then });
                     childLabel.nodeID = this.buildChild(stmt.child, parentKind, parentFlagID, decrementLimitLabel, then).id;
@@ -4555,7 +4557,6 @@ var Resolver;
             variables: [],
         };
         uniqueVariableNames = new Set();
-        parentKind = undefined;
         symmetryName = 'all';
         variables = new Map();
         errorVariables = new Set();
@@ -4585,7 +4586,7 @@ var Resolver;
             const f = RULE_RESOLVE_FUNCS[node.kind];
             return f(node, this, outGrid);
         }
-        resolveStmt(node, canReset = true) {
+        resolveStmt(node, canReset) {
             const f = STMT_RESOLVE_FUNCS[node.kind];
             return f(node, this, canReset);
         }
@@ -4648,10 +4649,8 @@ var Resolver;
         typeError(expected, expr) {
             this.error(`expected ${quoteJoin(expected, ' | ')}, was '${Type.toStr(expr.type)}'`, expr.pos);
         }
-        makeLimit(initialiser) {
-            const { parentKind } = this;
-            const canReset = parentKind !== undefined;
-            const isTransparent = (!canReset || parentKind === 'stmt.block.sequence')
+        makeLimit(initialiser, canReset) {
+            const isTransparent = !canReset
                 && initialiser.kind === 'expr.constant'
                 && initialiser.constant.value === 1;
             let limit = { id: -1, initialiser, canReset, isTransparent };
@@ -5260,10 +5259,7 @@ var Resolver;
     }
     function _resolveBlockStmt(stmt, ctx, canReset) {
         const { kind, pos } = stmt;
-        const oldParentKind = ctx.parentKind;
-        ctx.parentKind = stmt.kind;
-        const children = ctx.resolveStmts(stmt.children, true);
-        ctx.parentKind = oldParentKind;
+        const children = ctx.resolveStmts(stmt.children, canReset || stmt.kind === 'stmt.block.markov');
         const anyResets = canReset && children.some(_needsReset);
         if (children.length === 0) {
             return undefined;
@@ -5280,7 +5276,7 @@ var Resolver;
         }
         return { kind: 'stmt', stmt: { kind: stmt.kind, inGrid: ctx.grid.id, pos: stmt.pos, ...props } };
     }
-    function _resolveAllOnceOneStmt(stmt, ctx) {
+    function _resolveAllOnceOneStmt(stmt, ctx, canReset) {
         const { pos } = stmt;
         if (!ctx.expectGrid(pos)) {
             return undefined;
@@ -5330,7 +5326,7 @@ var Resolver;
             r = { kind: `stmt.rules.biased.${kind}`, inGrid, temperature, rewrites, fields, observations, pos };
         }
         if (stmt.kind === 'stmt.rules.once') {
-            const limit = ctx.makeLimit(_makeConstantExpr(Type.INT, 1, pos));
+            const limit = ctx.makeLimit(_makeConstantExpr(Type.INT, 1, pos), canReset);
             r = { kind: 'stmt.modified.limit', limit, child: r, pos };
         }
         return { kind: 'stmt', assigns, stmt: r };
@@ -5807,7 +5803,7 @@ var Resolver;
                 ctx.error(`statement cannot have multiple limits`, stmt.child.pos);
             }
             const { assigns, stmt: child } = r;
-            const limit = ctx.makeLimit(value);
+            const limit = ctx.makeLimit(value, canReset);
             return { kind: 'stmt', assigns, stmt: { kind: 'stmt.modified.limit', limit, child, pos: stmt.pos } };
         },
         'stmt.path': _resolvePropsStmt,

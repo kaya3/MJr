@@ -234,26 +234,24 @@ namespace ISet {
             const x = i << 5;
             let setPart = set[i];
             while(setPart !== 0) {
-                // position of the highest 1 bit
-                const dx = 31 - Math.clz32(setPart);
+                const lowBit = setPart & -setPart;
+                const dx = 31 - Math.clz32(lowBit);
                 // 'x ^ dx' is equivalent to `x + dx` here
                 if(f(x ^ dx) === STOP_ITERATION) { return false; }
                 // clear this bit
-                setPart ^= 1 << dx;
+                setPart ^= lowBit;
             }
         }
         return true;
     }
     
     /**
-     * Calls the function `f` for each element of the set, not necessarily in
-     * order.
+     * Calls the function `f` for each element of the set, in order;
      */
     export const forEach: (set: ISet, f: (x: number) => void) => void = _forEach;
     
     /**
-     * Returns a new array of the natural numbers in the given set, not
-     * necessarily in order.
+     * Returns a new array of the natural numbers in the given set, in order.
      */
     export function toArray(set: ISet): number[] {
         const arr: number[] = [];
@@ -263,7 +261,7 @@ namespace ISet {
     
     /**
      * Returns a new array by mapping the natural numbers in the given set,
-     * not necessarily in order.
+     * in order.
      */
     export function map<T>(set: ISet, f: (x: number) => T): T[] {
         const arr: T[] = [];

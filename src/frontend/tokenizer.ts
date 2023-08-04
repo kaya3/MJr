@@ -190,12 +190,9 @@ namespace Tokenizer {
                             return ['OP', this.has(col + 1, C.SLASH) ? col + 2 : col + 1, depth, mode];
                         
                         case C.MINUS:
-                            // INT, FLOAT, '-' or '->'
-                            if(!this.has(col + 1, C.DIGIT)) {
-                                return ['OP', this.has(col + 1, C.RANGLE) ? col + 2 : col + 1, depth, mode];
-                            }
-                            ++col;
-                            // intentional fall-through
+                            // '-' or '->'
+                            return ['OP', this.has(col + 1, C.RANGLE) ? col + 2 : col + 1, depth, mode];
+                        
                         case C.DIGIT: {
                             const end = this.scan(col, [C.DIGIT]);
                             if(!this.has(end, C.DOT)) {

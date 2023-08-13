@@ -98,9 +98,29 @@ namespace IR {
         } else if(then.kind === 'stmt.if' && equals(otherwise, then.otherwise)) {
             // replace `if(c1) { if(c2) A else B } else B` with `if(c1 && c2) A else B`
             return if_(OP.and(condition, then.condition), then.then, otherwise);
-        } else {
-            return {kind: 'stmt.if', condition, then, otherwise};
+        } else if(then.kind === 'stmt.if' && equals(otherwise, then.then)) {
+            // replace `if(c1) { if(c2) B else A } else B` with `if(c1 && !c2) A else B`
+            return if_(OP.and(condition, OP.not(then.condition)), then.otherwise ?? PASS, otherwise);
+        } else if(then.kind === 'stmt.block' && otherwise !== undefined && otherwise.kind === 'stmt.block') {
+            // replace `if(c) { ...; A } else { ...; A }` with `if(c) { ... } else { ... } A`
+            // moving from the start of each block instead of the end would be unsound, since it could change the condition's value
+            let i = then.children.length,
+                j = otherwise.children.length;
+            while(i > 0 && j > 0 && equals(then.children[i - 1], otherwise.children[j - 1])) {
+                --i; --j;
+            }
+            if(i < then.children.length) {
+                const after = then.children.slice(i);
+                then = block(then.children.slice(0, i));
+                otherwise = block(otherwise.children.slice(0, j));
+                return block([
+                    if_(condition, then, otherwise),
+                    ...after,
+                ]);
+            }
         }
+        
+        return {kind: 'stmt.if', condition, then, otherwise};
     }
     export function libFunctionCallStmt(f: LibFunction, args: readonly Expr[]): ExprStmt {
         return {kind: 'stmt.expr', expr: libFunctionCall(f, args)};

@@ -38,13 +38,14 @@ namespace Compiler {
         readonly constants: IR.Constants;
         readonly grids: readonly IR.Grid[];
         readonly mask: IR.Mask;
-        readonly matches: IR.MatchesArray;
         
         readonly checkMaxIterations: IR.Stmt;
         
         getStmtCompiler(stmt: ASG.Statement): StmtCompiler;
         expr(expr: ASG.Expression): IR.Expr;
         type(type: Type.Type): IR.IRType;
+        
+        useTempArray(scale: number): IR.TempArray;
         
         notSupported(msg: string, pos: SourcePosition): void;
         dictType(entryTypes: ReadonlyMap<string, Type.Type>): IR.DictType;
@@ -60,10 +61,11 @@ namespace Compiler {
         readonly constants = new IR.Constants();
         readonly grids: readonly IR.Grid[];
         readonly mask = new IR.Mask();
-        readonly matches = new IR.MatchesArray();
         
         readonly declareMaxIterations: IR.Stmt;
         readonly checkMaxIterations: IR.Stmt;
+        
+        private tempArrayScale = 0;
         
         constructor(
             private readonly asg: ASG.ASG,
@@ -122,7 +124,7 @@ namespace Compiler {
                 compiledRoot = rootCompiler.compile(this, IR.PASS, IR.PASS),
                 endGridObj = this.grids[endGridID].useObj(),
                 gridDecls = this.grids.flatMap(g => g.declare()),
-                matchesDecl = this.matches.declare(),
+                matchesDecl = this.declareTempArray(),
                 maskDecl = this.mask.declare(),
                 constDecls = this.constants.declare(),
                 varDecls = declareASGVariables(this, this.asg.variables),
@@ -132,7 +134,7 @@ namespace Compiler {
             // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
             // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
             const maxScale = Math.max(
-                this.matches.scale,
+                this.tempArrayScale,
                 ...this.grids.map(g => g.getScale()),
             );
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
@@ -167,7 +169,7 @@ namespace Compiler {
             ]));
         }
         
-        lastStmtID = -1;
+        private lastStmtID = -1;
         readonly getStmtCompiler = (stmt: ASG.Statement): StmtCompiler => {
             const id = ++this.lastStmtID;
             return new STMT_COMPILERS[stmt.kind](stmt as never, id, this);
@@ -186,6 +188,22 @@ namespace Compiler {
             const keys = Array.from(entryTypes.keys()).sort();
             // TODO: declare type aliases for dict types
             return {kind: 'dict', keys, values: keys.map(k => this.type(entryTypes.get(k)!))};
+        }
+        
+        private readonly tempArray = new IR.TempArray(IR.NAMES.MATCHES, IR.NAMES.MATCH_COUNT);
+        useTempArray(scale: number): IR.TempArray {
+            this.tempArrayScale = Math.max(this.tempArrayScale, scale);
+            return this.tempArray;
+        }
+        private declareTempArray(): IR.Stmt {
+            if(this.tempArrayScale === 0) { return IR.PASS; }
+            
+            // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
+            const n = OP.multConstant(OP.mult(WIDTH, HEIGHT), this.tempArrayScale);
+            return IR.block([
+                IR.declVar(IR.NAMES.MATCHES, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n)),
+                IR.declVar(IR.NAMES.MATCH_COUNT, IR.INT_TYPE, undefined, true),
+            ]);
         }
     }
     

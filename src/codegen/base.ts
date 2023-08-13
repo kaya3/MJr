@@ -79,9 +79,7 @@ namespace CodeGen {
             switch(expr.kind) {
                 case 'expr.letin': {
                     if(this.writeAssignExpr !== undefined) {
-                        for(const decl of expr.decls) {
-                            this._toAssign.set(decl.name.name, decl.initialiser);
-                        }
+                        this._toAssign.set(expr.decl.name.name, expr.decl.initialiser);
                         this.writeExpr(expr.child, minPrecedence);
                         return;
                     }
@@ -134,7 +132,7 @@ namespace CodeGen {
         public writeAssignExpr?(left: IR.NameExpr, right: IR.Expr): void;
         
         public writeIndentedBlock(stmt: IR.Stmt): void {
-            this.writeStmt(stmt.kind !== 'stmt.block' ? {kind: 'stmt.block', children: [stmt]} : stmt);
+            this.writeStmt(stmt.kind !== 'stmt.block' ? {kind: 'stmt.block', children: [stmt], flags: stmt.flags} : stmt);
         }
         
         public writeList(writer: (i: number) => void, n: number, rowLength: number = IR.DEFAULT_ROW_LENGTH, compact: boolean = false, sep: string = ','): void {

@@ -16,7 +16,7 @@ namespace IR {
     export interface VarDecl extends Readonly<{name: NameExpr, type: IRType, initialiser?: Expr}> {}
     export interface VarDeclWithInitialiser extends VarDecl {readonly initialiser: Expr}
     
-    type _StmtNode<K extends string, T> = Readonly<{kind: `stmt.${K}`} & T> & {[JSON_KEY]?: string}
+    type _StmtNode<K extends string, T> = Readonly<{kind: `stmt.${K}`} & T> & {flags: NodeFlags, [JSON_KEY]?: string}
     export interface AssignStmt extends _StmtNode<'assign', {op: AssignOp, left: NameExpr | AttrExpr | ArrayAccessExpr, right: Expr}> {}
     export interface BlankLineStmt extends _StmtNode<'blankline', {}> {}
     export interface BlockStmt extends _StmtNode<'block', {children: readonly Stmt[]}> {}
@@ -25,7 +25,7 @@ namespace IR {
     export interface ContinueStmt extends _StmtNode<'continue', {}> {}
     export interface DeclFuncStmt extends _StmtNode<'decl.func', {name: NameExpr, yields: IRType | undefined, params: readonly NameExpr[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt}> {}
     export interface DeclVarsStmt extends _StmtNode<'decl.vars', {decls: readonly VarDecl[], mutable: boolean}> {}
-    export interface ExprStmt extends _StmtNode<'expr', {expr: CallLibExpr | CallLocalExpr}> {}
+    export interface ExprStmt extends _StmtNode<'expr', {expr: Expr}> {}
     export interface ForRangeStmt extends _StmtNode<'for.range', {index: NameExpr, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
     export interface IfStmt extends _StmtNode<'if', {condition: Expr, then: Stmt, otherwise: Stmt | undefined}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Expr}> {}
@@ -44,9 +44,9 @@ namespace IR {
     export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz' | 'float_log2'
     export type Op = BinaryOp | UnaryOp
     
-    type _ExprNode<K extends string, T> = Readonly<{kind: `expr.${K}`} & T> & {[JSON_KEY]?: string}
+    type _ExprNode<K extends string, T> = Readonly<{kind: `expr.${K}`} & T> & {flags: NodeFlags, [JSON_KEY]?: string}
     export interface AttrExpr extends _ExprNode<'attr', {left: Expr, attr: string}> {}
-    export interface LetInExpr extends _ExprNode<'letin', {decls: readonly VarDeclWithInitialiser[], child: Expr}> {}
+    export interface LetInExpr extends _ExprNode<'letin', {decl: VarDeclWithInitialiser, child: Expr}> {}
     export interface NameExpr extends _ExprNode<'name', {name: string}> {}
     export interface ParamExpr extends _ExprNode<'param', {name: string, otherwise: Expr}> {}
     
@@ -72,13 +72,87 @@ namespace IR {
     export type CallLibExpr = CallLibConstructorExpr | CallLibFunctionExpr | CallLibMethodExpr
     export interface CallLibConstructorExpr extends _ExprNode<'op.call.lib.constructor', {className: LibClass, args: readonly Expr[]}> {}
     export interface CallLibFunctionExpr extends _ExprNode<'op.call.lib.function', {name: LibFunction, args: readonly Expr[]}> {}
-    export interface CallLibMethodExpr extends _ExprNode<'op.call.lib.method', {className: LibClass | 'PRNG', name: string, obj: Expr, args: readonly Expr[]}> {}
+    export interface CallLibMethodExpr extends _ExprNode<'op.call.lib.method', {className: LibInterface, name: string, obj: Expr, args: readonly Expr[]}> {}
     
     export type LibClass = KeysMatching<typeof MJr, new (...args: never[]) => unknown>
-    export type LibMethod<K extends LibClass | 'PRNG'>
+    export type LibInterface = LibClass | 'PRNG'
+    export type LibMethod<K extends LibInterface>
         = K extends LibClass
         ? `${KeysMatching<InstanceType<typeof MJr[K]>, Function>}`
         : KeysMatching<MJr.PRNG, Function>
     
     export type LibFunction = Exclude<KeysMatching<typeof MJr, Function>, LibClass | 'fraction'>
+    
+    export type LocalFunction = 'mask_clear' | 'mask_set' | 'mask_hasnt'
+    
+    export const enum NodeFlags {
+        NO_STATE_CHANGES = 1,
+        NO_BREAKS = 2,
+        NO_RETURNS = 4,
+        NO_THROWS = 8,
+        NO_OUTPUT = 16,
+        LOCALLY_DETERMINISTIC = 32,
+        CONTEXT_INDEPENDENT = 64,
+        
+        DO_NOTHING = 63,
+        NO_CONTROL_FLOW_EFFECTS = NO_BREAKS | NO_THROWS | NO_RETURNS,
+        NO_SIDE_EFFECTS = NO_STATE_CHANGES | NO_CONTROL_FLOW_EFFECTS | NO_OUTPUT,
+        
+        CONSTANT = NO_SIDE_EFFECTS | LOCALLY_DETERMINISTIC | CONTEXT_INDEPENDENT,
+        NEW_MUT_OBJECT = NO_SIDE_EFFECTS | CONTEXT_INDEPENDENT,
+        PURE_FUNCTION = NO_SIDE_EFFECTS | LOCALLY_DETERMINISTIC | CONTEXT_INDEPENDENT,
+        RAND_CALL = NO_SIDE_EFFECTS | CONTEXT_INDEPENDENT,
+        STATE_GET = NO_SIDE_EFFECTS,
+        STATE_UPDATE = NO_CONTROL_FLOW_EFFECTS | NO_OUTPUT,
+    }
+    
+    export const LOCAL_FUNCTION_FLAGS: IRecord<LocalFunction, NodeFlags> = {
+        mask_clear: NodeFlags.STATE_UPDATE,
+        mask_set: NodeFlags.STATE_UPDATE,
+        mask_hasnt: NodeFlags.STATE_GET,
+    };
+    
+    export const LIB_FUNCTION_FLAGS: IRecord<LibFunction, NodeFlags> = {
+        lfsrFeedbackTerm: NodeFlags.PURE_FUNCTION,
+        nextIntChecked: NodeFlags.RAND_CALL & ~NodeFlags.NO_THROWS,
+    };
+    
+    export const LIB_METHOD_FLAGS: {readonly [K in LibInterface]: IRecord<LibMethod<K>, NodeFlags>} = {
+        Grid: {
+            index: NodeFlags.PURE_FUNCTION,
+            toString: NodeFlags.STATE_GET,
+            wrapIndex: NodeFlags.PURE_FUNCTION,
+        },
+        PRNG: {
+            nextDouble: NodeFlags.RAND_CALL,
+            nextInt: NodeFlags.RAND_CALL,
+        },
+        Pattern: {
+            fitsMask: NodeFlags.STATE_GET,
+            hasEffect: NodeFlags.STATE_GET,
+            put: NodeFlags.STATE_UPDATE,
+        },
+        RewriteInfo: {},
+        Sampler: {
+            add: NodeFlags.STATE_UPDATE,
+            copyInto: NodeFlags.STATE_UPDATE,
+            copyIntoOffset: NodeFlags.STATE_UPDATE,
+            del: NodeFlags.STATE_UPDATE,
+            has: NodeFlags.STATE_GET,
+            sample: NodeFlags.STATE_GET,
+            shuffleInto: NodeFlags.STATE_UPDATE,
+            shuffleIntoOffset: NodeFlags.STATE_UPDATE,
+        },
+    };
+    
+    export function exprHasSideEffects(expr: Expr): boolean {
+        return (expr.flags & NodeFlags.NO_SIDE_EFFECTS) !== NodeFlags.NO_SIDE_EFFECTS;
+    }
+    
+    export function _reduceFlags(flags: NodeFlags, nodes: readonly (Stmt | Expr)[]): NodeFlags {
+        for(const node of nodes) {
+            flags &= node.flags;
+        }
+        return flags;
+    }
 }

@@ -30,22 +30,89 @@ var IR;
 })(IR || (IR = {}));
 var IR;
 (function (IR) {
+    // all type declarations here must be JSON serialisable, since `JSON.stringify` is used to detect repeated IR code and simplify it
+    const JSON_KEY = Symbol();
+    function key(a) {
+        return a[JSON_KEY] ??= JSON.stringify(a);
+    }
+    IR.key = key;
+    function equals(a, b) {
+        if (a === b) {
+            return true;
+        }
+        if (a === undefined || b === undefined || a.kind !== b.kind) {
+            return false;
+        }
+        return key(a) === key(b);
+    }
+    IR.equals = equals;
+    IR.LOCAL_FUNCTION_FLAGS = {
+        mask_clear: 30 /* NodeFlags.STATE_UPDATE */,
+        mask_set: 30 /* NodeFlags.STATE_UPDATE */,
+        mask_hasnt: 31 /* NodeFlags.STATE_GET */,
+    };
+    IR.LIB_FUNCTION_FLAGS = {
+        lfsrFeedbackTerm: 127 /* NodeFlags.PURE_FUNCTION */,
+        nextIntChecked: 95 /* NodeFlags.RAND_CALL */ & ~8 /* NodeFlags.NO_THROWS */,
+    };
+    IR.LIB_METHOD_FLAGS = {
+        Grid: {
+            index: 127 /* NodeFlags.PURE_FUNCTION */,
+            toString: 31 /* NodeFlags.STATE_GET */,
+            wrapIndex: 127 /* NodeFlags.PURE_FUNCTION */,
+        },
+        PRNG: {
+            nextDouble: 95 /* NodeFlags.RAND_CALL */,
+            nextInt: 95 /* NodeFlags.RAND_CALL */,
+        },
+        Pattern: {
+            fitsMask: 31 /* NodeFlags.STATE_GET */,
+            hasEffect: 31 /* NodeFlags.STATE_GET */,
+            put: 30 /* NodeFlags.STATE_UPDATE */,
+        },
+        RewriteInfo: {},
+        Sampler: {
+            add: 30 /* NodeFlags.STATE_UPDATE */,
+            copyInto: 30 /* NodeFlags.STATE_UPDATE */,
+            copyIntoOffset: 30 /* NodeFlags.STATE_UPDATE */,
+            del: 30 /* NodeFlags.STATE_UPDATE */,
+            has: 31 /* NodeFlags.STATE_GET */,
+            sample: 31 /* NodeFlags.STATE_GET */,
+            shuffleInto: 30 /* NodeFlags.STATE_UPDATE */,
+            shuffleIntoOffset: 30 /* NodeFlags.STATE_UPDATE */,
+        },
+    };
+    function exprHasSideEffects(expr) {
+        return (expr.flags & 31 /* NodeFlags.NO_SIDE_EFFECTS */) !== 31 /* NodeFlags.NO_SIDE_EFFECTS */;
+    }
+    IR.exprHasSideEffects = exprHasSideEffects;
+    function _reduceFlags(flags, nodes) {
+        for (const node of nodes) {
+            flags &= node.flags;
+        }
+        return flags;
+    }
+    IR._reduceFlags = _reduceFlags;
+})(IR || (IR = {}));
+///<reference path="./ir.ts"/>
+var IR;
+(function (IR) {
     function float(value) {
         return value === 0 ? IR.FLOAT_ZERO
             : value === 1 ? IR.FLOAT_ONE
                 : value === -1 ? IR.FLOAT_MINUS_ONE
-                    : { kind: 'expr.literal.float', value };
+                    : { kind: 'expr.literal.float', value, flags: 127 /* NodeFlags.CONSTANT */ };
     }
     IR.float = float;
     function int(value) {
         return value === 0 ? IR.ZERO
             : value === 1 ? IR.ONE
                 : value === -1 ? IR.MINUS_ONE
-                    : { kind: 'expr.literal.int', value };
+                    : { kind: 'expr.literal.int', value, flags: 127 /* NodeFlags.CONSTANT */ };
     }
     IR.int = int;
     function str(value) {
-        return { kind: 'expr.literal.str', value };
+        return { kind: 'expr.literal.str', value, flags: 127 /* NodeFlags.CONSTANT */ };
     }
     IR.str = str;
     function isInt(expr) {
@@ -53,38 +120,38 @@ var IR;
     }
     IR.isInt = isInt;
     // singleton objects for common values
-    IR.TRUE = { kind: 'expr.literal.bool', value: true };
-    IR.FALSE = { kind: 'expr.literal.bool', value: false };
-    IR.NULL = { kind: 'expr.literal.null' };
-    IR.ZERO = { kind: 'expr.literal.int', value: 0 };
-    IR.ONE = { kind: 'expr.literal.int', value: 1 };
-    IR.MINUS_ONE = { kind: 'expr.literal.int', value: -1 };
-    IR.FLOAT_ZERO = { kind: 'expr.literal.float', value: 0 };
-    IR.FLOAT_ONE = { kind: 'expr.literal.float', value: 1 };
-    IR.FLOAT_MINUS_ONE = { kind: 'expr.literal.float', value: -1 };
+    IR.TRUE = { kind: 'expr.literal.bool', value: true, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.FALSE = { kind: 'expr.literal.bool', value: false, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.NULL = { kind: 'expr.literal.null', flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.ZERO = { kind: 'expr.literal.int', value: 0, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.ONE = { kind: 'expr.literal.int', value: 1, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.MINUS_ONE = { kind: 'expr.literal.int', value: -1, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.FLOAT_ZERO = { kind: 'expr.literal.float', value: 0, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.FLOAT_ONE = { kind: 'expr.literal.float', value: 1, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.FLOAT_MINUS_ONE = { kind: 'expr.literal.float', value: -1, flags: 127 /* NodeFlags.CONSTANT */ };
     function attr(left, attr) {
-        return { kind: 'expr.attr', left, attr };
+        return { kind: 'expr.attr', left, attr, flags: left.flags };
     }
     IR.attr = attr;
-    function letIn(decls, child) {
-        return decls.length === 0 ? child
-            : { kind: 'expr.letin', decls, child };
+    function letIn(decl, child) {
+        return { kind: 'expr.letin', decl, child, flags: child.flags };
     }
     IR.letIn = letIn;
     function nameExpr(name) {
-        return { kind: 'expr.name', name };
+        return { kind: 'expr.name', name, flags: 31 /* NodeFlags.NO_SIDE_EFFECTS */ };
     }
     IR.nameExpr = nameExpr;
     function param(name, otherwise) {
-        return { kind: 'expr.param', name, otherwise };
+        return { kind: 'expr.param', name, otherwise, flags: otherwise.flags };
     }
     IR.param = param;
     function dict(type, values) {
-        return { kind: 'expr.dict', type, values };
+        const flags = IR._reduceFlags(127 /* NodeFlags.CONSTANT */, values);
+        return { kind: 'expr.dict', type, values, flags };
     }
     IR.dict = dict;
     function newArray(length, domainSize) {
-        return { kind: 'expr.array.new', length, domainSize };
+        return { kind: 'expr.array.new', length, domainSize, flags: 95 /* NodeFlags.NEW_MUT_OBJECT */ };
     }
     IR.newArray = newArray;
     function newGridDataArray(length) {
@@ -96,30 +163,37 @@ var IR;
     }
     IR.newInt32Array = newInt32Array;
     function constArray(from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
-        return { kind: 'expr.array.const', from, domainSize, rowLength };
+        return { kind: 'expr.array.const', from, domainSize, rowLength, flags: 95 /* NodeFlags.NEW_MUT_OBJECT */ };
     }
     IR.constArray = constArray;
     function access(left, right) {
-        return { kind: 'expr.op.access', left, right };
+        const flags = left.flags & right.flags;
+        return { kind: 'expr.op.access', left, right, flags };
     }
     IR.access = access;
     function libConstructorCall(className, args) {
-        return { kind: 'expr.op.call.lib.constructor', className, args };
+        return { kind: 'expr.op.call.lib.constructor', className, args, flags: IR._reduceFlags(95 /* NodeFlags.NEW_MUT_OBJECT */, args) };
     }
     IR.libConstructorCall = libConstructorCall;
     function libFunctionCall(name, args) {
-        return { kind: 'expr.op.call.lib.function', name, args };
+        const flags = IR._reduceFlags(IR.LIB_FUNCTION_FLAGS[name], args);
+        return { kind: 'expr.op.call.lib.function', name, args, flags };
     }
     IR.libFunctionCall = libFunctionCall;
     function libMethodCall(className, name, obj, args) {
-        return { kind: 'expr.op.call.lib.method', className, name, obj, args };
+        const flags = IR._reduceFlags(IR.LIB_METHOD_FLAGS[className][name], args);
+        return { kind: 'expr.op.call.lib.method', className, name, obj, args, flags };
     }
     IR.libMethodCall = libMethodCall;
-    function localCall(name, args) {
-        return { kind: 'expr.op.call.local', name, args };
+    function localCall(name, args, isGetter = false) {
+        const flags = IR._reduceFlags(isGetter ? 31 /* NodeFlags.STATE_GET */ : 30 /* NodeFlags.STATE_UPDATE */, args);
+        return { kind: 'expr.op.call.local', name, args, flags };
     }
     IR.localCall = localCall;
     function ternary(condition, then, otherwise) {
+        if (IR.exprHasSideEffects(condition)) {
+            fail(condition);
+        }
         if (condition === IR.TRUE) {
             return then;
         }
@@ -135,7 +209,8 @@ var IR;
             then = otherwise;
             otherwise = tmp;
         }
-        return { kind: 'expr.op.ternary', condition, then, otherwise };
+        const flags = condition.flags & then.flags & otherwise.flags;
+        return { kind: 'expr.op.ternary', condition, then, otherwise, flags };
     }
     IR.ternary = ternary;
     function binaryOp(op, left, right) {
@@ -300,10 +375,15 @@ var IR;
         str_ne: 'str_eq',
     });
     function _binOp(op, left, right) {
-        return { kind: 'expr.op.binary', op, left, right };
+        const flags = left.flags & right.flags;
+        return { kind: 'expr.op.binary', op, left, right, flags };
     }
     function _unOp(op, child) {
-        return { kind: 'expr.op.unary', op, child };
+        let flags = child.flags;
+        if (op === 'int_checkzero' || op === 'float_checkzero') {
+            flags &= ~8 /* NodeFlags.NO_THROWS */;
+        }
+        return { kind: 'expr.op.unary', op, child, flags };
     }
     function _isPowerOfTwo(x) {
         return x > 0 && (x & (x - 1)) === 0;
@@ -539,10 +619,10 @@ var IR;
     }
     IR.newArrayDecl = newArrayDecl;
     // singletons
-    IR.BLANK_LINE = { kind: 'stmt.blankline' };
-    IR.BREAK = { kind: 'stmt.break' };
-    IR.CONTINUE = { kind: 'stmt.continue' };
-    IR.PASS = { kind: 'stmt.pass' };
+    IR.BLANK_LINE = { kind: 'stmt.blankline', flags: 63 /* NodeFlags.DO_NOTHING */ };
+    IR.BREAK = { kind: 'stmt.break', flags: 63 /* NodeFlags.DO_NOTHING */ & ~2 /* NodeFlags.NO_BREAKS */ };
+    IR.CONTINUE = { kind: 'stmt.continue', flags: 63 /* NodeFlags.DO_NOTHING */ & ~2 /* NodeFlags.NO_BREAKS */ };
+    IR.PASS = { kind: 'stmt.pass', flags: 63 /* NodeFlags.DO_NOTHING */ };
     function assign(left, op, right) {
         if (IR.isInt(right)) {
             if (right.value === 0) {
@@ -562,7 +642,8 @@ var IR;
             op = op === '+=' ? '-=' : '+=';
             right = right.child;
         }
-        return { kind: 'stmt.assign', op, left, right };
+        const flags = left.flags & right.flags & ~1 /* NodeFlags.NO_STATE_CHANGES */;
+        return { kind: 'stmt.assign', op, left, right, flags };
     }
     IR.assign = assign;
     function block(children) {
@@ -571,15 +652,15 @@ var IR;
                 : [c]);
         return children.length === 0 ? IR.PASS
             : children.length === 1 ? children[0]
-                : { kind: 'stmt.block', children };
+                : { kind: 'stmt.block', children, flags: IR._reduceFlags(63 /* NodeFlags.DO_NOTHING */, children) };
     }
     IR.block = block;
     function comment(comment) {
-        return { kind: 'stmt.comment', comment };
+        return { kind: 'stmt.comment', comment, flags: 63 /* NodeFlags.DO_NOTHING */ };
     }
     IR.comment = comment;
     function declFunc(name, yields, params, paramTypes, returnType, body) {
-        return { kind: 'stmt.decl.func', name, yields, params, paramTypes, returnType, body };
+        return { kind: 'stmt.decl.func', name, yields, params, paramTypes, returnType, body, flags: 63 /* NodeFlags.DO_NOTHING */ };
     }
     IR.declFunc = declFunc;
     function declVar(name, type, initialiser, mutable = false) {
@@ -587,12 +668,19 @@ var IR;
     }
     IR.declVar = declVar;
     function declVars(decls, mutable = false) {
-        return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable } : IR.PASS;
+        let flags = 63 /* NodeFlags.DO_NOTHING */ & ~1 /* NodeFlags.NO_STATE_CHANGES */;
+        for (const decl of decls) {
+            if (decl.initialiser !== undefined) {
+                flags &= decl.initialiser.flags;
+            }
+        }
+        return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable, flags } : IR.PASS;
     }
     IR.declVars = declVars;
     function forRange(index, low, high, stmts, reverse = false) {
         const body = block(stmts);
-        return body === IR.PASS ? IR.PASS : { kind: 'stmt.for.range', index, low, high, reverse, body };
+        const flags = body.flags | 2 /* NodeFlags.NO_BREAKS */;
+        return body === IR.PASS ? IR.PASS : { kind: 'stmt.for.range', index, low, high, reverse, body, flags };
     }
     IR.forRange = forRange;
     function forRangeReverse(index, low, high, stmts) {
@@ -600,6 +688,9 @@ var IR;
     }
     IR.forRangeReverse = forRangeReverse;
     function if_(condition, then, otherwise) {
+        if (IR.exprHasSideEffects(condition)) {
+            fail(condition);
+        }
         if (otherwise === IR.PASS) {
             otherwise = undefined;
         }
@@ -624,68 +715,77 @@ var IR;
             // omit redundant `if` statement guarding a `for` loop
             return then;
         }
-        else if (then.kind === 'stmt.if' && IR.equals(otherwise, then.otherwise)) {
+        else if (then.kind === 'stmt.if' && IR.equals(then.otherwise, otherwise)) {
             // replace `if(c1) { if(c2) A else B } else B` with `if(c1 && c2) A else B`
             return if_(IR.OP.and(condition, then.condition), then.then, otherwise);
         }
-        else if (then.kind === 'stmt.if' && IR.equals(otherwise, then.then)) {
+        else if (then.kind === 'stmt.if' && IR.equals(then.then, otherwise)) {
             // replace `if(c1) { if(c2) B else A } else B` with `if(c1 && !c2) A else B`
             return if_(IR.OP.and(condition, IR.OP.not(then.condition)), then.otherwise ?? IR.PASS, otherwise);
         }
         else if (then.kind === 'stmt.block' && otherwise !== undefined && otherwise.kind === 'stmt.block') {
             // replace `if(c) { ...; A } else { ...; A }` with `if(c) { ... } else { ... } A`
             // moving from the start of each block instead of the end would be unsound, since it could change the condition's value
-            let i = then.children.length, j = otherwise.children.length;
-            while (i > 0 && j > 0 && IR.equals(then.children[i - 1], otherwise.children[j - 1])) {
+            const thenC = then.children, otherC = otherwise.children;
+            let i = thenC.length, j = otherC.length;
+            while (i > 0 && j > 0 && IR.equals(thenC[i - 1], otherC[j - 1])) {
                 --i;
                 --j;
             }
-            if (i < then.children.length) {
-                const after = then.children.slice(i);
-                then = block(then.children.slice(0, i));
-                otherwise = block(otherwise.children.slice(0, j));
+            if (i < thenC.length) {
                 return block([
-                    if_(condition, then, otherwise),
-                    ...after,
+                    if_(condition, block(thenC.slice(0, i)), block(otherC.slice(0, j))),
+                    ...thenC.slice(i),
                 ]);
             }
         }
-        return { kind: 'stmt.if', condition, then, otherwise };
+        let flags = condition.flags & then.flags;
+        if (otherwise !== undefined) {
+            flags &= otherwise.flags;
+        }
+        return { kind: 'stmt.if', condition, then, otherwise, flags };
     }
     IR.if_ = if_;
+    function exprStmt(expr) {
+        return IR.exprHasSideEffects(expr) ? { kind: 'stmt.expr', expr, flags: expr.flags } : IR.PASS;
+    }
+    IR.exprStmt = exprStmt;
     function libFunctionCallStmt(f, args) {
-        return { kind: 'stmt.expr', expr: IR.libFunctionCall(f, args) };
+        return exprStmt(IR.libFunctionCall(f, args));
     }
     IR.libFunctionCallStmt = libFunctionCallStmt;
     function libMethodCallStmt(className, name, obj, args) {
-        return { kind: 'stmt.expr', expr: IR.libMethodCall(className, name, obj, args) };
+        return exprStmt(IR.libMethodCall(className, name, obj, args));
     }
     IR.libMethodCallStmt = libMethodCallStmt;
     function localCallStmt(f, args) {
-        return { kind: 'stmt.expr', expr: IR.localCall(f, args) };
+        return exprStmt(IR.localCall(f, args));
     }
     IR.localCallStmt = localCallStmt;
     function log(expr) {
-        return { kind: 'stmt.log', expr };
+        const flags = expr.flags & ~16 /* NodeFlags.NO_OUTPUT */;
+        return { kind: 'stmt.log', expr, flags };
     }
     IR.log = log;
     function preamble(paramTypes, emitChecks, libVersion, opsUsed) {
-        return { kind: 'stmt.preamble', paramTypes, emitChecks, libVersion, opsUsed };
+        return { kind: 'stmt.preamble', paramTypes, emitChecks, libVersion, opsUsed, flags: 32 /* NodeFlags.LOCALLY_DETERMINISTIC */ };
     }
     IR.preamble = preamble;
     function return_(expr) {
-        return { kind: 'stmt.return', expr };
+        const flags = (expr !== undefined ? expr.flags : 63 /* NodeFlags.DO_NOTHING */) & ~4 /* NodeFlags.NO_RETURNS */;
+        return { kind: 'stmt.return', expr, flags };
     }
     IR.return_ = return_;
     function switch_(expr, casesByIndex, optimise = false) {
+        // TODO: optimisation depends on referential transparency
+        if (IR.exprHasSideEffects(expr)) {
+            fail(expr);
+        }
         if (casesByIndex.length === 0) {
             return IR.PASS;
         }
         else if (casesByIndex.length === 1) {
             return casesByIndex[0];
-        }
-        else if (casesByIndex.length === 2) {
-            return if_(IR.OP.eq(expr, IR.ZERO), casesByIndex[0], casesByIndex[1]);
         }
         const firstCase = casesByIndex[0];
         if (firstCase.kind === 'stmt.if' && casesByIndex.every((c) => c.kind === 'stmt.if' && IR.equals(c.condition, firstCase.condition))) {
@@ -701,6 +801,9 @@ var IR;
                 exhaustive = false;
                 continue;
             }
+            if ((c.flags & 2 /* NodeFlags.NO_BREAKS */) === 0) {
+                fail(c);
+            }
             const k = IR.key(c);
             getOrCompute(map, k, () => ({ values: [], then: c })).values.push(i);
         }
@@ -712,17 +815,24 @@ var IR;
             }
         }
         const cases = Array.from(map.values());
+        const flags = IR._reduceFlags(expr.flags, casesByIndex);
         return cases.length === 0 ? IR.PASS
             : cases.length === 1 && exhaustive ? firstCase
-                : cases.length === 1 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, IR.int(cases[0].values[0])), cases[0].then)
-                    : { kind: 'stmt.switch', expr, cases };
+                : cases.length <= 2 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, IR.int(cases[0].values[0])), cases[0].then, cases.length === 2 ? cases[1].then : undefined)
+                    : { kind: 'stmt.switch', expr, cases, flags };
     }
     IR.switch_ = switch_;
     function throw_(message) {
-        return { kind: 'stmt.throw', message };
+        return { kind: 'stmt.throw', message, flags: 63 /* NodeFlags.DO_NOTHING */ & ~8 /* NodeFlags.NO_THROWS */ };
     }
     IR.throw_ = throw_;
     function while_(condition, then) {
+        if (IR.exprHasSideEffects(condition)) {
+            fail(condition);
+        }
+        if (then === IR.BREAK) {
+            return IR.PASS;
+        }
         if (then.kind === 'stmt.if') {
             if (then.then === IR.BREAK) {
                 condition = IR.OP.and(condition, IR.OP.not(then.condition));
@@ -733,13 +843,21 @@ var IR;
                 then = then.then;
             }
         }
+        if (then.kind === 'stmt.block' && then.children[then.children.length - 1] === IR.BREAK) {
+            const r = block(then.children.slice(0, then.children.length - 1));
+            if (r.flags & 2 /* NodeFlags.NO_BREAKS */) {
+                return r;
+            }
+        }
         // the compiler won't ever output an infinite loop that does nothing; if the loop body is empty, then the condition must be false
+        const flags = condition.flags & (then.flags | 2 /* NodeFlags.NO_BREAKS */);
         return then === IR.PASS || then === IR.BREAK ? IR.PASS
-            : { kind: 'stmt.while', condition, then };
+            : { kind: 'stmt.while', condition, then, flags };
     }
     IR.while_ = while_;
     function yield_(expr) {
-        return { kind: 'stmt.yield', expr };
+        const flags = (expr !== undefined ? expr.flags : 63 /* NodeFlags.DO_NOTHING */) & ~16 /* NodeFlags.NO_OUTPUT */;
+        return { kind: 'stmt.yield', expr, flags };
     }
     IR.yield_ = yield_;
 })(IR || (IR = {}));
@@ -870,21 +988,17 @@ var Compiler;
                 return c.grids[expr.inGrid].makeCounter(expr.patterns);
             case 'expr.decl': {
                 // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
-                const decls = [];
-                let cur = expr;
-                while (cur.kind === 'expr.decl') {
-                    const { variable, rhs } = cur.decl;
-                    if (variable.references > 0) {
-                        decls.push({
-                            name: IR.NAMES.variable(variable),
-                            // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
-                            type: c.type(variable.type),
-                            initialiser: c.expr(rhs),
-                        });
-                    }
-                    cur = cur.child;
+                const { variable, rhs } = expr.decl;
+                if (variable.references === 0) {
+                    return c.expr(rhs);
                 }
-                return IR.letIn(decls, c.expr(cur));
+                const decl = {
+                    name: IR.NAMES.variable(variable),
+                    // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
+                    type: c.type(variable.type),
+                    initialiser: c.expr(rhs),
+                };
+                return IR.letIn(decl, c.expr(rhs));
             }
             case 'expr.dict': {
                 const type = c.dictType(expr.type.entryTypes);
@@ -1166,7 +1280,7 @@ var Compiler;
                     c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
                 }
             });
-            c.matches.use(g, k);
+            const matches = c.useTempArray(k);
             const useMask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
                 if (rule.to.kind === 'expr.constant') {
                     const { value } = rule.to.constant;
@@ -1193,14 +1307,14 @@ var Compiler;
             if (firstPassConditions.every(c => c === IR.TRUE)) {
                 const sampler = g.makeSampler(rewrites.map(rule => rule.from));
                 if (shuffle) {
-                    out.push(c.matches.declareCount(IR.ZERO, true), sampler.shuffleInto(c.matches));
+                    out.push(matches.declareCount(IR.ZERO), sampler.shuffleInto(matches));
                 }
                 else {
-                    out.push(sampler.copyInto(c.matches.array), c.matches.declareCount(sampler.count, true));
+                    out.push(sampler.copyInto(matches.array), matches.declareCount(sampler.count));
                 }
             }
             else {
-                out.push(c.matches.declareCount(IR.ZERO, true));
+                out.push(matches.declareCount(IR.ZERO));
                 for (let i = 0; i < k; ++i) {
                     const rule = rewrites[i];
                     const sampler = g.makeSampler([rule.from]);
@@ -1210,10 +1324,10 @@ var Compiler;
                     // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                     conditionIsSameEverywhere[i]
                         ? IR.if_(condition, shuffle
-                            ? sampler.shuffleIntoOffset(c.matches, k, i)
-                            : sampler.copyIntoOffset(c.matches.array, c.matches.count, k, i))
+                            ? sampler.shuffleIntoOffset(matches, k, i)
+                            : sampler.copyIntoOffset(matches.array, matches.count, k, i))
                         // otherwise, need to check the condition separately for each match
-                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? c.matches.insertShuffled(match) : c.matches.push(match)))]));
+                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? matches.insertShuffled(match) : matches.push(match)))]));
                 }
             }
             const doWrites = rewrites.map((rule, i) => IR.block([
@@ -1225,10 +1339,10 @@ var Compiler;
             if (c.config.animate) {
                 ifChanged = IR.block([g.yield_(), ifChanged]);
             }
-            out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(c.matches.isNotEmpty, IR.block([
+            out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(matches.isNotEmpty, IR.block([
                 useMask ? c.mask.clear(g) : IR.PASS,
-                IR.forRange(I, IR.ZERO, c.matches.count, [
-                    IR.declVar(MATCH, IR.INT_TYPE, c.matches.get(I)),
+                IR.forRange(I, IR.ZERO, matches.count, [
+                    IR.declVar(MATCH, IR.INT_TYPE, matches.get(I)),
                     g.declareAtIndex(OP.divConstant(MATCH, k)),
                     IR.switch_(OP.modConstant(MATCH, k), doWrites),
                 ]),
@@ -1444,18 +1558,22 @@ var Compiler;
                 rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
                 IR.if_(writeConditions[i], Compiler.doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
             ]));
-            return allUnconditionalAndEffective
-                ? IR.if_(sampler.isNotEmpty, IR.block([
+            if (allUnconditionalAndEffective) {
+                return IR.if_(sampler.isNotEmpty, IR.block([
                     sampler.sampleWithReplacement(cases),
                     ifChanged,
-                ]), then)
-                : IR.block([
+                ]), then);
+            }
+            else {
+                const matches = c.useTempArray(rewrites.length);
+                return IR.block([
                     sampler.beginSamplingWithoutReplacement(),
-                    c.matches.declareCount(sampler.count, true),
+                    matches.declareCount(sampler.count),
                     IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                    IR.while_(OP.and(c.matches.isNotEmpty, OP.not(ANY)), sampler.sampleWithoutReplacement(cases, c.matches.count)),
+                    IR.while_(OP.and(matches.isNotEmpty, OP.not(ANY)), sampler.sampleWithoutReplacement(cases, matches.count)),
                     IR.if_(ANY, ifChanged, then),
                 ]);
+            }
         }
     }
     Compiler.Stmt_BasicOne = Stmt_BasicOne;
@@ -1528,9 +1646,9 @@ var Compiler;
         constants = new IR.Constants();
         grids;
         mask = new IR.Mask();
-        matches = new IR.MatchesArray();
         declareMaxIterations;
         checkMaxIterations;
+        tempArrayScale = 0;
         constructor(asg, config) {
             this.asg = asg;
             this.config = config;
@@ -1574,11 +1692,11 @@ var Compiler;
             mainParams.push(RNG);
             mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
             // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
-            const rootCompiler = this.getStmtCompiler(root), declRoot = rootCompiler.declare(), compiledRoot = rootCompiler.compile(this, IR.PASS, IR.PASS), endGridObj = this.grids[endGridID].useObj(), gridDecls = this.grids.flatMap(g => g.declare()), matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), otherDecls = [];
+            const rootCompiler = this.getStmtCompiler(root), declRoot = rootCompiler.declare(), compiledRoot = rootCompiler.compile(this, IR.PASS, IR.PASS), endGridObj = this.grids[endGridID].useObj(), gridDecls = this.grids.flatMap(g => g.declare()), matchesDecl = this.declareTempArray(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), otherDecls = [];
             // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
             // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
             // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
-            const maxScale = Math.max(this.matches.scale, ...this.grids.map(g => g.getScale()));
+            const maxScale = Math.max(this.tempArrayScale, ...this.grids.map(g => g.getScale()));
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
             const checkDims = IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`)));
             const { animate, emitChecks, entryPointName } = this.config;
@@ -1616,6 +1734,22 @@ var Compiler;
             const keys = Array.from(entryTypes.keys()).sort();
             // TODO: declare type aliases for dict types
             return { kind: 'dict', keys, values: keys.map(k => this.type(entryTypes.get(k))) };
+        }
+        tempArray = new IR.TempArray(IR.NAMES.MATCHES, IR.NAMES.MATCH_COUNT);
+        useTempArray(scale) {
+            this.tempArrayScale = Math.max(this.tempArrayScale, scale);
+            return this.tempArray;
+        }
+        declareTempArray() {
+            if (this.tempArrayScale === 0) {
+                return IR.PASS;
+            }
+            // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
+            const n = OP.multConstant(OP.mult(WIDTH, HEIGHT), this.tempArrayScale);
+            return IR.block([
+                IR.declVar(IR.NAMES.MATCHES, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n)),
+                IR.declVar(IR.NAMES.MATCH_COUNT, IR.INT_TYPE, undefined, true),
+            ]);
         }
     }
     const TYPES_TO_IR = {
@@ -1812,9 +1946,7 @@ var CodeGen;
             switch (expr.kind) {
                 case 'expr.letin': {
                     if (this.writeAssignExpr !== undefined) {
-                        for (const decl of expr.decls) {
-                            this._toAssign.set(decl.name.name, decl.initialiser);
-                        }
+                        this._toAssign.set(expr.decl.name.name, expr.decl.initialiser);
                         this.writeExpr(expr.child, minPrecedence);
                         return;
                     }
@@ -1881,7 +2013,7 @@ var CodeGen;
             return;
         }
         writeIndentedBlock(stmt) {
-            this.writeStmt(stmt.kind !== 'stmt.block' ? { kind: 'stmt.block', children: [stmt] } : stmt);
+            this.writeStmt(stmt.kind !== 'stmt.block' ? { kind: 'stmt.block', children: [stmt], flags: stmt.flags } : stmt);
         }
         writeList(writer, n, rowLength = IR.DEFAULT_ROW_LENGTH, compact = false, sep = ',') {
             const multiline = rowLength < n;
@@ -6824,25 +6956,6 @@ var IR;
     }
     IR.Grid = Grid;
 })(IR || (IR = {}));
-var IR;
-(function (IR) {
-    // all type declarations here must be JSON serialisable, since `JSON.stringify` is used to detect repeated IR code and simplify it
-    const JSON_KEY = Symbol();
-    function key(a) {
-        return a[JSON_KEY] ??= JSON.stringify(a);
-    }
-    IR.key = key;
-    function equals(a, b) {
-        if (a === b) {
-            return true;
-        }
-        if (a === undefined || b === undefined || a.kind !== b.kind) {
-            return false;
-        }
-        return key(a) === key(b);
-    }
-    IR.equals = equals;
-})(IR || (IR = {}));
 ///<reference path="names.ts"/>
 var IR;
 (function (IR) {
@@ -6885,7 +6998,7 @@ var IR;
             return IR.localCallStmt(MASK_SET, [g.data.name, index, colour]);
         }
         hasnt(index) {
-            return IR.localCall(MASK_HASNT, [index]);
+            return IR.localCall(MASK_HASNT, [index], true);
         }
         patternFits(g, patternExpr) {
             return patternExpr.kind === 'expr.constant'
@@ -7135,51 +7248,6 @@ var IR;
         ]);
     }
 })(IR || (IR = {}));
-///<reference path="names.ts"/>
-var IR;
-(function (IR) {
-    const { MATCHES, MATCH_COUNT, WIDTH, HEIGHT, J, } = IR.NAMES;
-    class MatchesArray {
-        scale = 0;
-        array = MATCHES;
-        count = MATCH_COUNT;
-        getAtCount = this.get(this.count);
-        isNotEmpty = IR.OP.gt(this.count, IR.ZERO);
-        incrementCount = IR.assign(this.count, '+=', IR.ONE);
-        use(g, k) {
-            // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
-            this.scale = Math.max(this.scale, g.grid.scaleX * g.grid.scaleY * k);
-        }
-        declare() {
-            if (this.scale === 0) {
-                return IR.PASS;
-            }
-            const n = IR.OP.multConstant(IR.OP.mult(WIDTH, HEIGHT), this.scale);
-            return IR.declVar(this.array, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n));
-        }
-        declareCount(initial, mutable) {
-            return IR.declVar(this.count, IR.INT_TYPE, initial, mutable);
-        }
-        get(index) {
-            return IR.access(this.array, index);
-        }
-        push(match) {
-            return [
-                IR.assign(this.getAtCount, '=', match),
-                this.incrementCount,
-            ];
-        }
-        insertShuffled(match) {
-            return [
-                IR.declVar(J, IR.INT_TYPE, IR.PRNG.nextInt(IR.OP.add(this.count, IR.ONE))),
-                IR.assign(this.getAtCount, '=', this.get(J)),
-                IR.assign(this.get(J), '=', match),
-                this.incrementCount,
-            ];
-        }
-    }
-    IR.MatchesArray = MatchesArray;
-})(IR || (IR = {}));
 var IR;
 (function (IR) {
     function _replaceVarDecl(decl, from, to) {
@@ -7213,7 +7281,7 @@ var IR;
             case 'expr.dict':
                 return IR.dict(node.type, node.values.map(v => replace(v, from, to)));
             case 'expr.letin':
-                return IR.letIn(node.decls.map(d => _replaceVarDecl(d, from, to)), replace(node.child, from, to));
+                return IR.letIn(_replaceVarDecl(node.decl, from, to), replace(node.child, from, to));
             case 'expr.op.access':
                 return IR.access(replace(node.left, from, to), replace(node.right, from, to));
             case 'expr.op.binary':
@@ -7273,7 +7341,7 @@ var IR;
             case 'stmt.decl.vars':
                 return IR.declVars(node.decls.map(d => _replaceVarDecl(d, from, to)), node.mutable);
             case 'stmt.expr':
-                return { kind: 'stmt.expr', expr: replace(node.expr, from, to) };
+                return IR.exprStmt(replace(node.expr, from, to));
             case 'stmt.for.range':
                 return IR.forRange(node.index, replace(node.low, from, to), replace(node.high, from, to), [replace(node.body, from, to)], node.reverse);
             case 'stmt.if':
@@ -7492,6 +7560,46 @@ var IR;
         }
     }
     IR.EmptySampler = EmptySampler;
+})(IR || (IR = {}));
+///<reference path="names.ts"/>
+var IR;
+(function (IR) {
+    const { J, } = IR.NAMES;
+    class TempArray {
+        array;
+        count;
+        getAtCount;
+        isNotEmpty;
+        incrementCount;
+        constructor(array, count) {
+            this.array = array;
+            this.count = count;
+            this.getAtCount = this.get(count);
+            this.isNotEmpty = IR.OP.gt(count, IR.ZERO);
+            this.incrementCount = IR.assign(count, '+=', IR.ONE);
+        }
+        declareCount(initial) {
+            return IR.assign(this.count, '=', initial);
+        }
+        get(index) {
+            return IR.access(this.array, index);
+        }
+        push(match) {
+            return [
+                IR.assign(this.getAtCount, '=', match),
+                this.incrementCount,
+            ];
+        }
+        insertShuffled(match) {
+            return [
+                IR.declVar(J, IR.INT_TYPE, IR.PRNG.nextInt(IR.OP.add(this.count, IR.ONE))),
+                IR.assign(this.getAtCount, '=', this.get(J)),
+                IR.assign(this.get(J), '=', match),
+                this.incrementCount,
+            ];
+        }
+    }
+    IR.TempArray = TempArray;
 })(IR || (IR = {}));
 var Convolution;
 (function (Convolution) {

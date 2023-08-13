@@ -1,18 +1,20 @@
+///<reference path="./ir.ts"/>
+
 namespace IR {
     export function float(value: number): FloatLiteralExpr {
         return value === 0 ? FLOAT_ZERO
             : value === 1 ? FLOAT_ONE
             : value === -1 ? FLOAT_MINUS_ONE
-            : {kind: 'expr.literal.float', value};
+            : {kind: 'expr.literal.float', value, flags: NodeFlags.CONSTANT};
     }
     export function int(value: number): IntLiteralExpr {
         return value === 0 ? ZERO
             : value === 1 ? ONE
             : value === -1 ? MINUS_ONE
-            : {kind: 'expr.literal.int', value};
+            : {kind: 'expr.literal.int', value, flags: NodeFlags.CONSTANT};
     }
     export function str(value: string): StrLiteralExpr {
-        return {kind: 'expr.literal.str', value};
+        return {kind: 'expr.literal.str', value, flags: NodeFlags.CONSTANT};
     }
     
     export function isInt(expr: Expr): expr is IntLiteralExpr {
@@ -20,35 +22,35 @@ namespace IR {
     }
     
     // singleton objects for common values
-    export const TRUE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: true};
-    export const FALSE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: false};
-    export const NULL: NullLiteralExpr = {kind: 'expr.literal.null'};
-    export const ZERO: IntLiteralExpr = {kind: 'expr.literal.int', value: 0};
-    export const ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: 1};
-    export const MINUS_ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: -1};
-    export const FLOAT_ZERO: FloatLiteralExpr = {kind: 'expr.literal.float', value: 0};
-    export const FLOAT_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: 1};
-    export const FLOAT_MINUS_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: -1};
+    export const TRUE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: true, flags: NodeFlags.CONSTANT};
+    export const FALSE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: false, flags: NodeFlags.CONSTANT};
+    export const NULL: NullLiteralExpr = {kind: 'expr.literal.null', flags: NodeFlags.CONSTANT};
+    export const ZERO: IntLiteralExpr = {kind: 'expr.literal.int', value: 0, flags: NodeFlags.CONSTANT};
+    export const ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: 1, flags: NodeFlags.CONSTANT};
+    export const MINUS_ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: -1, flags: NodeFlags.CONSTANT};
+    export const FLOAT_ZERO: FloatLiteralExpr = {kind: 'expr.literal.float', value: 0, flags: NodeFlags.CONSTANT};
+    export const FLOAT_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: 1, flags: NodeFlags.CONSTANT};
+    export const FLOAT_MINUS_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: -1, flags: NodeFlags.CONSTANT};
     
     export function attr(left: Expr, attr: string): AttrExpr {
-        return {kind: 'expr.attr', left, attr};
+        return {kind: 'expr.attr', left, attr, flags: left.flags};
     }
-    export function letIn(decls: readonly VarDeclWithInitialiser[], child: Expr): Expr {
-        return decls.length === 0 ? child
-            : {kind: 'expr.letin', decls, child};
+    export function letIn(decl: VarDeclWithInitialiser, child: Expr): Expr {
+        return {kind: 'expr.letin', decl, child, flags: child.flags};
     }
     export function nameExpr(name: string): NameExpr {
-        return {kind: 'expr.name', name};
+        return {kind: 'expr.name', name, flags: NodeFlags.NO_SIDE_EFFECTS};
     }
     export function param(name: string, otherwise: Expr): ParamExpr {
-        return {kind: 'expr.param', name, otherwise};
+        return {kind: 'expr.param', name, otherwise, flags: otherwise.flags};
     }
     
     export function dict(type: DictType, values: readonly Expr[]): DictExpr {
-        return {kind: 'expr.dict', type, values};
+        const flags = _reduceFlags(NodeFlags.CONSTANT, values);
+        return {kind: 'expr.dict', type, values, flags};
     }
     export function newArray(length: Expr, domainSize: number): NewArrayExpr {
-        return {kind: 'expr.array.new', length, domainSize};
+        return {kind: 'expr.array.new', length, domainSize, flags: NodeFlags.NEW_MUT_OBJECT};
     }
     export function newGridDataArray(length: Expr): NewArrayExpr {
         return newArray(length, GRID_DATA_ARRAY_TYPE.domainSize);
@@ -57,25 +59,31 @@ namespace IR {
         return newArray(length, INT32_ARRAY_TYPE.domainSize);
     }
     export function constArray(from: readonly number[], domainSize: number, rowLength: number = DEFAULT_ROW_LENGTH): ConstArrayExpr {
-        return {kind: 'expr.array.const', from, domainSize, rowLength};
+        return {kind: 'expr.array.const', from, domainSize, rowLength, flags: NodeFlags.NEW_MUT_OBJECT};
     }
     
     export function access(left: Expr, right: Expr): ArrayAccessExpr {
-        return {kind: 'expr.op.access', left, right};
+        const flags = left.flags & right.flags;
+        return {kind: 'expr.op.access', left, right, flags};
     }
     export function libConstructorCall(className: LibClass, args: readonly Expr[]): CallLibConstructorExpr {
-        return {kind: 'expr.op.call.lib.constructor', className, args};
+        return {kind: 'expr.op.call.lib.constructor', className, args, flags: _reduceFlags(NodeFlags.NEW_MUT_OBJECT, args)};
     }
     export function libFunctionCall(name: LibFunction, args: readonly Expr[]): CallLibFunctionExpr {
-        return {kind: 'expr.op.call.lib.function', name, args};
+        const flags = _reduceFlags(LIB_FUNCTION_FLAGS[name], args);
+        return {kind: 'expr.op.call.lib.function', name, args, flags};
     }
     export function libMethodCall<K extends LibClass | 'PRNG'>(className: K, name: LibMethod<K>, obj: Expr, args: readonly Expr[]): CallLibMethodExpr {
-        return {kind: 'expr.op.call.lib.method', className, name, obj, args};
+        const flags = _reduceFlags(LIB_METHOD_FLAGS[className][name], args);
+        return {kind: 'expr.op.call.lib.method', className, name, obj, args, flags};
     }
-    export function localCall(name: NameExpr, args: readonly Expr[]): CallLocalExpr {
-        return {kind: 'expr.op.call.local', name, args};
+    export function localCall(name: NameExpr, args: readonly Expr[], isGetter = false): CallLocalExpr {
+        const flags = _reduceFlags(isGetter ? NodeFlags.STATE_GET : NodeFlags.STATE_UPDATE, args);
+        return {kind: 'expr.op.call.local', name, args, flags};
     }
     export function ternary(condition: Expr, then: Expr, otherwise: Expr): Expr {
+        if(exprHasSideEffects(condition)) { fail(condition); }
+        
         if(condition === TRUE) {
             return then;
         } else if(condition === FALSE) {
@@ -86,7 +94,8 @@ namespace IR {
             condition = condition.child;
             const tmp = then; then = otherwise; otherwise = tmp;
         }
-        return {kind: 'expr.op.ternary', condition, then, otherwise};
+        const flags = condition.flags & then.flags & otherwise.flags;
+        return {kind: 'expr.op.ternary', condition, then, otherwise, flags};
     }
     
     export function binaryOp(op: Op.BinaryOp, left: Expr, right: Expr): Expr {
@@ -198,11 +207,14 @@ namespace IR {
     });
     
     function _binOp(op: BinaryOp, left: Expr, right: Expr): BinaryOpExpr {
-        return {kind: 'expr.op.binary', op, left, right};
+        const flags = left.flags & right.flags;
+        return {kind: 'expr.op.binary', op, left, right, flags};
     }
     
     function _unOp(op: UnaryOp, child: Expr): UnaryOpExpr {
-        return {kind: 'expr.op.unary', op, child};
+        let flags = child.flags;
+        if(op === 'int_checkzero' || op === 'float_checkzero') { flags &= ~NodeFlags.NO_THROWS; }
+        return {kind: 'expr.op.unary', op, child, flags};
     }
     
     function _isPowerOfTwo(x: number): boolean {

@@ -39,7 +39,8 @@ namespace Compiler {
                 }
             });
             
-            c.matches.use(g, k);
+            const matches = c.useTempArray(k);
+            
             const useMask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
                 if(rule.to.kind === 'expr.constant') {
                     const {value} = rule.to.constant;
@@ -82,17 +83,17 @@ namespace Compiler {
                 const sampler = g.makeSampler(rewrites.map(rule => rule.from));
                 if(shuffle) {
                     out.push(
-                        c.matches.declareCount(IR.ZERO, true),
-                        sampler.shuffleInto(c.matches),
+                        matches.declareCount(IR.ZERO),
+                        sampler.shuffleInto(matches),
                     );
                 } else {
                     out.push(
-                        sampler.copyInto(c.matches.array),
-                        c.matches.declareCount(sampler.count, true),
+                        sampler.copyInto(matches.array),
+                        matches.declareCount(sampler.count),
                     );
                 }
             } else {
-                out.push(c.matches.declareCount(IR.ZERO, true));
+                out.push(matches.declareCount(IR.ZERO));
                 for(let i = 0; i < k; ++i) {
                     const rule = rewrites[i];
                     const sampler = g.makeSampler([rule.from]);
@@ -103,11 +104,11 @@ namespace Compiler {
                         // if condition is same-everywhere, then we only need to check it once for all matches of this rule
                         conditionIsSameEverywhere[i]
                         ? IR.if_(condition, shuffle
-                            ? sampler.shuffleIntoOffset(c.matches, k, i)
-                            : sampler.copyIntoOffset(c.matches.array, c.matches.count, k, i)
+                            ? sampler.shuffleIntoOffset(matches, k, i)
+                            : sampler.copyIntoOffset(matches.array, matches.count, k, i)
                         )
                         // otherwise, need to check the condition separately for each match
-                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? c.matches.insertShuffled(match) : c.matches.push(match)))])
+                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? matches.insertShuffled(match) : matches.push(match)))])
                     );
                 }
             }
@@ -135,11 +136,11 @@ namespace Compiler {
             out.push(
                 useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS,
                 IR.if_(
-                    c.matches.isNotEmpty,
+                    matches.isNotEmpty,
                     IR.block([
                         useMask ? c.mask.clear(g) : IR.PASS,
-                        IR.forRange(I, IR.ZERO, c.matches.count, [
-                            IR.declVar(MATCH, IR.INT_TYPE, c.matches.get(I)),
+                        IR.forRange(I, IR.ZERO, matches.count, [
+                            IR.declVar(MATCH, IR.INT_TYPE, matches.get(I)),
                             g.declareAtIndex(OP.divConstant(MATCH, k)),
                             IR.switch_(OP.modConstant(MATCH, k), doWrites),
                         ]),

@@ -11,8 +11,8 @@ namespace IR {
         sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt;
         copyInto(matchesArray: NameExpr): Stmt;
         copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt;
-        shuffleInto(matches: MatchesArray): Stmt;
-        shuffleIntoOffset(matches: MatchesArray, m: number, c: number): Stmt;
+        shuffleInto(matches: TempArray): Stmt;
+        shuffleIntoOffset(matches: TempArray, m: number, c: number): Stmt;
         forEach(then: readonly Stmt[]): Stmt;
     }
     
@@ -93,14 +93,14 @@ namespace IR {
             return libMethodCallStmt('Sampler', 'copyIntoOffset', this.name, [matchesArray, offset, int(m), int(c)]);
         }
         
-        public shuffleInto(matchesArray: MatchesArray): Stmt {
+        public shuffleInto(matchesArray: TempArray): Stmt {
             return block([
                 libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matchesArray.array, RNG]),
                 IR.assign(matchesArray.count, '+=', this.count),
             ]);
         }
         
-        public shuffleIntoOffset(matchesArray: MatchesArray, m: number, c: number): Stmt {
+        public shuffleIntoOffset(matchesArray: TempArray, m: number, c: number): Stmt {
             return block([
                 libMethodCallStmt('Sampler', 'shuffleIntoOffset', this.name, [matchesArray.array, matchesArray.count, int(m), int(c), RNG]),
                 IR.assign(matchesArray.count, '+=', this.count),
@@ -197,11 +197,11 @@ namespace IR {
                 ]);
         }
         
-        public shuffleInto(matches: MatchesArray): Stmt {
+        public shuffleInto(matches: TempArray): Stmt {
             return this.shuffleIntoOffset(matches, 1, 0);
         }
         
-        public shuffleIntoOffset(matches: MatchesArray, m: number, c: number): Stmt {
+        public shuffleIntoOffset(matches: TempArray, m: number, c: number): Stmt {
             return this.is1x1
                 ? forRange(AT, ZERO, this.count, matches.insertShuffled(OP.multAddConstant(AT, m, int(c))))
                 : forRange(AT_Y, ZERO, this.height, [
@@ -248,10 +248,10 @@ namespace IR {
         copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
             return PASS;
         }
-        shuffleInto(matches: MatchesArray): Stmt {
+        shuffleInto(matches: TempArray): Stmt {
             return PASS;
         }
-        shuffleIntoOffset(matches: MatchesArray, m: number, c: number): Stmt {
+        shuffleIntoOffset(matches: TempArray, m: number, c: number): Stmt {
             return PASS;
         }
         forEach(then: readonly Stmt[]): Stmt {

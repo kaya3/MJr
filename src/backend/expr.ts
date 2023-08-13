@@ -45,21 +45,16 @@ namespace Compiler {
                 return c.grids[expr.inGrid].makeCounter(expr.patterns);
             case 'expr.decl': {
                 // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
-                const decls: IR.VarDeclWithInitialiser[] = [];
-                let cur: ASG.Expression = expr;
-                while(cur.kind === 'expr.decl') {
-                    const {variable, rhs} = cur.decl;
-                    if(variable.references > 0) {
-                        decls.push({
-                            name: IR.NAMES.variable(variable),
-                            // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
-                            type: c.type(variable.type),
-                            initialiser: c.expr(rhs),
-                        });
-                    }
-                    cur = cur.child;
-                }
-                return IR.letIn(decls, c.expr(cur));
+                const {variable, rhs} = expr.decl;
+                if(variable.references === 0) { return c.expr(rhs); }
+                
+                const decl: IR.VarDeclWithInitialiser = {
+                    name: IR.NAMES.variable(variable),
+                    // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
+                    type: c.type(variable.type),
+                    initialiser: c.expr(rhs),
+                };
+                return IR.letIn(decl, c.expr(rhs));
             }
             case 'expr.dict': {
                 const type = c.dictType(expr.type.entryTypes);

@@ -29,25 +29,28 @@ namespace Compiler {
                 ),
             ]));
             
-            return allUnconditionalAndEffective
-                ? IR.if_(
+            if(allUnconditionalAndEffective) {
+                return IR.if_(
                     sampler.isNotEmpty,
                     IR.block([
                         sampler.sampleWithReplacement(cases),
                         ifChanged,
                     ]),
                     then,
-                )
-                : IR.block([
+                );
+            } else {
+                const matches = c.useTempArray(rewrites.length);
+                return IR.block([
                     sampler.beginSamplingWithoutReplacement(),
-                    c.matches.declareCount(sampler.count, true),
+                    matches.declareCount(sampler.count),
                     IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
                     IR.while_(
-                        OP.and(c.matches.isNotEmpty, OP.not(ANY)),
-                        sampler.sampleWithoutReplacement(cases, c.matches.count),
+                        OP.and(matches.isNotEmpty, OP.not(ANY)),
+                        sampler.sampleWithoutReplacement(cases, matches.count),
                     ),
                     IR.if_(ANY, ifChanged, then),
                 ]);
+            }
         }
     }
 }

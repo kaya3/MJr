@@ -36,7 +36,7 @@ namespace IR {
                 return dict(node.type, node.values.map(v => replace(v, from, to)));
             case 'expr.letin':
                 return letIn(
-                    node.decls.map(d => _replaceVarDecl(d, from, to)),
+                    _replaceVarDecl(node.decl, from, to),
                     replace(node.child, from, to),
                 );
             case 'expr.op.access':
@@ -99,7 +99,7 @@ namespace IR {
             case 'stmt.decl.vars':
                 return declVars(node.decls.map(d => _replaceVarDecl(d, from, to)), node.mutable);
             case 'stmt.expr':
-                return {kind: 'stmt.expr', expr: replace(node.expr, from, to) as never};
+                return exprStmt(replace(node.expr, from, to));
             case 'stmt.for.range':
                 return forRange(node.index, replace(node.low, from, to), replace(node.high, from, to), [replace(node.body, from, to)], node.reverse);
             case 'stmt.if':

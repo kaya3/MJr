@@ -77,7 +77,7 @@ namespace IR {
         }
         
         public hasnt(index: Expr): Expr {
-            return localCall(MASK_HASNT, [index]);
+            return localCall(MASK_HASNT, [index], true);
         }
         
         public patternFits(g: Grid, patternExpr: ASG.Prop<'pattern.out'>): Expr {

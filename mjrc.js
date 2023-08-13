@@ -134,7 +134,8 @@ var IR;
     }
     IR.attr = attr;
     function letIn(decl, child) {
-        return { kind: 'expr.letin', decl, child, flags: child.flags };
+        const flags = decl.initialiser.flags & child.flags;
+        return { kind: 'expr.letin', decl, child, flags };
     }
     IR.letIn = letIn;
     function nameExpr(name) {
@@ -998,7 +999,7 @@ var Compiler;
                     type: c.type(variable.type),
                     initialiser: c.expr(rhs),
                 };
-                return IR.letIn(decl, c.expr(rhs));
+                return IR.letIn(decl, c.expr(expr.child));
             }
             case 'expr.dict': {
                 const type = c.dictType(expr.type.entryTypes);

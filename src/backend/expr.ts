@@ -54,7 +54,7 @@ namespace Compiler {
                     type: c.type(variable.type),
                     initialiser: c.expr(rhs),
                 };
-                return IR.letIn(decl, c.expr(rhs));
+                return IR.letIn(decl, c.expr(expr.child));
             }
             case 'expr.dict': {
                 const type = c.dictType(expr.type.entryTypes);

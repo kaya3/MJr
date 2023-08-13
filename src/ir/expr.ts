@@ -36,7 +36,8 @@ namespace IR {
         return {kind: 'expr.attr', left, attr, flags: left.flags};
     }
     export function letIn(decl: VarDeclWithInitialiser, child: Expr): Expr {
-        return {kind: 'expr.letin', decl, child, flags: child.flags};
+        const flags = decl.initialiser.flags & child.flags;
+        return {kind: 'expr.letin', decl, child, flags};
     }
     export function nameExpr(name: string): NameExpr {
         return {kind: 'expr.name', name, flags: NodeFlags.NO_SIDE_EFFECTS};

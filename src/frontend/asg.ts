@@ -5,7 +5,6 @@ namespace ASG {
     export interface ASG extends Readonly<{
         root: ASG.BlockStmt,
         grids: readonly FormalGrid[],
-        limits: readonly FormalLimit[],
         params: ReadonlyMap<string, Type.Type>,
         potentials: readonly FormalPotential[],
         variables: readonly FormalVariable[],
@@ -20,22 +19,6 @@ namespace ASG {
         periodic: boolean,
         convPatterns: ReadonlyIDMap<ConvPattern>,
         pos: SourcePosition,
-    }> {}
-    
-    export interface FormalLimit extends Readonly<{
-        id: number,
-        /**
-         * An expression determining the limit's initial value.
-         */
-        initialiser: Prop<'int'>,
-        canReset: boolean,
-        /**
-         * A limit is transparent if its parent block is a `sequence` and its
-         * initialiser is a constant `1`. A transparent limit can be elided
-         * when the CFG is built, as its state is deterministic at every node
-         * in the CFG.
-         */
-        isTransparent: boolean,
     }> {}
     
     export interface ConvPattern extends Readonly<{
@@ -131,12 +114,12 @@ namespace ASG {
     type _StmtNode<K extends string, T> = _Node<`stmt.${K}`, T>
     
     export type BlockStmt = MarkovStmt | SequenceStmt
-    type _BlockStmtNode<K extends string> = _StmtNode<`block.${K}`, {children: readonly Statement[], anyResets: boolean}>
+    type _BlockStmtNode<K extends string> = _StmtNode<`block.${K}`, {children: readonly Statement[]}>
     export interface MarkovStmt extends _BlockStmtNode<'markov'> {}
     export interface SequenceStmt extends _BlockStmtNode<'sequence'> {}
     
     export type ModifiedStmt = LimitStmt
-    export interface LimitStmt extends _StmtNode<'modified.limit', {limit: FormalLimit, child: BlockStmt | BranchingStmt | ModifiedStmt}> {}
+    export interface LimitStmt extends _StmtNode<'modified.limit', {limit: Prop<'int'>, child: BlockStmt | BranchingStmt | ModifiedStmt}> {}
     
     export type BranchingStmt = BranchingRulesStmt | ConvChainStmt | PathStmt
     
@@ -157,16 +140,16 @@ namespace ASG {
     export interface MapStmt extends _RulesStmtNode<'map', {outGrid: number}> {}
     export interface PutStmt extends _StmtNode<'put', {inGrid: number, pattern: Prop<'pattern.out'>, at: Prop<'position'>, condition: Prop<'bool?'>}> {}
     export interface UseStmt extends _StmtNode<'use', {grid: number}> {}
-}
-
-const enum ExprFlags {
-    RUNTIME_CONSTANT = 1,
-    DETERMINISTIC = 2,
-    LOCALLY_DETERMINISTIC = 4,
-    POSITION_INDEPENDENT = 8,
-    GRID_INDEPENDENT = 16,
     
-    SAME_EVERYWHERE = LOCALLY_DETERMINISTIC | POSITION_INDEPENDENT,
-    CONSTANT = RUNTIME_CONSTANT | DETERMINISTIC | LOCALLY_DETERMINISTIC | POSITION_INDEPENDENT | GRID_INDEPENDENT,
-    ALL = 31,
+    export const enum ExprFlags {
+        RUNTIME_CONSTANT = 1,
+        DETERMINISTIC = 2,
+        LOCALLY_DETERMINISTIC = 4,
+        POSITION_INDEPENDENT = 8,
+        GRID_INDEPENDENT = 16,
+        
+        SAME_EVERYWHERE = LOCALLY_DETERMINISTIC | POSITION_INDEPENDENT,
+        CONSTANT = RUNTIME_CONSTANT | DETERMINISTIC | LOCALLY_DETERMINISTIC | POSITION_INDEPENDENT | GRID_INDEPENDENT,
+        ALL = 31,
+    }
 }

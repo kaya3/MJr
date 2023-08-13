@@ -89,11 +89,10 @@ namespace Resolver {
     type DeclResolveFunc<K extends AST.Declaration['kind']> = <T>(node: AST.Node & {kind: K}, ctx: Context, f: () => T) => DeclResolveResult<T>
     type ExprResolveFunc<K extends AST.Expression['kind']> = (node: AST.Node & {kind: K}, ctx: Context) => ExprResolveResult<K>
     type RuleResolveFunc<K extends AST.Rule['kind']> = (node: AST.Node & {kind: K}, ctx: GridContext, outGrid: FormalGrid) => RuleResolveResult
-    type StmtResolveFunc<K extends AST.Statement['kind']> = (node: AST.Node & {kind: K}, ctx: Context, canReset: boolean) => StmtResolveResult<K>
+    type StmtResolveFunc<K extends AST.Statement['kind']> = (node: AST.Node & {kind: K}, ctx: Context) => StmtResolveResult<K>
     
     interface GlobalDeclarations extends Readonly<{
         grids: FormalGrid[],
-        limits: ASG.FormalLimit[],
         params: Map<string, Type.Type>,
         potentials: ASG.FormalPotential[],
         variables: FormalVariable[],
@@ -139,7 +138,6 @@ namespace Resolver {
         public readonly diagnostics = new Diagnostics();
         public readonly globals: GlobalDeclarations = {
             grids: [],
-            limits: [],
             params: new Map(),
             potentials: [],
             variables: [],
@@ -159,8 +157,8 @@ namespace Resolver {
         public rewriteScaleY = FRACTION_ONE;
         
         resolveRoot(root: AST.CompilationUnit): ASG.SequenceStmt {
-            const children = this.resolveStmts(root.stmts, false);
-            return {kind: 'stmt.block.sequence', children, anyResets: false, pos: root.pos};
+            const children = this.resolveStmts(root.stmts);
+            return {kind: 'stmt.block.sequence', children, pos: root.pos};
         }
         
         resolveDecl<K extends AST.Declaration['kind'], T>(node: AST.Declaration & {kind: K}, callback: () => T): DeclResolveResult<T> {
@@ -180,9 +178,9 @@ namespace Resolver {
             return f(node, this, outGrid);
         }
         
-        resolveStmt<K extends AST.Statement['kind']>(node: AST.Statement & {kind: K}, canReset: boolean): StmtResolveResult<K> {
+        resolveStmt<K extends AST.Statement['kind']>(node: AST.Statement & {kind: K}): StmtResolveResult<K> {
             const f = STMT_RESOLVE_FUNCS[node.kind] as StmtResolveFunc<K>;
-            return f(node, this, canReset);
+            return f(node, this);
         }
         
         resolveChar(c: AST.Char): ISet | undefined {
@@ -210,9 +208,9 @@ namespace Resolver {
             return mask;
         }
         
-        resolveStmts(children: readonly AST.Statement[], canReset: boolean): ASG.Statement[] {
+        resolveStmts(children: readonly AST.Statement[]): ASG.Statement[] {
             return children.flatMap(c => {
-                const r = this.resolveStmt(c, canReset);
+                const r = this.resolveStmt(c);
                 return r === undefined ? []
                     : r.kind === 'stmts' ? r.stmts
                     : r.assigns !== undefined ? [...r.assigns, r.stmt]
@@ -246,18 +244,7 @@ namespace Resolver {
             this.error(`expected ${quoteJoin(expected, ' | ')}, was '${Type.toStr(expr.type)}'`, expr.pos);
         }
         
-        makeLimit(initialiser: ASG.Prop<'int'>, canReset: boolean): ASG.FormalLimit {
-            const isTransparent = !canReset
-                && initialiser.kind === 'expr.constant'
-                && initialiser.constant.value === 1;
-            let limit: ASG.FormalLimit = {id: -1, initialiser, canReset, isTransparent};
-            if(!isTransparent) {
-                limit = withNextID(this.globals.limits, limit);
-            }
-            return limit;
-        }
-        
-        makeVariable(name: string, type: Type.Type, flags: ExprFlags, initialiser: ASG.Expression | undefined, isParam: boolean, pos: SourcePosition): FormalVariable {
+        makeVariable(name: string, type: Type.Type, flags: ASG.ExprFlags, initialiser: ASG.Expression | undefined, isParam: boolean, pos: SourcePosition): FormalVariable {
             if(this.variables.has(name) || this.errorVariables.has(name)) {
                 this.error(`cannot redeclare name '${name}'`, pos);
             } else if(isParam && this.globals.params.has(name)) {
@@ -272,7 +259,7 @@ namespace Resolver {
             uniqueVariableNames.add(uniqueName);
             
             if(isParam) { this.globals.params.set(name, type); }
-            flags |= ExprFlags.LOCALLY_DETERMINISTIC | ExprFlags.POSITION_INDEPENDENT | ExprFlags.GRID_INDEPENDENT;
+            flags |= ASG.ExprFlags.LOCALLY_DETERMINISTIC | ASG.ExprFlags.POSITION_INDEPENDENT | ASG.ExprFlags.GRID_INDEPENDENT;
             return withNextID(this.globals.variables, {name, uniqueName, type, initialiser, flags, references: 0});
         }
         
@@ -406,7 +393,7 @@ namespace Resolver {
         return value !== undefined ? {kind: type.kind, type, value} : undefined;
     }
     function _makeConstantExpr<K extends Type.Kind>(type: Type.OfKind<K> & {kind: K}, value: Type.Value<K>, pos: SourcePosition): ASG.ConstantExpr<K> {
-        return {kind: 'expr.constant', type, constant: _makeConstantValue(type, value), flags: ExprFlags.CONSTANT, pos} as ASG.ConstantExpr<K>;
+        return {kind: 'expr.constant', type, constant: _makeConstantValue(type, value), flags: ASG.ExprFlags.CONSTANT, pos} as ASG.ConstantExpr<K>;
     }
     function _coerceFromInt(expr: ASG.Expression, type: Type.OfKind<'float' | 'fraction'>): ASG.Expression {
         const op = expr.type.kind === 'int'
@@ -689,7 +676,7 @@ namespace Resolver {
         patterns.sort(_cmpPatternKey);
         
         const inGrid = ctx.grid.id;
-        const flags = ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC | ExprFlags.POSITION_INDEPENDENT;
+        const flags = ASG.ExprFlags.DETERMINISTIC | ASG.ExprFlags.LOCALLY_DETERMINISTIC | ASG.ExprFlags.POSITION_INDEPENDENT;
         return {kind: 'expr.count', type: Type.INT, flags, inGrid, patterns, pos};
     }
     function _resolveLoadExpr(expr: AST.UnaryOpExpr, ctx: Context): ASG.Expression | undefined {
@@ -717,7 +704,7 @@ namespace Resolver {
             if(max.constant.value === 1) { return _makeConstantExpr(Type.INT, 0, expr.pos); }
         }
         
-        const flags = ExprFlags.GRID_INDEPENDENT | ExprFlags.POSITION_INDEPENDENT;
+        const flags = ASG.ExprFlags.GRID_INDEPENDENT | ASG.ExprFlags.POSITION_INDEPENDENT;
         return {kind: 'expr.randint', type: Type.INT, flags, max, pos};
     }
     function _resolveSumExpr(expr: AST.UnaryOpExpr, ctx: Context): ASG.Expression | undefined {
@@ -744,7 +731,7 @@ namespace Resolver {
                 }
                 
                 const patternID = grid.convPatterns.getOrCreateID({chars, kernel, includeBoundary});
-                const flags = ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC;
+                const flags = ASG.ExprFlags.DETERMINISTIC | ASG.ExprFlags.LOCALLY_DETERMINISTIC;
                 return {kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos};
             }
             default: {
@@ -833,26 +820,13 @@ namespace Resolver {
         return {rules};
     }
     
-    function _needsReset(stmt: ASG.Statement): boolean {
-        switch(stmt.kind) {
-            case 'stmt.convchain':
-                return true;
-            case 'stmt.modified.limit':
-                return !stmt.limit.isTransparent || _needsReset(stmt.child);
-            default:
-                return false;
-        }
-    }
-    
-    function _resolveBlockStmt(stmt: AST.BlockStmt, ctx: Context, canReset: boolean): StmtResolveResult<AST.BlockStmt['kind']> {
+    function _resolveBlockStmt(stmt: AST.BlockStmt, ctx: Context): StmtResolveResult<AST.BlockStmt['kind']> {
         const {kind, pos} = stmt;
         
-        const children = ctx.resolveStmts(stmt.children, canReset || stmt.kind === 'stmt.block.markov');
-        
-        const anyResets = canReset && children.some(_needsReset);
+        const children = ctx.resolveStmts(stmt.children);
         
         if(children.length === 0) { return undefined; }
-        return {kind: 'stmt', stmt: {kind, children, anyResets, pos}};
+        return {kind: 'stmt', stmt: {kind, children, pos}};
     }
     function _resolvePropsStmt<T extends AST.Node, K extends keyof PropTypesMap>(stmt: T & {kind: K} & ASTProps<K>, ctx: Context): {kind: 'stmt', stmt: {kind: K, inGrid: number, pos: SourcePosition} & ResolvedProps<K>} | undefined {
         if(!ctx.expectGrid(stmt.pos)) { return undefined; }
@@ -862,7 +836,7 @@ namespace Resolver {
         
         return {kind: 'stmt', stmt: {kind: stmt.kind, inGrid: ctx.grid.id, pos: stmt.pos, ...props}};
     }
-    function _resolveAllOnceOneStmt(stmt: AST.AllStmt | AST.OnceStmt | AST.OneStmt, ctx: Context, canReset: boolean): StmtResolveResult<'stmt.rules.all' | 'stmt.rules.once' | 'stmt.rules.one'> {
+    function _resolveAllOnceOneStmt(stmt: AST.AllStmt | AST.OnceStmt | AST.OneStmt, ctx: Context): StmtResolveResult<'stmt.rules.all' | 'stmt.rules.once' | 'stmt.rules.one'> {
         const {pos} = stmt;
         if(!ctx.expectGrid(pos)) { return undefined; }
         
@@ -897,7 +871,7 @@ namespace Resolver {
         }
         
         if(stmt.kind === 'stmt.rules.once') {
-            const limit = ctx.makeLimit(_makeConstantExpr(Type.INT, 1, pos), canReset);
+            const limit = _makeConstantExpr(Type.INT, 1, pos);
             r = {kind: 'stmt.modified.limit', limit, child: r, pos};
         }
         
@@ -922,7 +896,7 @@ namespace Resolver {
                 rhs = {kind: 'expr.param', type, flags, otherwise: rhs, name, pos};
             }
             
-            const isMutable = (flags & ExprFlags.RUNTIME_CONSTANT) === 0;
+            const isMutable = (flags & ASG.ExprFlags.RUNTIME_CONSTANT) === 0;
             const variable = ctx.makeVariable(name, type, flags, isMutable ? undefined : rhs, decl.isParam, decl.name.pos);
             return [
                 // constants will be folded, or assigned in preamble; not assigned in program body
@@ -962,7 +936,7 @@ namespace Resolver {
             if(kind === 'grid') {
                 const grid = _resolveProp(expr, 'left', 'const grid', ctx);
                 if(grid === PROP_ERROR) { return undefined; }
-                return {kind: 'expr.attr.grid', type, flags: ExprFlags.CONSTANT, grid, attr: attr as Type.GridAttribute, pos};
+                return {kind: 'expr.attr.grid', type, flags: ASG.ExprFlags.CONSTANT, grid, attr: attr as Type.GridAttribute, pos};
             } else if(left.kind === 'expr.constant') {
                 if(kind === 'dict') {
                     const constant = (left.constant.value as Type.Value<'dict'>).get(attr) ?? fail();
@@ -987,7 +961,7 @@ namespace Resolver {
             const entryExprs = new Map<string, ASG.Expression>();
             const entryTypes = new Map<string, Type.Type>();
             const value = new Map<string, Type.ConstantValue>();
-            let ok = true, flags = ExprFlags.ALL;
+            let ok = true, flags = ASG.ExprFlags.ALL;
             for(const [{name}, v] of expr.pairs) {
                 const resolved = ctx.resolveExpr(v);
                 if(resolved !== undefined) {
@@ -1043,10 +1017,10 @@ namespace Resolver {
         'expr.name.keyword': (expr, ctx) => {
             const {name, pos} = expr;
             
-            const flags: ExprFlags = {
-                at: ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC | ExprFlags.GRID_INDEPENDENT,
-                origin: ExprFlags.DETERMINISTIC | ExprFlags.LOCALLY_DETERMINISTIC | ExprFlags.GRID_INDEPENDENT | ExprFlags.RUNTIME_CONSTANT | ExprFlags.POSITION_INDEPENDENT,
-                random: ExprFlags.GRID_INDEPENDENT | ExprFlags.POSITION_INDEPENDENT,
+            const flags: ASG.ExprFlags = {
+                at: ASG.ExprFlags.DETERMINISTIC | ASG.ExprFlags.LOCALLY_DETERMINISTIC | ASG.ExprFlags.GRID_INDEPENDENT,
+                origin: ASG.ExprFlags.DETERMINISTIC | ASG.ExprFlags.LOCALLY_DETERMINISTIC | ASG.ExprFlags.GRID_INDEPENDENT | ASG.ExprFlags.RUNTIME_CONSTANT | ASG.ExprFlags.POSITION_INDEPENDENT,
+                random: ASG.ExprFlags.GRID_INDEPENDENT | ASG.ExprFlags.POSITION_INDEPENDENT,
             }[name];
             
             switch(name) {
@@ -1291,7 +1265,7 @@ namespace Resolver {
                 ctx.error(`'anneal' must be non-negative`, stmt.anneal!.pos);
             }
             
-            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern)).sort();
+            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern));
             if(output.length < 2) {
                 ctx.error(`'sample' must use at least two different alphabet symbols`, stmt.sample.pos);
                 return undefined;
@@ -1324,22 +1298,22 @@ namespace Resolver {
                 pos,
             }};
         },
-        'stmt.decl': (stmt, ctx, canReset) => {
-            let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));
+        'stmt.decl': (stmt, ctx) => {
+            let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children));
             stmts ??= [];
             if(decl !== undefined) { stmts.unshift(decl); }
             return {kind: 'stmts', stmts};
         },
         'stmt.log': _resolvePropsStmt,
-        'stmt.modified.limit': (stmt, ctx, canReset) => {
-            const value = _resolveProp(stmt, 'arg', 'int', ctx);
-            const r = ctx.resolveStmt(stmt.child, canReset);
-            if(value === PROP_ERROR) { return undefined; }
-            if(value.kind === 'expr.constant' && value.constant.value <= 0) { ctx.error(`limit must be positive (was ${value})`, stmt.arg.pos); }
+        'stmt.modified.limit': (stmt, ctx) => {
+            const limit = _resolveProp(stmt, 'arg', 'int', ctx);
+            const r = ctx.resolveStmt(stmt.child);
+            if(limit === PROP_ERROR) { return undefined; }
+            if(limit.kind === 'expr.constant' && limit.constant.value <= 0) { ctx.error(`limit must be positive (was ${limit})`, stmt.arg.pos); }
             
             // TODO: loosen this to allow e.g. random limits; problem is that limit initialisers will be hoisted
             // to the start of their parent blocks, where referenced variables might not yet be assigned
-            if((value.flags & ExprFlags.RUNTIME_CONSTANT) === 0) { ctx.error(`limit must be a runtime constant`, stmt.arg.pos); }
+            if((limit.flags & ASG.ExprFlags.RUNTIME_CONSTANT) === 0) { ctx.error(`limit must be a runtime constant`, stmt.arg.pos); }
             if(r === undefined) {
                 return undefined;
             } else if(r.kind === 'stmts' || r.stmt.kind === 'stmt.log' || r.stmt.kind === 'stmt.rules.map' || r.stmt.kind === 'stmt.put' || r.stmt.kind === 'stmt.use') {
@@ -1350,7 +1324,6 @@ namespace Resolver {
             }
             
             const {assigns, stmt: child} = r;
-            const limit = ctx.makeLimit(value, canReset);
             return {kind: 'stmt', assigns, stmt: {kind: 'stmt.modified.limit', limit, child, pos: stmt.pos}};
         },
         'stmt.path': _resolvePropsStmt,
@@ -1447,7 +1420,7 @@ namespace Resolver {
             ctx.grid = ctx.globals.grids[grid];
             return {kind: 'stmt', stmt: {kind: 'stmt.use', grid, pos: stmt.pos}};
         },
-        'stmt.use.let': (stmt, ctx, canReset) => {
+        'stmt.use.let': (stmt, ctx) => {
             if(stmt.decl.isParam) { ctx.error(`'use let' declaration cannot be a 'param'`, stmt.pos); }
             
             const grid = _resolveProp(stmt.decl, 'rhs', 'const grid', ctx);
@@ -1456,8 +1429,8 @@ namespace Resolver {
             ctx.grid = ctx.globals.grids[grid];
             
             const {name, rhs, pos} = stmt.decl;
-            const variable = ctx.makeVariable(name.name, Type.GRID, ExprFlags.CONSTANT, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
-            const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children, canReset));
+            const variable = ctx.makeVariable(name.name, Type.GRID, ASG.ExprFlags.CONSTANT, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
+            const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children));
             stmts.unshift(
                 {kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos},
                 {kind: 'stmt.use', grid, pos: stmt.pos}
@@ -1473,11 +1446,10 @@ namespace Resolver {
         if(endGrid === undefined) { ctx.error('program uses no grid', ast.pos); }
         ctx.diagnostics.throwIfAnyErrors();
         
-        const {grids, limits, params, potentials, variables} = ctx.globals;
+        const {grids, params, potentials, variables} = ctx.globals;
         return {
             root,
             grids,
-            limits,
             params,
             potentials,
             variables,

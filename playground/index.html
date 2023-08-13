@@ -55,7 +55,6 @@
     <button id="parse_stmt">Stmt</button>
     <span>Resolve:</span>
     <button id="asg">ASG</button>
-    <button id="cfg">CFG</button>
 </div>
 </div>
 <div id="output_panel" class="panel">
@@ -136,13 +135,6 @@ document.getElementById('parse_expr').onclick = () => go(src => Parser.parse(src
 document.getElementById('parse_rule').onclick = () => go(src => Parser.parse(src, 'rule'));
 document.getElementById('parse_stmt').onclick = () => go(src => Parser.parse(src, 'stmt'));
 document.getElementById('asg').onclick = () => go(src => Resolver.resolve(Parser.parse(src, 'root')));
-document.getElementById('cfg').onclick = () => go(src => {
-    const nodes = CFG.build(Resolver.resolve(Parser.parse(src, 'root')).root).nodes;
-    nodes.forEach(node => {
-        if(node.stmt !== undefined) { node.stmt = `${node.stmt.kind} {...}`; }
-    });
-    return nodes;
-});
 document.getElementById('compile').onclick = () => go(src => {
     const config = getConfig();
     return Compiler.compile(src, config._targetLanguage, config);

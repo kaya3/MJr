@@ -1,5 +1,5 @@
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 
 namespace Compiler {
     const {
@@ -13,7 +13,7 @@ namespace Compiler {
         PRNG,
     } = IR;
     
-    export class Stmt_ConvChain implements StmtCompiler {
+    export class Stmt_ConvChain extends StmtCompiler<ASG.ConvChainStmt> {
         private readonly colourArray: IR.ConstArray;
         private readonly c2iArray: IR.ConstArray;
         private readonly c2iOffset: number;
@@ -24,10 +24,11 @@ namespace Compiler {
         private readonly anneal: IR.NameExpr | undefined;
         
         constructor(
-            readonly stmt: ASG.ConvChainStmt,
+            stmt: ASG.ConvChainStmt,
             stmtID: number,
             c: Compiler,
         ) {
+            super(stmt);
             const g = c.grids[stmt.inGrid];
             const alphabetSize = g.grid.alphabet.key.length;
             const colours = stmt.output;

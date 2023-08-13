@@ -1,8 +1,93 @@
 namespace IR {
-    export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
-    export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
-    export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz' | 'float_log2'
-    export type Op = BinaryOp | UnaryOp
+    export function float(value: number): FloatLiteralExpr {
+        return value === 0 ? FLOAT_ZERO
+            : value === 1 ? FLOAT_ONE
+            : value === -1 ? FLOAT_MINUS_ONE
+            : {kind: 'expr.literal.float', value};
+    }
+    export function int(value: number): IntLiteralExpr {
+        return value === 0 ? ZERO
+            : value === 1 ? ONE
+            : value === -1 ? MINUS_ONE
+            : {kind: 'expr.literal.int', value};
+    }
+    export function str(value: string): StrLiteralExpr {
+        return {kind: 'expr.literal.str', value};
+    }
+    
+    export function isInt(expr: Expr): expr is IntLiteralExpr {
+        return expr.kind === 'expr.literal.int';
+    }
+    
+    // singleton objects for common values
+    export const TRUE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: true};
+    export const FALSE: BoolLiteralExpr = {kind: 'expr.literal.bool', value: false};
+    export const NULL: NullLiteralExpr = {kind: 'expr.literal.null'};
+    export const ZERO: IntLiteralExpr = {kind: 'expr.literal.int', value: 0};
+    export const ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: 1};
+    export const MINUS_ONE: IntLiteralExpr = {kind: 'expr.literal.int', value: -1};
+    export const FLOAT_ZERO: FloatLiteralExpr = {kind: 'expr.literal.float', value: 0};
+    export const FLOAT_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: 1};
+    export const FLOAT_MINUS_ONE: FloatLiteralExpr = {kind: 'expr.literal.float', value: -1};
+    
+    export function attr(left: Expr, attr: string): AttrExpr {
+        return {kind: 'expr.attr', left, attr};
+    }
+    export function letIn(decls: readonly VarDeclWithInitialiser[], child: Expr): Expr {
+        return decls.length === 0 ? child
+            : {kind: 'expr.letin', decls, child};
+    }
+    export function nameExpr(name: string): NameExpr {
+        return {kind: 'expr.name', name};
+    }
+    export function param(name: string, otherwise: Expr): ParamExpr {
+        return {kind: 'expr.param', name, otherwise};
+    }
+    
+    export function dict(type: DictType, values: readonly Expr[]): DictExpr {
+        return {kind: 'expr.dict', type, values};
+    }
+    export function newArray(length: Expr, domainSize: number): NewArrayExpr {
+        return {kind: 'expr.array.new', length, domainSize};
+    }
+    export function newGridDataArray(length: Expr): NewArrayExpr {
+        return newArray(length, GRID_DATA_ARRAY_TYPE.domainSize);
+    }
+    export function newInt32Array(length: Expr): NewArrayExpr {
+        return newArray(length, INT32_ARRAY_TYPE.domainSize);
+    }
+    export function constArray(from: readonly number[], domainSize: number, rowLength: number = DEFAULT_ROW_LENGTH): ConstArrayExpr {
+        return {kind: 'expr.array.const', from, domainSize, rowLength};
+    }
+    
+    export function access(left: Expr, right: Expr): ArrayAccessExpr {
+        return {kind: 'expr.op.access', left, right};
+    }
+    export function libConstructorCall(className: LibClass, args: readonly Expr[]): CallLibConstructorExpr {
+        return {kind: 'expr.op.call.lib.constructor', className, args};
+    }
+    export function libFunctionCall(name: LibFunction, args: readonly Expr[]): CallLibFunctionExpr {
+        return {kind: 'expr.op.call.lib.function', name, args};
+    }
+    export function libMethodCall<K extends LibClass | 'PRNG'>(className: K, name: LibMethod<K>, obj: Expr, args: readonly Expr[]): CallLibMethodExpr {
+        return {kind: 'expr.op.call.lib.method', className, name, obj, args};
+    }
+    export function localCall(name: NameExpr, args: readonly Expr[]): CallLocalExpr {
+        return {kind: 'expr.op.call.local', name, args};
+    }
+    export function ternary(condition: Expr, then: Expr, otherwise: Expr): Expr {
+        if(condition === TRUE) {
+            return then;
+        } else if(condition === FALSE) {
+            return otherwise;
+        } else if(equals(then, otherwise)) {
+            return then;
+        } else if(condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
+            condition = condition.child;
+            const tmp = then; then = otherwise; otherwise = tmp;
+        }
+        return {kind: 'expr.op.ternary', condition, then, otherwise};
+    }
     
     export function binaryOp(op: Op.BinaryOp, left: Expr, right: Expr): Expr {
         switch(op) {

@@ -1,5 +1,6 @@
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
+///<reference path="stmt.ts"/>
 
 namespace Compiler {
     const {
@@ -11,13 +12,11 @@ namespace Compiler {
         OP,
     } = IR;
     
-    function _exprIs(expr: ASG.Expression, flags: ExprFlags): boolean {
+    function _exprIs(expr: ASG.Expression, flags: ASG.ExprFlags): boolean {
         return (expr.flags & flags) === flags;
     }
     
-    export class Stmt_BasicAllPrl implements StmtCompiler {
-        constructor(readonly stmt: ASG.BasicRulesStmt) {}
-        
+    export class Stmt_BasicAllPrl extends StmtCompiler<ASG.BasicRulesStmt> {
         compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {stmt} = this;
             const {rewrites} = stmt;
@@ -26,14 +25,14 @@ namespace Compiler {
             const out: IR.Stmt[] = [];
             
             const conditionIsSameEverywhere = rewrites.map(rule =>
-                _exprIs(rule.condition, ExprFlags.SAME_EVERYWHERE)
+                _exprIs(rule.condition, ASG.ExprFlags.SAME_EVERYWHERE)
                 && rule.to.kind === 'expr.constant'
             );
             const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, ExprFlags.SAME_EVERYWHERE));
+            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, ASG.ExprFlags.SAME_EVERYWHERE));
             
             // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, ExprFlags.GRID_INDEPENDENT));
+            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, ASG.ExprFlags.GRID_INDEPENDENT));
             rewrites.forEach((rule, i) => {
                 if(patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
                     c.notSupported('output pattern dependent on both grid state and match position', rule.pos);

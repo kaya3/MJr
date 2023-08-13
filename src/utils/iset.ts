@@ -246,7 +246,7 @@ namespace ISet {
     }
     
     /**
-     * Calls the function `f` for each element of the set, in order;
+     * Calls the function `f` for each element of the set, in order.
      */
     export const forEach: (set: ISet, f: (x: number) => void) => void = _forEach;
     

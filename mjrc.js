@@ -1,31 +1,35 @@
 "use strict";
-/**
- * Abstract syntax tree for a high-level intermediate representation (IR) which
- * is output by the compiler. The IR is converted into output source code by a
- * class in the `CodeGen` namespace.
- *
- * The IR should be convertible to most imperative languages, so long as they
- * allow local function declarations to access constants from the outer scope.
- */
 var IR;
 (function (IR) {
-    IR.DEFAULT_ROW_LENGTH = 16;
-    // all type declarations here must be JSON serialisable, since `JSON.stringify` is used to detect repeated IR code and simplify it
-    const JSON_KEY = Symbol();
-    function key(a) {
-        return a[JSON_KEY] ??= JSON.stringify(a);
+    IR.BOOL_TYPE = { kind: 'bool' };
+    IR.BYTE_TYPE = { kind: 'byte' };
+    IR.FLOAT_TYPE = { kind: 'float' };
+    IR.FRACTION_TYPE = { kind: 'fraction' };
+    IR.GRID_TYPE = { kind: 'grid' };
+    IR.INT_TYPE = { kind: 'int' };
+    IR.PATTERN_TYPE = { kind: 'pattern' };
+    IR.PRNG_TYPE = { kind: 'prng' };
+    IR.REWRITE_INFO_TYPE = { kind: 'rewriteinfo' };
+    IR.SAMPLER_TYPE = { kind: 'sampler' };
+    IR.STR_TYPE = { kind: 'str' };
+    IR.VOID_TYPE = { kind: 'void' };
+    IR.GRID_DATA_ARRAY_TYPE = mutableArrayType(128);
+    IR.INT32_ARRAY_TYPE = mutableArrayType(2 ** 32);
+    function mutableArrayType(domainSize) {
+        return { kind: 'array.mutable', domainSize };
     }
-    IR.key = key;
-    function equals(a, b) {
-        if (a === b) {
-            return true;
-        }
-        if (a === undefined || b === undefined || a.kind !== b.kind) {
-            return false;
-        }
-        return key(a) === key(b);
+    IR.mutableArrayType = mutableArrayType;
+    function constArrayType(domainSize) {
+        return { kind: 'array.const', domainSize };
     }
-    IR.equals = equals;
+    IR.constArrayType = constArrayType;
+    function nullableType(componentType) {
+        return { kind: 'nullable', componentType };
+    }
+    IR.nullableType = nullableType;
+})(IR || (IR = {}));
+var IR;
+(function (IR) {
     function float(value) {
         return value === 0 ? IR.FLOAT_ZERO
             : value === 1 ? IR.FLOAT_ONE
@@ -95,22 +99,6 @@ var IR;
         return { kind: 'expr.array.const', from, domainSize, rowLength };
     }
     IR.constArray = constArray;
-    function constArrayDecl(name, from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
-        return {
-            name,
-            type: IR.constArrayType(domainSize),
-            initialiser: constArray(from, domainSize, rowLength),
-        };
-    }
-    IR.constArrayDecl = constArrayDecl;
-    function newArrayDecl(name, length, domainSize) {
-        return {
-            name,
-            type: IR.mutableArrayType(domainSize),
-            initialiser: newArray(length, domainSize),
-        };
-    }
-    IR.newArrayDecl = newArrayDecl;
     function access(left, right) {
         return { kind: 'expr.op.access', left, right };
     }
@@ -138,7 +126,7 @@ var IR;
         else if (condition === IR.FALSE) {
             return otherwise;
         }
-        else if (equals(then, otherwise)) {
+        else if (IR.equals(then, otherwise)) {
             return then;
         }
         else if (condition.kind === 'expr.op.unary' && condition.op === 'bool_not') {
@@ -150,257 +138,6 @@ var IR;
         return { kind: 'expr.op.ternary', condition, then, otherwise };
     }
     IR.ternary = ternary;
-    // singletons
-    IR.BLANK_LINE = { kind: 'stmt.blankline' };
-    IR.BREAK = { kind: 'stmt.break' };
-    IR.CONTINUE = { kind: 'stmt.continue' };
-    IR.PASS = { kind: 'stmt.pass' };
-    function assign(left, op, right) {
-        if (isInt(right)) {
-            if (right.value === 0) {
-                if (op === '+=' || op === '-=' || op === '|=') {
-                    return IR.PASS;
-                }
-                else if (op === '&=') {
-                    op = '=';
-                }
-            }
-            else if (right.value < 0 && (op === '+=' || op === '-=')) {
-                op = op === '+=' ? '-=' : '+=';
-                right = int(-right.value);
-            }
-        }
-        else if (right.kind === 'expr.op.unary' && right.op === 'int_uminus' && (op === '+=' || op === '-=')) {
-            op = op === '+=' ? '-=' : '+=';
-            right = right.child;
-        }
-        return { kind: 'stmt.assign', op, left, right };
-    }
-    IR.assign = assign;
-    function block(children) {
-        children = children.flatMap(c => c.kind === 'stmt.block' ? c.children
-            : c === IR.PASS ? []
-                : [c]);
-        return children.length === 0 ? IR.PASS
-            : children.length === 1 ? children[0]
-                : { kind: 'stmt.block', children };
-    }
-    IR.block = block;
-    function comment(comment) {
-        return { kind: 'stmt.comment', comment };
-    }
-    IR.comment = comment;
-    function declFunc(name, yields, params, paramTypes, returnType, body) {
-        return { kind: 'stmt.decl.func', name, yields, params, paramTypes, returnType, body };
-    }
-    IR.declFunc = declFunc;
-    function declVar(name, type, initialiser, mutable = false) {
-        return declVars([{ name, type, initialiser }], mutable);
-    }
-    IR.declVar = declVar;
-    function declVars(decls, mutable = false) {
-        return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable } : IR.PASS;
-    }
-    IR.declVars = declVars;
-    function forRange(index, low, high, stmts, reverse = false) {
-        const body = block(stmts);
-        return body === IR.PASS ? IR.PASS : { kind: 'stmt.for.range', index, low, high, reverse, body };
-    }
-    IR.forRange = forRange;
-    function forRangeReverse(index, low, high, stmts) {
-        return forRange(index, low, high, stmts, true);
-    }
-    IR.forRangeReverse = forRangeReverse;
-    function if_(condition, then, otherwise) {
-        if (otherwise === IR.PASS) {
-            otherwise = undefined;
-        }
-        if (condition === IR.TRUE) {
-            return then;
-        }
-        else if (condition === IR.FALSE) {
-            return otherwise ?? IR.PASS;
-        }
-        else if (equals(then, otherwise)) {
-            return then;
-        }
-        else if (then === IR.PASS) {
-            return otherwise === undefined ? IR.PASS : if_(IR.OP.not(condition), otherwise);
-        }
-        else if (then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && equals(then.left, otherwise.left) && then.op === otherwise.op) {
-            // replace `if(c) { x = a; } else { x = b; }` with `x = c ? a : b;`
-            return assign(then.left, then.op, ternary(condition, then.right, otherwise.right));
-        }
-        else if (then.kind === 'stmt.for.range' && then.low === IR.ZERO && (equals(condition, IR.OP.gt(then.high, IR.ZERO)) || equals(condition, IR.OP.lt(IR.ZERO, then.high))) && otherwise === undefined) {
-            // omit redundant `if` statement guarding a `for` loop
-            return then;
-        }
-        else if (then.kind === 'stmt.if' && equals(otherwise, then.otherwise)) {
-            // replace `if(c1) { if(c2) A else B } else B` with `if(c1 && c2) A else B`
-            return if_(IR.OP.and(condition, then.condition), then.then, otherwise);
-        }
-        else {
-            return { kind: 'stmt.if', condition, then, otherwise };
-        }
-    }
-    IR.if_ = if_;
-    function libFunctionCallStmt(f, args) {
-        return { kind: 'stmt.expr', expr: libFunctionCall(f, args) };
-    }
-    IR.libFunctionCallStmt = libFunctionCallStmt;
-    function libMethodCallStmt(className, name, obj, args) {
-        return { kind: 'stmt.expr', expr: libMethodCall(className, name, obj, args) };
-    }
-    IR.libMethodCallStmt = libMethodCallStmt;
-    function localCallStmt(f, args) {
-        return { kind: 'stmt.expr', expr: localCall(f, args) };
-    }
-    IR.localCallStmt = localCallStmt;
-    function log(expr) {
-        return { kind: 'stmt.log', expr };
-    }
-    IR.log = log;
-    function preamble(paramTypes, emitChecks, libVersion, opsUsed) {
-        return { kind: 'stmt.preamble', paramTypes, emitChecks, libVersion, opsUsed };
-    }
-    IR.preamble = preamble;
-    function return_(expr) {
-        return { kind: 'stmt.return', expr };
-    }
-    IR.return_ = return_;
-    function switch_(expr, casesByIndex, optimise = false) {
-        if (casesByIndex.length === 0) {
-            return IR.PASS;
-        }
-        else if (casesByIndex.length === 1) {
-            return casesByIndex[0];
-        }
-        else if (casesByIndex.length === 2) {
-            return if_(IR.OP.eq(expr, IR.ZERO), casesByIndex[0], casesByIndex[1]);
-        }
-        const firstCase = casesByIndex[0];
-        if (firstCase.kind === 'stmt.if' && casesByIndex.every((c) => c.kind === 'stmt.if' && equals(c.condition, firstCase.condition))) {
-            // factor out common condition; the `otherwise` part will generally be trivial
-            return if_(firstCase.condition, switch_(expr, casesByIndex.map(c => c.then)), switch_(expr, casesByIndex.map(c => c.otherwise ?? IR.PASS)));
-        }
-        // de-duplicate cases
-        const map = new Map();
-        let exhaustive = true;
-        for (let i = 0; i < casesByIndex.length; ++i) {
-            const c = casesByIndex[i];
-            if (c === IR.PASS) {
-                exhaustive = false;
-                continue;
-            }
-            const k = key(c);
-            getOrCompute(map, k, () => ({ values: [], then: c })).values.push(i);
-        }
-        if (optimise) {
-            for (const c of map.values()) {
-                if (c.values.length === 1) {
-                    c.then = IR.replace(c.then, expr, int(c.values[0]));
-                }
-            }
-        }
-        const cases = Array.from(map.values());
-        return cases.length === 0 ? IR.PASS
-            : cases.length === 1 && exhaustive ? firstCase
-                : cases.length === 1 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, int(cases[0].values[0])), cases[0].then)
-                    : { kind: 'stmt.switch', expr, cases };
-    }
-    IR.switch_ = switch_;
-    function throw_(message) {
-        return { kind: 'stmt.throw', message };
-    }
-    IR.throw_ = throw_;
-    function while_(condition, then) {
-        // the compiler won't ever output an infinite loop that does nothing; if the loop body is empty, then the condition must be false
-        if (then === IR.PASS) {
-            return IR.PASS;
-        }
-        return { kind: 'stmt.while', condition, then };
-    }
-    IR.while_ = while_;
-    function yield_(expr) {
-        return { kind: 'stmt.yield', expr };
-    }
-    IR.yield_ = yield_;
-})(IR || (IR = {}));
-///<reference path="./ir.ts"/>
-var IR;
-(function (IR) {
-    IR.NAMES = {
-        WIDTH: IR.nameExpr('width'),
-        HEIGHT: IR.nameExpr('height'),
-        PARAMS: IR.nameExpr('params'),
-        RNG: IR.nameExpr('rng'),
-        STATE: IR.nameExpr('state'),
-        ITERATIONS: IR.nameExpr('iterations'),
-        AT: IR.nameExpr('at'),
-        AT_X: IR.nameExpr('atX'),
-        AT_Y: IR.nameExpr('atY'),
-        AT_CONV: IR.nameExpr('atConv'),
-        MATCHES: IR.nameExpr('matches'),
-        MATCH_COUNT: IR.nameExpr('count'),
-        MATCH: IR.nameExpr('m'),
-        ANY: IR.nameExpr('any'),
-        G: IR.nameExpr('g'),
-        I: IR.nameExpr('i'),
-        J: IR.nameExpr('j'),
-        N: IR.nameExpr('n'),
-        P: IR.nameExpr('p'),
-        START_X: IR.nameExpr('startX'),
-        START_Y: IR.nameExpr('startY'),
-        END_X: IR.nameExpr('endX'),
-        END_Y: IR.nameExpr('endY'),
-        EFFECTIVE_WIDTH: IR.nameExpr('w'),
-        EFFECTIVE_HEIGHT: IR.nameExpr('h'),
-        S: IR.nameExpr('s'),
-        OLD_S: IR.nameExpr('oldS'),
-        T: IR.nameExpr('t'),
-        OLD_T: IR.nameExpr('oldT'),
-        U: IR.nameExpr('u'),
-        MASK: IR.nameExpr('mask'),
-        MASK_CLEAR: IR.nameExpr('mask_clear'),
-        MASK_SET: IR.nameExpr('mask_set'),
-        MASK_HASNT: IR.nameExpr('mask_hasnt'),
-        constant(id) {
-            return IR.nameExpr(`constant${id}`);
-        },
-        counter(g, id) {
-            return IR.nameExpr(`grid${g.grid.id}_counter${id}`);
-        },
-        flag(id) {
-            return IR.nameExpr(`f${id}`);
-        },
-        limit(id) {
-            return IR.nameExpr(`limit${id}`);
-        },
-        sampler(g, id) {
-            return IR.nameExpr(`grid${g.grid.id}_sampler${id}`);
-        },
-        tmpPattern(id) {
-            return IR.nameExpr(`p${id}`);
-        },
-        variable(v) {
-            return IR.nameExpr(`_${v.uniqueName}`);
-        },
-        convBufferVar(g, id, v) {
-            return IR.nameExpr(`grid${g.grid.id}_conv${id}_${v}`);
-        },
-        gridVar(g, v) {
-            return IR.nameExpr(`grid${g.grid.id}_${v}`);
-        },
-        matcherVar(g, id, v) {
-            return IR.nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
-        },
-        otherVar(stmtID, name) {
-            return IR.nameExpr(`stmt${stmtID}_${name}`);
-        },
-    };
-})(IR || (IR = {}));
-var IR;
-(function (IR) {
     function binaryOp(op, left, right) {
         switch (op) {
             case 'int_plus':
@@ -472,8 +209,8 @@ var IR;
                 if (right === IR.MINUS_ONE) {
                     return unaryOp('int_uminus', left);
                 }
-                if (IR.isInt(left) && IR.isInt(right)) {
-                    return IR.int(Math.imul(left.value, right.value));
+                if (isInt(left) && isInt(right)) {
+                    return int(Math.imul(left.value, right.value));
                 }
                 break;
             case 'int_truediv':
@@ -572,7 +309,7 @@ var IR;
         return x > 0 && (x & (x - 1)) === 0;
     }
     function _log2(x) {
-        return IR.int(31 - Math.clz32(x));
+        return int(31 - Math.clz32(x));
     }
     /**
      * Functions for constructing `uint` and `bool` operations in the IR.
@@ -605,52 +342,52 @@ var IR;
             return _unOp('bool_not', expr);
         },
         add(left, right) {
-            if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && IR.isInt(right)) {
-                if (IR.isInt(left.right)) {
+            if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && isInt(right)) {
+                if (isInt(left.right)) {
                     const lrSign = left.op === 'loose_int_plus' ? 1 : -1;
-                    right = IR.int(lrSign * left.right.value + right.value);
+                    right = int(lrSign * left.right.value + right.value);
                     left = left.left;
                 }
-                else if (IR.isInt(left.left)) {
+                else if (isInt(left.left)) {
                     const llSign = left.op === 'loose_int_plus' ? 1 : -1;
-                    right = IR.int(llSign * left.left.value + right.value);
+                    right = int(llSign * left.left.value + right.value);
                     left = left.right;
                 }
             }
-            return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value + right.value)
+            return isInt(left) && isInt(right) ? int(left.value + right.value)
                 : left === IR.ZERO ? right
                     : right === IR.ZERO ? left
-                        : IR.isInt(left) && left.value < 0 ? IR.OP.minusConstant(right, -left.value)
-                            : IR.isInt(right) && right.value < 0 ? IR.OP.minusConstant(left, -right.value)
+                        : isInt(left) && left.value < 0 ? IR.OP.minusConstant(right, -left.value)
+                            : isInt(right) && right.value < 0 ? IR.OP.minusConstant(left, -right.value)
                                 : _binOp('loose_int_plus', left, right);
         },
         addConstant(left, right) {
             return right === 0 ? left
-                : IR.isInt(left) ? IR.int(left.value + right)
-                    : right > 0 ? IR.OP.add(left, IR.int(right))
-                        : IR.OP.minus(left, IR.int(-right));
+                : isInt(left) ? int(left.value + right)
+                    : right > 0 ? IR.OP.add(left, int(right))
+                        : IR.OP.minus(left, int(-right));
         },
         minus(left, right) {
-            if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && IR.isInt(right)) {
-                if (IR.isInt(left.right)) {
+            if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && isInt(right)) {
+                if (isInt(left.right)) {
                     const lrSign = left.op === 'loose_int_plus' ? -1 : 1;
-                    right = IR.int(lrSign * left.right.value - right.value);
+                    right = int(lrSign * left.right.value - right.value);
                     left = left.left;
                 }
             }
-            return IR.isInt(left) && IR.isInt(right) ? IR.int(left.value - right.value)
+            return isInt(left) && isInt(right) ? int(left.value - right.value)
                 : right === IR.ZERO ? left
                     : IR.equals(left, right) ? IR.ZERO
-                        : IR.isInt(left) && left.value < 0 ? IR.OP.addConstant(right, -left.value)
-                            : IR.isInt(right) && right.value < 0 ? IR.OP.addConstant(left, -right.value)
+                        : isInt(left) && left.value < 0 ? IR.OP.addConstant(right, -left.value)
+                            : isInt(right) && right.value < 0 ? IR.OP.addConstant(left, -right.value)
                                 : _binOp('loose_int_minus', left, right);
         },
         minusConstant(left, right) {
             return IR.OP.addConstant(left, -right);
         },
         mult(left, right) {
-            return IR.isInt(left) ? IR.OP.multConstant(right, left.value)
-                : IR.isInt(right) ? IR.OP.multConstant(left, right.value)
+            return isInt(left) ? IR.OP.multConstant(right, left.value)
+                : isInt(right) ? IR.OP.multConstant(left, right.value)
                     : _binOp('loose_int_mult', left, right);
         },
         fraction(left, right) {
@@ -658,19 +395,19 @@ var IR;
                 : _binOp('int_truediv', left, right);
         },
         floordiv(left, right) {
-            return IR.isInt(right) && right.value > 0 ? IR.OP.divConstant(left, right.value)
+            return isInt(right) && right.value > 0 ? IR.OP.divConstant(left, right.value)
                 : _binOp('loose_int_floordiv', left, right);
         },
         mod(left, right) {
-            return IR.isInt(right) && right.value > 0 ? IR.OP.modConstant(left, right.value)
+            return isInt(right) && right.value > 0 ? IR.OP.modConstant(left, right.value)
                 : _binOp('loose_int_mod', left, right);
         },
         multConstant(left, right) {
             return right === 1 ? left
                 : right === 0 ? IR.ZERO
-                    : IR.isInt(left) ? IR.int(left.value * right)
+                    : isInt(left) ? int(left.value * right)
                         : _isPowerOfTwo(right) ? IR.OP.lshift(left, _log2(right))
-                            : right > 0 ? _binOp('loose_int_mult', IR.int(right), left)
+                            : right > 0 ? _binOp('loose_int_mult', int(right), left)
                                 : fail();
         },
         /**
@@ -683,125 +420,382 @@ var IR;
         },
         divConstant(left, right) {
             return right === 1 ? left
-                : IR.isInt(left) ? IR.int((left.value / right) | 0)
+                : isInt(left) ? int((left.value / right) | 0)
                     : _isPowerOfTwo(right) ? IR.OP.rshift(left, _log2(right))
-                        : right > 0 ? _binOp('loose_int_floordiv', left, IR.int(right))
+                        : right > 0 ? _binOp('loose_int_floordiv', left, int(right))
                             : fail();
         },
         modConstant(left, right) {
             return right === 1 ? IR.ZERO
-                : IR.isInt(left) ? IR.int(left.value % right)
-                    : _isPowerOfTwo(right) ? IR.OP.bitwiseAnd(left, IR.int(right - 1))
-                        : right > 0 ? _binOp('loose_int_mod', left, IR.int(right))
+                : isInt(left) ? int(left.value % right)
+                    : _isPowerOfTwo(right) ? IR.OP.bitwiseAnd(left, int(right - 1))
+                        : right > 0 ? _binOp('loose_int_mod', left, int(right))
                             : fail();
         },
         lshift(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? left
-                : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value << right.value)
+                : isInt(left) && isInt(right) ? int(left.value << right.value)
                     : _binOp('int_lshift', left, right);
         },
         rshift(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? left
-                : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value >> right.value)
+                : isInt(left) && isInt(right) ? int(left.value >> right.value)
                     : _binOp('int_rshift', left, right);
         },
         bitwiseAnd(left, right) {
             return left === IR.ZERO || right === IR.ZERO ? IR.ZERO
-                : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value & right.value)
+                : isInt(left) && isInt(right) ? int(left.value & right.value)
                     : _binOp('int_and', left, right);
         },
         bitwiseOr(left, right) {
             return left === IR.ZERO ? right
                 : right === IR.ZERO ? left
-                    : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value | right.value)
+                    : isInt(left) && isInt(right) ? int(left.value | right.value)
                         : _binOp('int_or', left, right);
         },
         bitwiseXor(left, right) {
             return left === IR.ZERO ? right
                 : right === IR.ZERO ? left
-                    : IR.isInt(left) && IR.isInt(right) ? IR.int(left.value ^ right.value)
+                    : isInt(left) && isInt(right) ? int(left.value ^ right.value)
                         : _binOp('int_xor', left, right);
         },
         bitwiseNot(expr) {
             // folding e.g. ~1 into -2 doesn't reduce code size
-            return IR.isInt(expr) && expr.value < 0 ? IR.int(~expr.value)
+            return isInt(expr) && expr.value < 0 ? int(~expr.value)
                 : expr.kind === 'expr.op.unary' && expr.op === 'int_not' ? expr.child
                     : _unOp('int_not', expr);
         },
         countTrailingZeros(expr) {
-            return IR.isInt(expr) ? IR.int(MJr.OPS.int_ctz(expr.value))
+            return isInt(expr) ? int(MJr.OPS.int_ctz(expr.value))
                 : _unOp('int_ctz', expr);
         },
         log2(expr) {
-            return expr.kind === 'expr.literal.float' ? IR.float(Math.log2(expr.value))
+            return expr.kind === 'expr.literal.float' ? float(Math.log2(expr.value))
                 : _unOp('float_log2', expr);
         },
         eq(left, right) {
-            if (IR.isInt(left) && IR.isInt(right)) {
+            if (isInt(left) && isInt(right)) {
                 return left.value === right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_eq', left, right);
         },
         ne(left, right) {
-            if (IR.isInt(left) && IR.isInt(right)) {
+            if (isInt(left) && isInt(right)) {
                 return left.value !== right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_ne', left, right);
         },
         lt(left, right) {
-            if (IR.isInt(left) && IR.isInt(right)) {
+            if (isInt(left) && isInt(right)) {
                 return left.value < right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_lt', left, right);
         },
         le(left, right) {
-            if (IR.isInt(left) && IR.isInt(right)) {
+            if (isInt(left) && isInt(right)) {
                 return left.value <= right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_le', left, right);
         },
         gt(left, right) {
-            if (IR.isInt(left) && IR.isInt(right)) {
+            if (isInt(left) && isInt(right)) {
                 return left.value > right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_gt', left, right);
         },
         ge(left, right) {
-            if (IR.isInt(left) && IR.isInt(right)) {
+            if (isInt(left) && isInt(right)) {
                 return left.value >= right.value ? IR.TRUE : IR.FALSE;
             }
             return _binOp('int_ge', left, right);
         },
     };
 })(IR || (IR = {}));
+/**
+ * Abstract syntax tree for a high-level intermediate representation (IR) which
+ * is output by the compiler. The IR is converted into output source code by a
+ * class in the `CodeGen` namespace.
+ *
+ * The IR should be convertible to most imperative languages, so long as they
+ * allow local function declarations to access constants from the outer scope.
+ */
 var IR;
 (function (IR) {
-    IR.BOOL_TYPE = { kind: 'bool' };
-    IR.BYTE_TYPE = { kind: 'byte' };
-    IR.FLOAT_TYPE = { kind: 'float' };
-    IR.FRACTION_TYPE = { kind: 'fraction' };
-    IR.GRID_TYPE = { kind: 'grid' };
-    IR.INT_TYPE = { kind: 'int' };
-    IR.PATTERN_TYPE = { kind: 'pattern' };
-    IR.PRNG_TYPE = { kind: 'prng' };
-    IR.REWRITE_INFO_TYPE = { kind: 'rewriteinfo' };
-    IR.SAMPLER_TYPE = { kind: 'sampler' };
-    IR.STR_TYPE = { kind: 'str' };
-    IR.VOID_TYPE = { kind: 'void' };
-    IR.GRID_DATA_ARRAY_TYPE = mutableArrayType(128);
-    IR.INT32_ARRAY_TYPE = mutableArrayType(2 ** 32);
-    function mutableArrayType(domainSize) {
-        return { kind: 'array.mutable', domainSize };
+    IR.DEFAULT_ROW_LENGTH = 16;
+    function constArrayDecl(name, from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
+        return {
+            name,
+            type: IR.constArrayType(domainSize),
+            initialiser: IR.constArray(from, domainSize, rowLength),
+        };
     }
-    IR.mutableArrayType = mutableArrayType;
-    function constArrayType(domainSize) {
-        return { kind: 'array.const', domainSize };
+    IR.constArrayDecl = constArrayDecl;
+    function newArrayDecl(name, length, domainSize) {
+        return {
+            name,
+            type: IR.mutableArrayType(domainSize),
+            initialiser: IR.newArray(length, domainSize),
+        };
     }
-    IR.constArrayType = constArrayType;
-    function nullableType(componentType) {
-        return { kind: 'nullable', componentType };
+    IR.newArrayDecl = newArrayDecl;
+    // singletons
+    IR.BLANK_LINE = { kind: 'stmt.blankline' };
+    IR.BREAK = { kind: 'stmt.break' };
+    IR.CONTINUE = { kind: 'stmt.continue' };
+    IR.PASS = { kind: 'stmt.pass' };
+    function assign(left, op, right) {
+        if (IR.isInt(right)) {
+            if (right.value === 0) {
+                if (op === '+=' || op === '-=' || op === '|=') {
+                    return IR.PASS;
+                }
+                else if (op === '&=') {
+                    op = '=';
+                }
+            }
+            else if (right.value < 0 && (op === '+=' || op === '-=')) {
+                op = op === '+=' ? '-=' : '+=';
+                right = IR.int(-right.value);
+            }
+        }
+        else if (right.kind === 'expr.op.unary' && right.op === 'int_uminus' && (op === '+=' || op === '-=')) {
+            op = op === '+=' ? '-=' : '+=';
+            right = right.child;
+        }
+        return { kind: 'stmt.assign', op, left, right };
     }
-    IR.nullableType = nullableType;
+    IR.assign = assign;
+    function block(children) {
+        children = children.flatMap(c => c.kind === 'stmt.block' ? c.children
+            : c === IR.PASS ? []
+                : [c]);
+        return children.length === 0 ? IR.PASS
+            : children.length === 1 ? children[0]
+                : { kind: 'stmt.block', children };
+    }
+    IR.block = block;
+    function comment(comment) {
+        return { kind: 'stmt.comment', comment };
+    }
+    IR.comment = comment;
+    function declFunc(name, yields, params, paramTypes, returnType, body) {
+        return { kind: 'stmt.decl.func', name, yields, params, paramTypes, returnType, body };
+    }
+    IR.declFunc = declFunc;
+    function declVar(name, type, initialiser, mutable = false) {
+        return declVars([{ name, type, initialiser }], mutable);
+    }
+    IR.declVar = declVar;
+    function declVars(decls, mutable = false) {
+        return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable } : IR.PASS;
+    }
+    IR.declVars = declVars;
+    function forRange(index, low, high, stmts, reverse = false) {
+        const body = block(stmts);
+        return body === IR.PASS ? IR.PASS : { kind: 'stmt.for.range', index, low, high, reverse, body };
+    }
+    IR.forRange = forRange;
+    function forRangeReverse(index, low, high, stmts) {
+        return forRange(index, low, high, stmts, true);
+    }
+    IR.forRangeReverse = forRangeReverse;
+    function if_(condition, then, otherwise) {
+        if (otherwise === IR.PASS) {
+            otherwise = undefined;
+        }
+        // assumes condition is pure
+        if (condition === IR.TRUE) {
+            return then;
+        }
+        else if (condition === IR.FALSE) {
+            return otherwise ?? IR.PASS;
+        }
+        else if (IR.equals(then, otherwise)) {
+            return then;
+        }
+        else if (then === IR.PASS) {
+            return otherwise === undefined ? IR.PASS : if_(IR.OP.not(condition), otherwise);
+        }
+        else if (then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && IR.equals(then.left, otherwise.left) && then.op === otherwise.op) {
+            // replace `if(c) { x = a; } else { x = b; }` with `x = c ? a : b;`
+            return assign(then.left, then.op, IR.ternary(condition, then.right, otherwise.right));
+        }
+        else if (then.kind === 'stmt.for.range' && then.low === IR.ZERO && (IR.equals(condition, IR.OP.gt(then.high, IR.ZERO)) || IR.equals(condition, IR.OP.lt(IR.ZERO, then.high))) && otherwise === undefined) {
+            // omit redundant `if` statement guarding a `for` loop
+            return then;
+        }
+        else if (then.kind === 'stmt.if' && IR.equals(otherwise, then.otherwise)) {
+            // replace `if(c1) { if(c2) A else B } else B` with `if(c1 && c2) A else B`
+            return if_(IR.OP.and(condition, then.condition), then.then, otherwise);
+        }
+        else {
+            return { kind: 'stmt.if', condition, then, otherwise };
+        }
+    }
+    IR.if_ = if_;
+    function libFunctionCallStmt(f, args) {
+        return { kind: 'stmt.expr', expr: IR.libFunctionCall(f, args) };
+    }
+    IR.libFunctionCallStmt = libFunctionCallStmt;
+    function libMethodCallStmt(className, name, obj, args) {
+        return { kind: 'stmt.expr', expr: IR.libMethodCall(className, name, obj, args) };
+    }
+    IR.libMethodCallStmt = libMethodCallStmt;
+    function localCallStmt(f, args) {
+        return { kind: 'stmt.expr', expr: IR.localCall(f, args) };
+    }
+    IR.localCallStmt = localCallStmt;
+    function log(expr) {
+        return { kind: 'stmt.log', expr };
+    }
+    IR.log = log;
+    function preamble(paramTypes, emitChecks, libVersion, opsUsed) {
+        return { kind: 'stmt.preamble', paramTypes, emitChecks, libVersion, opsUsed };
+    }
+    IR.preamble = preamble;
+    function return_(expr) {
+        return { kind: 'stmt.return', expr };
+    }
+    IR.return_ = return_;
+    function switch_(expr, casesByIndex, optimise = false) {
+        if (casesByIndex.length === 0) {
+            return IR.PASS;
+        }
+        else if (casesByIndex.length === 1) {
+            return casesByIndex[0];
+        }
+        else if (casesByIndex.length === 2) {
+            return if_(IR.OP.eq(expr, IR.ZERO), casesByIndex[0], casesByIndex[1]);
+        }
+        const firstCase = casesByIndex[0];
+        if (firstCase.kind === 'stmt.if' && casesByIndex.every((c) => c.kind === 'stmt.if' && IR.equals(c.condition, firstCase.condition))) {
+            // factor out common condition; the `otherwise` part will generally be trivial
+            return if_(firstCase.condition, switch_(expr, casesByIndex.map(c => c.then)), switch_(expr, casesByIndex.map(c => c.otherwise ?? IR.PASS)));
+        }
+        // de-duplicate cases
+        const map = new Map();
+        let exhaustive = true;
+        for (let i = 0; i < casesByIndex.length; ++i) {
+            const c = casesByIndex[i];
+            if (c === IR.PASS) {
+                exhaustive = false;
+                continue;
+            }
+            const k = IR.key(c);
+            getOrCompute(map, k, () => ({ values: [], then: c })).values.push(i);
+        }
+        if (optimise) {
+            for (const c of map.values()) {
+                if (c.values.length === 1) {
+                    c.then = IR.replace(c.then, expr, IR.int(c.values[0]));
+                }
+            }
+        }
+        const cases = Array.from(map.values());
+        return cases.length === 0 ? IR.PASS
+            : cases.length === 1 && exhaustive ? firstCase
+                : cases.length === 1 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, IR.int(cases[0].values[0])), cases[0].then)
+                    : { kind: 'stmt.switch', expr, cases };
+    }
+    IR.switch_ = switch_;
+    function throw_(message) {
+        return { kind: 'stmt.throw', message };
+    }
+    IR.throw_ = throw_;
+    function while_(condition, then) {
+        if (then.kind === 'stmt.if') {
+            if (then.then === IR.BREAK) {
+                condition = IR.OP.and(condition, IR.OP.not(then.condition));
+                then = then.otherwise ?? IR.PASS;
+            }
+            else if (then.otherwise === IR.BREAK) {
+                condition = IR.OP.and(condition, then.condition);
+                then = then.then;
+            }
+        }
+        // the compiler won't ever output an infinite loop that does nothing; if the loop body is empty, then the condition must be false
+        return then === IR.PASS || then === IR.BREAK ? IR.PASS
+            : { kind: 'stmt.while', condition, then };
+    }
+    IR.while_ = while_;
+    function yield_(expr) {
+        return { kind: 'stmt.yield', expr };
+    }
+    IR.yield_ = yield_;
+})(IR || (IR = {}));
+///<reference path="./expr.ts"/>
+///<reference path="./stmt.ts"/>
+var IR;
+(function (IR) {
+    IR.NAMES = {
+        WIDTH: IR.nameExpr('width'),
+        HEIGHT: IR.nameExpr('height'),
+        PARAMS: IR.nameExpr('params'),
+        RNG: IR.nameExpr('rng'),
+        STATE: IR.nameExpr('state'),
+        ITERATIONS: IR.nameExpr('iterations'),
+        AT: IR.nameExpr('at'),
+        AT_X: IR.nameExpr('atX'),
+        AT_Y: IR.nameExpr('atY'),
+        AT_CONV: IR.nameExpr('atConv'),
+        MATCHES: IR.nameExpr('matches'),
+        MATCH_COUNT: IR.nameExpr('count'),
+        MATCH: IR.nameExpr('m'),
+        ANY: IR.nameExpr('any'),
+        G: IR.nameExpr('g'),
+        I: IR.nameExpr('i'),
+        J: IR.nameExpr('j'),
+        N: IR.nameExpr('n'),
+        P: IR.nameExpr('p'),
+        START_X: IR.nameExpr('startX'),
+        START_Y: IR.nameExpr('startY'),
+        END_X: IR.nameExpr('endX'),
+        END_Y: IR.nameExpr('endY'),
+        EFFECTIVE_WIDTH: IR.nameExpr('w'),
+        EFFECTIVE_HEIGHT: IR.nameExpr('h'),
+        S: IR.nameExpr('s'),
+        OLD_S: IR.nameExpr('oldS'),
+        T: IR.nameExpr('t'),
+        OLD_T: IR.nameExpr('oldT'),
+        U: IR.nameExpr('u'),
+        MASK: IR.nameExpr('mask'),
+        MASK_CLEAR: IR.nameExpr('mask_clear'),
+        MASK_SET: IR.nameExpr('mask_set'),
+        MASK_HASNT: IR.nameExpr('mask_hasnt'),
+        constant(id) {
+            return IR.nameExpr(`constant${id}`);
+        },
+        counter(g, id) {
+            return IR.nameExpr(`grid${g.grid.id}_counter${id}`);
+        },
+        flag(id) {
+            return IR.nameExpr(`f${id}`);
+        },
+        limit(id) {
+            return IR.nameExpr(`limit${id}`);
+        },
+        sampler(g, id) {
+            return IR.nameExpr(`grid${g.grid.id}_sampler${id}`);
+        },
+        tmpPattern(id) {
+            return IR.nameExpr(`p${id}`);
+        },
+        variable(v) {
+            return IR.nameExpr(`_${v.uniqueName}`);
+        },
+        convBufferVar(g, id, v) {
+            return IR.nameExpr(`grid${g.grid.id}_conv${id}_${v}`);
+        },
+        gridVar(g, v) {
+            return IR.nameExpr(`grid${g.grid.id}_${v}`);
+        },
+        matcherVar(g, id, v) {
+            return IR.nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
+        },
+        otherVar(stmtID, name) {
+            return IR.nameExpr(`stmt${stmtID}_${name}`);
+        },
+    };
 })(IR || (IR = {}));
 ///<reference path="./names.ts"/>
 var IR;
@@ -819,7 +813,7 @@ var IR;
     };
 })(IR || (IR = {}));
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 ///<reference path="../ir/prng.ts"/>
 var Compiler;
 (function (Compiler) {
@@ -962,302 +956,191 @@ var Compiler;
         }
     }
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
-///<reference path="../ir/types.ts"/>
-///<reference path="./expr.ts"/>
-/**
- * Compiles MJr source code to a specified target language.
- */
 var Compiler;
 (function (Compiler) {
-    Compiler.COMPILER_VERSION = '0.1 (unstable)';
-    Compiler.REQUIRED_RUNTIME_LIB_VERSION = 0;
-    const ALWAYS_USED_OPS = [
-        'bool_and', 'bool_or', 'bool_not',
-        'int_eq', 'int_ne', 'int_lt', 'int_le', 'int_gt', 'int_ge',
-        'int_and', 'int_or', 'int_xor', 'int_not', 'int_lshift', 'int_rshift', 'int_ctz',
-        'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
-    ];
-    // helpers
-    const { NAMES: { WIDTH, HEIGHT, PARAMS, RNG, STATE, ITERATIONS, }, OP, } = IR;
-    /**
-     * Compiles MJr source code to a high-level intermediate representation.
-     */
-    class CompilerImpl {
-        asg;
-        config;
-        diagnostics = new Diagnostics();
-        opsUsed = new Set(ALWAYS_USED_OPS);
-        cfg;
-        switchNodes;
-        nodeCompilers = new Map();
-        constants = new IR.Constants();
-        flags;
-        grids;
-        limits;
-        mask = new IR.Mask();
-        matches = new IR.MatchesArray();
-        constructor(asg, config) {
-            this.asg = asg;
-            this.config = config;
-            this.cfg = CFG.build(asg.root, config.animate);
-            this.switchNodes = IDMap.ofWithKey(this.cfg.nodes.filter(CFG.isSwitchNode), node => node.id);
-            this.grids = asg.grids.map(g => new IR.Grid(g));
-            this.flags = new IR.Flags(this.cfg.numFlags);
-            this.limits = new IR.Limits(asg.limits);
-            for (const g of asg.grids) {
-                if (g.periodic) {
-                    this.notSupported('periodic grid', g.pos);
-                }
-            }
+    class StmtCompiler {
+        stmt;
+        constructor(stmt) {
+            this.stmt = stmt;
         }
-        notSupported(s, pos) {
-            this.diagnostics.compilationError(`${s} is not currently supported`, pos);
+        declare() {
+            return IR.PASS;
         }
-        compile() {
-            // YYYY-MM-DD HH:mm:ss GMT+offset
-            const date = new Date().toLocaleString('en-SE', { timeZoneName: 'short' });
-            const { params, endGridID } = this.asg;
-            const nodeCompilers = this.switchNodes.map(node => this.getStmtCompiler(node));
-            const switchCases = this.switchNodes.map((node, i) => {
-                const { before, ifTrue, ifFalse, after } = this.getNodeTransitions(node);
-                const nc = nodeCompilers[i];
-                return IR.block([
-                    before,
-                    nc.compile(this, ifTrue ?? IR.PASS, ifFalse ?? IR.PASS),
-                    ...after,
-                ]);
-            });
-            // TODO: potentials
-            const endGridObj = this.grids[endGridID].useObj();
-            const gridDecls = this.grids.flatMap(g => g.declare());
-            const mainParams = [WIDTH, HEIGHT];
-            const mainParamTypes = [IR.INT_TYPE, IR.INT_TYPE];
-            if (params.size > 0) {
-                mainParams.push(PARAMS);
-                mainParamTypes.push(IR.nullableType({
-                    kind: 'dict',
-                    keys: Array.from(params.keys()),
-                    values: Array.from(params.values(), t => IR.nullableType(this.type(t))),
-                }));
-            }
-            mainParams.push(RNG);
-            mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
-            // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
-            const matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), flagDecls = this.flags.declare(), limitDecls = this.limits.declare(this), otherDecls = [];
-            for (const nc of nodeCompilers) {
-                const r = nc.declare?.();
-                if (r !== undefined) {
-                    otherDecls.push(r);
-                }
-            }
-            // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
-            // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
-            // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
-            const maxScale = Math.max(this.matches.scale, ...this.grids.map(g => g.getScale()));
-            const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
-            const checkDims = IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`)));
-            const { animate, emitChecks, entryPointName, maxIterations } = this.config;
-            return IR.declFunc(IR.nameExpr(entryPointName), animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
-                IR.comment(`compiled by mjrc-${Compiler.COMPILER_VERSION} on ${date}`),
-                emitChecks ? checkDims : IR.PASS,
-                IR.preamble(this.dictType(params), emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
-                IR.BLANK_LINE,
-                ...gridDecls,
-                matchesDecl,
-                ...maskDecl,
-                constDecls,
-                ...varDecls,
-                ...otherDecls,
-                flagDecls,
-                limitDecls,
-                maxIterations !== 0 ? IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true) : IR.PASS,
-                ...this.goto(-1, 0),
-                IR.while_(OP.ge(STATE, IR.ZERO), IR.block([
-                    maxIterations !== 0 ? IR.if_(OP.ge(ITERATIONS, IR.int(maxIterations)), IR.throw_(`Exceeded maximum of ${maxIterations} iterations`)) : IR.PASS,
-                    IR.switch_(STATE, switchCases),
-                    maxIterations !== 0 ? IR.assign(ITERATIONS, '+=', IR.ONE) : IR.PASS,
+        compileReset(c) {
+            return IR.PASS;
+        }
+    }
+    Compiler.StmtCompiler = StmtCompiler;
+    class Stmt_NotSupported extends StmtCompiler {
+        compile(c, ifTrue, ifFalse) {
+            const { kind, pos } = this.stmt;
+            c.notSupported(`'${kind}'`, pos);
+            return ifFalse;
+        }
+    }
+    Compiler.Stmt_NotSupported = Stmt_NotSupported;
+    class Stmt_Assign extends StmtCompiler {
+        compile(c, ifTrue, ifFalse) {
+            const { variable, rhs } = this.stmt;
+            return IR.block([
+                IR.assign(IR.NAMES.variable(variable), '=', c.expr(rhs)),
+                ifFalse,
+            ]);
+        }
+    }
+    Compiler.Stmt_Assign = Stmt_Assign;
+    class Stmt_Log extends StmtCompiler {
+        compile(c, ifTrue, ifFalse) {
+            const { expr } = this.stmt;
+            return IR.block([
+                IR.log(c.expr(expr)),
+                ifFalse,
+            ]);
+        }
+    }
+    Compiler.Stmt_Log = Stmt_Log;
+    class Stmt_Use extends StmtCompiler {
+        compile(c, ifTrue, ifFalse) {
+            const { grid } = this.stmt;
+            return IR.block([
+                c.config.animate ? c.grids[grid].yield_() : IR.PASS,
+                ifFalse,
+            ]);
+        }
+    }
+    Compiler.Stmt_Use = Stmt_Use;
+    class Stmt_Block extends StmtCompiler {
+        stmtID;
+        children;
+        constructor(stmt, stmtID, c) {
+            super(stmt);
+            this.stmtID = stmtID;
+            this.children = stmt.children.map(c.getStmtCompiler);
+        }
+        declare() {
+            return IR.block(this.children.map(child => child.declare()));
+        }
+    }
+    Compiler.Stmt_Block = Stmt_Block;
+    class Stmt_Modified extends StmtCompiler {
+        stmtID;
+        child;
+        constructor(stmt, stmtID, c) {
+            super(stmt);
+            this.stmtID = stmtID;
+            this.child = c.getStmtCompiler(stmt.child);
+        }
+        declare() {
+            return this.child.declare();
+        }
+    }
+    Compiler.Stmt_Modified = Stmt_Modified;
+    class Stmt_Markov extends Stmt_Block {
+        compile(c, ifTrue, ifFalse) {
+            const isConsequential = ifTrue !== IR.PASS || ifFalse !== IR.PASS;
+            const flag = IR.NAMES.otherVar(this.stmtID, 'flag'), declFlag = isConsequential ? IR.declVar(flag, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, setFlagAndContinue = IR.block([
+                isConsequential ? IR.assign(flag, '=', IR.TRUE) : IR.PASS,
+                IR.CONTINUE,
+            ]);
+            return IR.block([
+                ...this.children.map(child => child.compileReset(c)),
+                declFlag,
+                IR.while_(IR.TRUE, IR.block([
+                    c.checkMaxIterations,
+                    ...this.children.map(child => child.compile(c, setFlagAndContinue, IR.PASS)),
+                    IR.BREAK,
                 ])),
-                IR.return_(endGridObj),
-            ]));
-        }
-        getStmtCompiler(node) {
-            return getOrCompute(this.nodeCompilers, node.id, () => {
-                if (node.kind === 'reset') {
-                    const { nodes } = this.cfg;
-                    return new Compiler.Stmt_Reset(node.flagID, node.childIDs.map(id => {
-                        const node = nodes[id];
-                        return CFG.isSwitchNode(node) ? this.getStmtCompiler(node) : fail();
-                    }), node.limitIDs);
-                }
-                else {
-                    return new Compiler.STMT_COMPILERS[node.stmt.kind](node.stmt, node.id, this);
-                }
-            });
-        }
-        getNodeTransitions(node) {
-            switch (node.kind) {
-                case 'reset': {
-                    const { stmt } = node;
-                    return {
-                        before: IR.comment(`reset ${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        after: this.goto(node.id, node.then.nodeID),
-                    };
-                }
-                case 'stmt.branching': {
-                    const ifTrue = this.goto(node.id, node.ifChanged.nodeID), ifFalse = this.goto(node.id, node.then.nodeID), eitherWay = [];
-                    while (ifTrue.length > 0 && ifFalse.length > 0 && IR.equals(ifTrue[ifTrue.length - 1], ifFalse[ifFalse.length - 1])) {
-                        const s = ifTrue.pop();
-                        ifFalse.pop();
-                        eitherWay.push(s);
-                    }
-                    const { stmt } = node;
-                    return {
-                        before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        ifTrue: IR.block(ifTrue),
-                        ifFalse: IR.block(ifFalse),
-                        after: eitherWay,
-                    };
-                }
-                case 'stmt.nonbranching': {
-                    const { stmt } = node;
-                    return {
-                        before: IR.comment(`${stmt.kind} at line ${stmt.pos.line}, col ${stmt.pos.col}`),
-                        after: this.goto(node.id, node.then.nodeID),
-                    };
-                }
-            }
-        }
-        expr(expr) {
-            return Compiler.compileExpr(this, expr);
-        }
-        type(type) {
-            return type.kind === 'dict' ? this.dictType(type.entryTypes)
-                : type.kind !== 'pattern.in' ? TYPES_TO_IR[type.kind]
-                    : fail();
-        }
-        dictType(entryTypes) {
-            const keys = Array.from(entryTypes.keys()).sort();
-            // TODO: declare type aliases for dict types
-            return { kind: 'dict', keys, values: keys.map(k => this.type(entryTypes.get(k))) };
-        }
-        goto(fromNodeID, toNodeID) {
-            const initial = fromNodeID < 0;
-            const out = [];
-            const { nodes } = this.cfg;
-            let cur;
-            while (true) {
-                cur = nodes[toNodeID];
-                if (cur.kind === 'stmt.branching' || cur.kind === 'stmt.nonbranching' || (cur.kind === 'reset' && cur.stmt.anyResets) || cur.kind === 'stop') {
-                    break;
-                }
-                else if (cur.kind === 'checklimit') {
-                    if (initial) {
-                        toNodeID = cur.ifTrue.nodeID;
-                        continue;
-                    }
-                    break;
-                }
-                else if (cur.kind === 'checkflag' || cur.kind === 'reset') {
-                    if (initial) {
-                        toNodeID = cur.then.nodeID;
-                        continue;
-                    }
-                    break;
-                }
-                else if (cur.kind === 'decrementlimit') {
-                    if (initial) {
-                        fail();
-                    }
-                    out.push(this.limits.decrement(cur.limitID));
-                }
-                else if (cur.kind === 'setflag') {
-                    if (initial) {
-                        fail();
-                    }
-                    out.push(this.flags.set(cur.flagID));
-                }
-                toNodeID = cur.then.nodeID;
-            }
-            if (cur.kind === 'checkflag' || cur.kind === 'checklimit') {
-                if (initial) {
-                    fail();
-                }
-                out.push(IR.if_(cur.kind === 'checkflag' ? this.flags.check(cur.flagID) : this.limits.check(cur.limitID), IR.block(this.goto(fromNodeID, cur.ifTrue.nodeID)), IR.block(this.goto(fromNodeID, cur.then.nodeID))));
-            }
-            else {
-                const nextState = IR.int(cur.kind === 'stop' ? -1 : this.switchNodes.getID(cur));
-                if (initial) {
-                    out.push(IR.declVar(STATE, IR.INT_TYPE, nextState, true));
-                }
-                else if (fromNodeID !== toNodeID) {
-                    out.push(IR.assign(STATE, '=', nextState));
-                }
-            }
-            return out;
+                isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
+            ]);
         }
     }
-    const TYPES_TO_IR = {
-        bool: IR.BOOL_TYPE,
-        float: IR.FLOAT_TYPE,
-        fraction: IR.FRACTION_TYPE,
-        grid: IR.GRID_TYPE,
-        int: IR.INT_TYPE,
-        'pattern.out': IR.PATTERN_TYPE,
-        position: IR.INT_TYPE,
-        str: IR.STR_TYPE,
-    };
-    function compile(src, targetLanguage, config) {
-        const ast = Parser.parse(src);
-        const asg = Resolver.resolve(ast);
-        const compiler = new CompilerImpl(asg, config !== undefined ? { ...Compiler.DEFAULT_CONFIG, ...config } : Compiler.DEFAULT_CONFIG);
-        const result = compiler.compile();
-        compiler.diagnostics.throwIfAnyErrors();
-        const cls = CodeGen[targetLanguage];
-        const gen = new cls(compiler.config);
-        gen.writeStmt(result);
-        gen.diagnostics.throwIfAnyErrors();
-        return gen.render();
+    Compiler.Stmt_Markov = Stmt_Markov;
+    class Stmt_Sequence extends Stmt_Block {
+        compile(c, ifTrue, ifFalse) {
+            const isConsequential = ifTrue !== IR.PASS || ifFalse !== IR.PASS;
+            const flag = IR.NAMES.otherVar(this.stmtID, 'flag'), declFlag = isConsequential ? IR.declVar(flag, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, setFlag = isConsequential ? IR.assign(flag, '=', IR.TRUE) : IR.PASS;
+            function _resetChild(child) {
+                return child instanceof Stmt_Limit
+                    ? child.compileResetTransparent(c)
+                    : child.compileReset(c);
+            }
+            function _compileChild(child) {
+                return child instanceof Stmt_Limit
+                    ? child.compileTransparent(c, setFlag)
+                    : IR.while_(IR.TRUE, IR.block([
+                        c.checkMaxIterations,
+                        child.compile(c, setFlag, IR.BREAK),
+                    ]));
+            }
+            return IR.block([
+                ...this.children.map(_resetChild),
+                declFlag,
+                ...this.children.map(_compileChild),
+                isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
+            ]);
+        }
     }
-    Compiler.compile = compile;
-})(Compiler || (Compiler = {}));
-var Compiler;
-(function (Compiler) {
-    Compiler.DEFAULT_CONFIG = {
-        indentSpaces: 4,
-        emitComments: true,
-        emitChecks: true,
-        entryPointName: 'main',
-        maxIterations: 0,
-        animate: false,
-    };
+    Compiler.Stmt_Sequence = Stmt_Sequence;
+    class Stmt_Limit extends Stmt_Modified {
+        limitVar;
+        constructor(stmt, stmtID, c) {
+            super(stmt, stmtID, c);
+            this.limitVar = IR.NAMES.limit(stmtID);
+        }
+        compileReset(c) {
+            const init = Compiler.compileExpr(c, this.stmt.limit);
+            return IR.block([
+                IR.declVar(this.limitVar, IR.INT_TYPE, init, true),
+                this.child.compileReset(c),
+            ]);
+        }
+        compileResetTransparent(c) {
+            return this.child.compileReset(c);
+        }
+        compile(c, ifTrue, ifFalse) {
+            return IR.if_(IR.OP.gt(this.limitVar, IR.ZERO), this.child.compile(c, IR.block([
+                IR.assign(this.limitVar, '-=', IR.ONE),
+                ifTrue,
+            ]), ifFalse), ifFalse);
+        }
+        compileTransparent(c, ifTrue) {
+            const init = Compiler.compileExpr(c, this.stmt.limit);
+            if (init === IR.ONE) {
+                return this.child.compile(c, ifTrue, IR.PASS);
+            }
+            const loopBody = [c.checkMaxIterations, this.child.compile(c, ifTrue, IR.BREAK)], i = IR.NAMES.otherVar(this.stmtID, 'i');
+            return IR.isInt(init)
+                ? IR.forRange(i, IR.ZERO, init, loopBody)
+                : IR.block([
+                    IR.declVar(this.limitVar, IR.INT_TYPE, init),
+                    IR.forRange(i, IR.ZERO, this.limitVar, loopBody),
+                ]);
+        }
+    }
+    Compiler.Stmt_Limit = Stmt_Limit;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
+///<reference path="stmt.ts"/>
 var Compiler;
 (function (Compiler) {
     const { NAMES: { AT, I, P, MATCH, ANY, }, OP, } = IR;
     function _exprIs(expr, flags) {
         return (expr.flags & flags) === flags;
     }
-    class Stmt_BasicAllPrl {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
+    class Stmt_BasicAllPrl extends Compiler.StmtCompiler {
         compile(c, ifChanged, then) {
             const { stmt } = this;
             const { rewrites } = stmt;
             const g = c.grids[stmt.inGrid];
             const k = rewrites.length;
             const out = [];
-            const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ExprFlags.SAME_EVERYWHERE */)
+            const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ASG.ExprFlags.SAME_EVERYWHERE */)
                 && rule.to.kind === 'expr.constant');
             const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ExprFlags.SAME_EVERYWHERE */));
+            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ASG.ExprFlags.SAME_EVERYWHERE */));
             // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, 16 /* ExprFlags.GRID_INDEPENDENT */));
+            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, 16 /* ASG.ExprFlags.GRID_INDEPENDENT */));
             rewrites.forEach((rule, i) => {
                 if (patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
                     c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
@@ -1337,12 +1220,11 @@ var Compiler;
     Compiler.Stmt_BasicAllPrl = Stmt_BasicAllPrl;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 var Compiler;
 (function (Compiler) {
     const { NAMES: { AT, AT_X, AT_Y, I, OLD_S, ANY, }, OP, PRNG, } = IR;
-    class Stmt_ConvChain {
-        stmt;
+    class Stmt_ConvChain extends Compiler.StmtCompiler {
         colourArray;
         c2iArray;
         c2iOffset;
@@ -1352,7 +1234,7 @@ var Compiler;
         temperature;
         anneal;
         constructor(stmt, stmtID, c) {
-            this.stmt = stmt;
+            super(stmt);
             const g = c.grids[stmt.inGrid];
             const alphabetSize = g.grid.alphabet.key.length;
             const colours = stmt.output;
@@ -1487,11 +1369,7 @@ var Compiler;
 var Compiler;
 (function (Compiler) {
     const { NAMES: { AT, AT_X, AT_Y, AT_CONV, P, ANY, }, } = IR;
-    class Stmt_Convolution {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
+    class Stmt_Convolution extends Compiler.StmtCompiler {
         compile(c, ifChanged, then) {
             const { stmt } = this;
             const g = c.grids[stmt.inGrid];
@@ -1530,15 +1408,11 @@ var Compiler;
     Compiler.Stmt_Convolution = Stmt_Convolution;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 var Compiler;
 (function (Compiler) {
     const { NAMES: { P, ANY, }, OP, } = IR;
-    class Stmt_BasicOne {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
+    class Stmt_BasicOne extends Compiler.StmtCompiler {
         compile(c, ifChanged, then) {
             const { rewrites } = this.stmt;
             const g = c.grids[this.stmt.inGrid];
@@ -1567,16 +1441,13 @@ var Compiler;
     Compiler.Stmt_BasicOne = Stmt_BasicOne;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
+///<reference path="../ir/stmt.ts"/>
 var Compiler;
 (function (Compiler) {
     const { NAMES: { AT_X, AT_Y, P, }, OP, } = IR;
-    class Stmt_Put {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c) {
+    class Stmt_Put extends Compiler.StmtCompiler {
+        compile(c, ifTrue, ifFalse) {
             const { stmt } = this;
             const g = c.grids[stmt.inGrid];
             const { pattern } = this.stmt;
@@ -1597,101 +1468,192 @@ var Compiler;
                 g.grid.periodic ? IR.PASS : IR.if_(OP.or(pattern.type.width > 1 ? OP.ge(OP.addConstant(AT_X, pattern.type.width - 1), g.width) : IR.FALSE, pattern.type.height > 1 ? OP.ge(OP.addConstant(AT_Y, pattern.type.height - 1), g.height) : IR.FALSE), IR.throw_('pattern would be out of bounds')),
                 pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
                 IR.if_(OP.and(isEffective, Compiler.writeCondition(c, g, pattern, P, stmt.condition)), Compiler.doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
+                ifFalse,
             ]);
         }
     }
     Compiler.Stmt_Put = Stmt_Put;
 })(Compiler || (Compiler = {}));
+///<reference path="../ir/types.ts"/>
+///<reference path="./expr.ts"/>
+///<reference path="./stmt.ts"/>
 ///<reference path="./stmt_all.ts"/>
 ///<reference path="./stmt_convchain.ts"/>
 ///<reference path="./stmt_convolution.ts"/>
 ///<reference path="./stmt_one.ts"/>
 ///<reference path="./stmt_put.ts"/>
+/**
+ * Compiles MJr source code to a specified target language.
+ */
 var Compiler;
 (function (Compiler) {
-    class Stmt_Reset {
-        flagID;
-        childCompilers;
-        limitIDs;
-        constructor(flagID, childCompilers, limitIDs) {
-            this.flagID = flagID;
-            this.childCompilers = childCompilers;
-            this.limitIDs = limitIDs;
-        }
-        compile(c) {
-            const out = [c.flags.clear(this.flagID)];
-            for (const comp of this.childCompilers) {
-                const r = comp.compileReset?.(c);
-                if (r !== undefined) {
-                    out.push(r);
+    Compiler.COMPILER_VERSION = '0.2 (unstable)';
+    Compiler.REQUIRED_RUNTIME_LIB_VERSION = 0;
+    const ALWAYS_USED_OPS = [
+        'bool_and', 'bool_or', 'bool_not',
+        'int_eq', 'int_ne', 'int_lt', 'int_le', 'int_gt', 'int_ge',
+        'int_and', 'int_or', 'int_xor', 'int_not', 'int_lshift', 'int_rshift', 'int_ctz',
+        'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
+    ];
+    // helpers
+    const { NAMES: { WIDTH, HEIGHT, PARAMS, RNG, ITERATIONS, }, OP, } = IR;
+    /**
+     * Compiles MJr source code to a high-level intermediate representation.
+     */
+    class CompilerImpl {
+        asg;
+        config;
+        diagnostics = new Diagnostics();
+        opsUsed = new Set(ALWAYS_USED_OPS);
+        constants = new IR.Constants();
+        grids;
+        mask = new IR.Mask();
+        matches = new IR.MatchesArray();
+        declareMaxIterations;
+        checkMaxIterations;
+        constructor(asg, config) {
+            this.asg = asg;
+            this.config = config;
+            this.grids = asg.grids.map(g => new IR.Grid(g));
+            for (const g of asg.grids) {
+                if (g.periodic) {
+                    this.notSupported('periodic grid', g.pos);
                 }
             }
-            for (const limitID of this.limitIDs) {
-                out.push(c.limits.reset(limitID, c));
+            const maxIterations = config.maxIterations;
+            if (maxIterations !== 0) {
+                this.declareMaxIterations = IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true);
+                this.checkMaxIterations = IR.block([
+                    IR.assign(ITERATIONS, '+=', IR.ONE),
+                    IR.if_(OP.gt(ITERATIONS, IR.int(maxIterations)), IR.throw_(`Exceeded maximum of ${maxIterations} iterations`)),
+                ]);
             }
-            return IR.block(out);
+            else {
+                this.declareMaxIterations = IR.PASS;
+                this.checkMaxIterations = IR.PASS;
+            }
+        }
+        notSupported(s, pos) {
+            this.diagnostics.compilationError(`${s} is not currently supported`, pos);
+        }
+        compile() {
+            // YYYY-MM-DD HH:mm:ss GMT+offset
+            const date = new Date().toLocaleString('en-SE', { timeZoneName: 'short' });
+            const { params, endGridID, root } = this.asg;
+            // TODO: potentials
+            const mainParams = [WIDTH, HEIGHT];
+            const mainParamTypes = [IR.INT_TYPE, IR.INT_TYPE];
+            if (params.size > 0) {
+                mainParams.push(PARAMS);
+                mainParamTypes.push(IR.nullableType({
+                    kind: 'dict',
+                    keys: Array.from(params.keys()),
+                    values: Array.from(params.values(), t => IR.nullableType(this.type(t))),
+                }));
+            }
+            mainParams.push(RNG);
+            mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
+            // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
+            const rootCompiler = this.getStmtCompiler(root), declRoot = rootCompiler.declare(), compiledRoot = rootCompiler.compile(this, IR.PASS, IR.PASS), endGridObj = this.grids[endGridID].useObj(), gridDecls = this.grids.flatMap(g => g.declare()), matchesDecl = this.matches.declare(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), otherDecls = [];
+            // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
+            // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
+            // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
+            const maxScale = Math.max(this.matches.scale, ...this.grids.map(g => g.getScale()));
+            const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
+            const checkDims = IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`)));
+            const { animate, emitChecks, entryPointName } = this.config;
+            return IR.declFunc(IR.nameExpr(entryPointName), animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+                IR.comment(`compiled by mjrc-${Compiler.COMPILER_VERSION} on ${date}`),
+                emitChecks ? checkDims : IR.PASS,
+                IR.preamble(this.dictType(params), emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
+                IR.BLANK_LINE,
+                ...gridDecls,
+                matchesDecl,
+                ...maskDecl,
+                constDecls,
+                ...varDecls,
+                ...otherDecls,
+                this.declareMaxIterations,
+                declRoot,
+                compiledRoot,
+                IR.return_(endGridObj),
+            ]));
+        }
+        lastStmtID = -1;
+        getStmtCompiler = (stmt) => {
+            const id = ++this.lastStmtID;
+            return new STMT_COMPILERS[stmt.kind](stmt, id, this);
+        };
+        expr(expr) {
+            return Compiler.compileExpr(this, expr);
+        }
+        type(type) {
+            return type.kind === 'dict' ? this.dictType(type.entryTypes)
+                : type.kind !== 'pattern.in' ? TYPES_TO_IR[type.kind]
+                    : fail();
+        }
+        dictType(entryTypes) {
+            const keys = Array.from(entryTypes.keys()).sort();
+            // TODO: declare type aliases for dict types
+            return { kind: 'dict', keys, values: keys.map(k => this.type(entryTypes.get(k))) };
         }
     }
-    Compiler.Stmt_Reset = Stmt_Reset;
-    class Stmt_NotSupported {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c) {
-            const { kind, pos } = this.stmt;
-            c.notSupported(`'${kind}'`, pos);
-            return IR.PASS;
-        }
-    }
-    class Stmt_Assign {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c) {
-            const { variable, rhs } = this.stmt;
-            return IR.assign(IR.NAMES.variable(variable), '=', c.expr(rhs));
-        }
-    }
-    class Stmt_Log {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c) {
-            const { expr } = this.stmt;
-            return IR.log(c.expr(expr));
-        }
-    }
-    class Stmt_Use {
-        stmt;
-        constructor(stmt) {
-            this.stmt = stmt;
-        }
-        compile(c) {
-            const { grid } = this.stmt;
-            return c.config.animate ? c.grids[grid].yield_() : fail();
-        }
-    }
-    Compiler.STMT_COMPILERS = {
+    const TYPES_TO_IR = {
+        bool: IR.BOOL_TYPE,
+        float: IR.FLOAT_TYPE,
+        fraction: IR.FRACTION_TYPE,
+        grid: IR.GRID_TYPE,
+        int: IR.INT_TYPE,
+        'pattern.out': IR.PATTERN_TYPE,
+        position: IR.INT_TYPE,
+        str: IR.STR_TYPE,
+    };
+    const STMT_COMPILERS = {
+        // control-flow
+        'stmt.block.markov': Compiler.Stmt_Markov,
+        'stmt.block.sequence': Compiler.Stmt_Sequence,
+        'stmt.modified.limit': Compiler.Stmt_Limit,
         // non-branching
-        'stmt.assign': Stmt_Assign,
-        'stmt.log': Stmt_Log,
-        'stmt.rules.map': Stmt_NotSupported,
+        'stmt.assign': Compiler.Stmt_Assign,
+        'stmt.log': Compiler.Stmt_Log,
+        'stmt.rules.map': Compiler.Stmt_NotSupported,
         'stmt.put': Compiler.Stmt_Put,
-        'stmt.use': Stmt_Use,
+        'stmt.use': Compiler.Stmt_Use,
         // branching
         'stmt.convchain': Compiler.Stmt_ConvChain,
-        'stmt.path': Stmt_NotSupported,
+        'stmt.path': Compiler.Stmt_NotSupported,
         'stmt.rules.basic.all': Compiler.Stmt_BasicAllPrl,
         'stmt.rules.basic.one': Compiler.Stmt_BasicOne,
         'stmt.rules.basic.prl': Compiler.Stmt_BasicAllPrl,
-        'stmt.rules.biased.all': Stmt_NotSupported,
-        'stmt.rules.biased.one': Stmt_NotSupported,
+        'stmt.rules.biased.all': Compiler.Stmt_NotSupported,
+        'stmt.rules.biased.one': Compiler.Stmt_NotSupported,
         'stmt.rules.convolution': Compiler.Stmt_Convolution,
-        'stmt.rules.search.all': Stmt_NotSupported,
-        'stmt.rules.search.one': Stmt_NotSupported,
+        'stmt.rules.search.all': Compiler.Stmt_NotSupported,
+        'stmt.rules.search.one': Compiler.Stmt_NotSupported,
+    };
+    function compile(src, targetLanguage, config) {
+        const ast = Parser.parse(src);
+        const asg = Resolver.resolve(ast);
+        const compiler = new CompilerImpl(asg, config !== undefined ? { ...Compiler.DEFAULT_CONFIG, ...config } : Compiler.DEFAULT_CONFIG);
+        const result = compiler.compile();
+        compiler.diagnostics.throwIfAnyErrors();
+        const cls = CodeGen[targetLanguage];
+        const gen = new cls(compiler.config);
+        gen.writeStmt(result);
+        gen.diagnostics.throwIfAnyErrors();
+        return gen.render();
+    }
+    Compiler.compile = compile;
+})(Compiler || (Compiler = {}));
+var Compiler;
+(function (Compiler) {
+    Compiler.DEFAULT_CONFIG = {
+        indentSpaces: 4,
+        emitComments: true,
+        emitChecks: true,
+        entryPointName: 'main',
+        maxIterations: 0,
+        animate: false,
     };
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
@@ -1707,7 +1669,7 @@ var Compiler;
     Compiler.declareASGVariables = declareASGVariables;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 var Compiler;
 (function (Compiler) {
     const { NAMES: { AT_X, AT_Y, P, }, OP, } = IR;
@@ -2924,144 +2886,6 @@ var CodeGen;
         void: 'None',
     };
 })(CodeGen || (CodeGen = {}));
-var CFG;
-(function (CFG) {
-    // only `stmt` and `reset` nodes will be compiled to cases in the main `switch` statement
-    function isSwitchNode(node) {
-        return node.kind === 'stmt.branching'
-            || node.kind === 'stmt.nonbranching'
-            || node.kind === 'reset';
-    }
-    CFG.isSwitchNode = isSwitchNode;
-    const newLabel = () => ({ nodeID: -1 });
-    class CFGBuilder {
-        animate;
-        nodes = [];
-        childIDs = undefined;
-        limitIDs = undefined;
-        numFlags = 0;
-        constructor(animate) {
-            this.animate = animate;
-        }
-        makeNode(partialNode) {
-            const node = withNextID(this.nodes, partialNode);
-            if (node.kind === 'stmt.branching' || node.kind === 'stmt.nonbranching') {
-                this.childIDs?.push(node.id);
-            }
-            return node;
-        }
-        buildBlock(stmt, flagID, then) {
-            const { kind, children } = stmt;
-            if (children.length === 0) {
-                return this.makeNode({ kind: 'pass', then });
-            }
-            const isMarkov = kind === 'stmt.block.markov';
-            const labels = makeArray(children.length, newLabel);
-            labels.push(then);
-            for (let i = 0; i < children.length; ++i) {
-                const child = children[i];
-                const thenTrue = labels[isMarkov ? 0 : i];
-                const thenFalse = labels[i + 1];
-                labels[i].nodeID = this.buildChild(child, kind, flagID, thenTrue, thenFalse).id;
-            }
-            return this.nodes[labels[0].nodeID];
-        }
-        buildChild(stmt, parentKind, parentFlagID, ifTrue, then) {
-            switch (stmt.kind) {
-                case 'stmt.block.markov':
-                case 'stmt.block.sequence': {
-                    if (stmt.children.length === 0) {
-                        return this.makeNode({ kind: 'pass', then });
-                    }
-                    else if (stmt.kind === 'stmt.block.markov' && parentKind === 'stmt.block.sequence' && !stmt.anyResets) {
-                        // optimisation: don't need a separate reset node for this
-                        return this.buildBlock(stmt, parentFlagID, then);
-                    }
-                    const flagID = this.numFlags++;
-                    const beginLabel = newLabel();
-                    const endLabel = newLabel();
-                    const childIDs = [];
-                    const limitIDs = [];
-                    const begin = this.makeNode({ kind: 'reset', stmt, flagID, childIDs, limitIDs, then: beginLabel });
-                    const oldChildIDs = this.childIDs;
-                    const oldLimitIDs = this.limitIDs;
-                    this.childIDs = childIDs;
-                    this.limitIDs = limitIDs;
-                    beginLabel.nodeID = this.buildBlock(stmt, flagID, endLabel).id;
-                    this.childIDs = oldChildIDs;
-                    this.limitIDs = oldLimitIDs;
-                    if (parentFlagID >= 0) {
-                        const setFlagLabel = newLabel();
-                        endLabel.nodeID = this.makeNode({ kind: 'checkflag', flagID, ifTrue: setFlagLabel, then }).id;
-                        setFlagLabel.nodeID = this.makeNode({ kind: 'setflag', flagID: parentFlagID, then: ifTrue }).id;
-                    }
-                    else {
-                        endLabel.nodeID = this.makeNode({ kind: 'checkflag', flagID, ifTrue, then }).id;
-                    }
-                    return begin;
-                }
-                case 'stmt.modified.limit': {
-                    const { limit } = stmt;
-                    if (parentKind === 'stmt.block.sequence' && limit.initialiser.kind === 'expr.constant' && limit.initialiser.constant.value === 1) {
-                        // optimisation for common case
-                        return this.buildChild(stmt.child, parentKind, parentFlagID, then, then);
-                    }
-                    const limitID = limit.id;
-                    if (limit.canReset) {
-                        this.limitIDs?.push(limitID);
-                    }
-                    const childLabel = newLabel(), decrementLimitLabel = newLabel();
-                    const r = this.makeNode({ kind: 'checklimit', limitID, ifTrue: childLabel, then });
-                    childLabel.nodeID = this.buildChild(stmt.child, parentKind, parentFlagID, decrementLimitLabel, then).id;
-                    decrementLimitLabel.nodeID = this.makeNode({ kind: 'decrementlimit', limitID, then: ifTrue }).id;
-                    return r;
-                }
-                case 'stmt.assign':
-                case 'stmt.log':
-                case 'stmt.put':
-                case 'stmt.rules.map':
-                case 'stmt.use': {
-                    if ((stmt.kind === 'stmt.assign' && stmt.variable.references === 0) || (stmt.kind === 'stmt.use' && !this.animate)) {
-                        return this.makeNode({ kind: 'pass', then });
-                    }
-                    return this.makeNode({ kind: 'stmt.nonbranching', stmt, then });
-                }
-                case 'stmt.convchain':
-                case 'stmt.path':
-                case 'stmt.rules.basic.all':
-                case 'stmt.rules.basic.one':
-                case 'stmt.rules.basic.prl':
-                case 'stmt.rules.biased.all':
-                case 'stmt.rules.biased.one':
-                case 'stmt.rules.convolution':
-                case 'stmt.rules.search.all':
-                case 'stmt.rules.search.one': {
-                    if (parentFlagID >= 0) {
-                        const setFlagLabel = newLabel();
-                        const child = this.makeNode({ kind: 'stmt.branching', stmt, ifChanged: setFlagLabel, then });
-                        setFlagLabel.nodeID = this.makeNode({ kind: 'setflag', flagID: parentFlagID, then: ifTrue }).id;
-                        return child;
-                    }
-                    else {
-                        return this.makeNode({ kind: 'stmt.branching', stmt, ifChanged: ifTrue, then });
-                    }
-                }
-            }
-        }
-    }
-    function build(root, animate) {
-        const builder = new CFGBuilder(animate);
-        const stopLabel = newLabel();
-        const rootNode = builder.buildBlock(root, -1, stopLabel);
-        stopLabel.nodeID = builder.makeNode({ kind: 'stop' }).id;
-        // sanity check
-        if (rootNode.id !== 0) {
-            fail();
-        }
-        return builder;
-    }
-    CFG.build = build;
-})(CFG || (CFG = {}));
 var MJr;
 (function (MJr) {
     // MJr runtime version 0 is unstable!
@@ -4551,7 +4375,6 @@ var Resolver;
         diagnostics = new Diagnostics();
         globals = {
             grids: [],
-            limits: [],
             params: new Map(),
             potentials: [],
             variables: [],
@@ -4568,8 +4391,8 @@ var Resolver;
         rewriteScaleX = FRACTION_ONE;
         rewriteScaleY = FRACTION_ONE;
         resolveRoot(root) {
-            const children = this.resolveStmts(root.stmts, false);
-            return { kind: 'stmt.block.sequence', children, anyResets: false, pos: root.pos };
+            const children = this.resolveStmts(root.stmts);
+            return { kind: 'stmt.block.sequence', children, pos: root.pos };
         }
         resolveDecl(node, callback) {
             const f = DECL_RESOLVE_FUNCS[node.kind];
@@ -4586,9 +4409,9 @@ var Resolver;
             const f = RULE_RESOLVE_FUNCS[node.kind];
             return f(node, this, outGrid);
         }
-        resolveStmt(node, canReset) {
+        resolveStmt(node) {
             const f = STMT_RESOLVE_FUNCS[node.kind];
-            return f(node, this, canReset);
+            return f(node, this);
         }
         resolveChar(c) {
             const grid = this.grid ?? fail();
@@ -4616,9 +4439,9 @@ var Resolver;
             }
             return mask;
         }
-        resolveStmts(children, canReset) {
+        resolveStmts(children) {
             return children.flatMap(c => {
-                const r = this.resolveStmt(c, canReset);
+                const r = this.resolveStmt(c);
                 return r === undefined ? []
                     : r.kind === 'stmts' ? r.stmts
                         : r.assigns !== undefined ? [...r.assigns, r.stmt]
@@ -4649,16 +4472,6 @@ var Resolver;
         typeError(expected, expr) {
             this.error(`expected ${quoteJoin(expected, ' | ')}, was '${Type.toStr(expr.type)}'`, expr.pos);
         }
-        makeLimit(initialiser, canReset) {
-            const isTransparent = !canReset
-                && initialiser.kind === 'expr.constant'
-                && initialiser.constant.value === 1;
-            let limit = { id: -1, initialiser, canReset, isTransparent };
-            if (!isTransparent) {
-                limit = withNextID(this.globals.limits, limit);
-            }
-            return limit;
-        }
         makeVariable(name, type, flags, initialiser, isParam, pos) {
             if (this.variables.has(name) || this.errorVariables.has(name)) {
                 this.error(`cannot redeclare name '${name}'`, pos);
@@ -4675,7 +4488,7 @@ var Resolver;
             if (isParam) {
                 this.globals.params.set(name, type);
             }
-            flags |= 4 /* ExprFlags.LOCALLY_DETERMINISTIC */ | 8 /* ExprFlags.POSITION_INDEPENDENT */ | 16 /* ExprFlags.GRID_INDEPENDENT */;
+            flags |= 4 /* ASG.ExprFlags.LOCALLY_DETERMINISTIC */ | 8 /* ASG.ExprFlags.POSITION_INDEPENDENT */ | 16 /* ASG.ExprFlags.GRID_INDEPENDENT */;
             return withNextID(this.globals.variables, { name, uniqueName, type, initialiser, flags, references: 0 });
         }
         withOutGrid(outGrid, inputPatternPos, f) {
@@ -4823,7 +4636,7 @@ var Resolver;
         return value !== undefined ? { kind: type.kind, type, value } : undefined;
     }
     function _makeConstantExpr(type, value, pos) {
-        return { kind: 'expr.constant', type, constant: _makeConstantValue(type, value), flags: 31 /* ExprFlags.CONSTANT */, pos };
+        return { kind: 'expr.constant', type, constant: _makeConstantValue(type, value), flags: 31 /* ASG.ExprFlags.CONSTANT */, pos };
     }
     function _coerceFromInt(expr, type) {
         const op = expr.type.kind === 'int'
@@ -5094,7 +4907,7 @@ var Resolver;
         // sorting makes it more likely that samplers can be reused
         patterns.sort(_cmpPatternKey);
         const inGrid = ctx.grid.id;
-        const flags = 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */ | 8 /* ExprFlags.POSITION_INDEPENDENT */;
+        const flags = 2 /* ASG.ExprFlags.DETERMINISTIC */ | 4 /* ASG.ExprFlags.LOCALLY_DETERMINISTIC */ | 8 /* ASG.ExprFlags.POSITION_INDEPENDENT */;
         return { kind: 'expr.count', type: Type.INT, flags, inGrid, patterns, pos };
     }
     function _resolveLoadExpr(expr, ctx) {
@@ -5131,7 +4944,7 @@ var Resolver;
                 return _makeConstantExpr(Type.INT, 0, expr.pos);
             }
         }
-        const flags = 16 /* ExprFlags.GRID_INDEPENDENT */ | 8 /* ExprFlags.POSITION_INDEPENDENT */;
+        const flags = 16 /* ASG.ExprFlags.GRID_INDEPENDENT */ | 8 /* ASG.ExprFlags.POSITION_INDEPENDENT */;
         return { kind: 'expr.randint', type: Type.INT, flags, max, pos };
     }
     function _resolveSumExpr(expr, ctx) {
@@ -5164,7 +4977,7 @@ var Resolver;
                     return _makeConstantExpr(Type.INT, kernel.total(), pos);
                 }
                 const patternID = grid.convPatterns.getOrCreateID({ chars, kernel, includeBoundary });
-                const flags = 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */;
+                const flags = 2 /* ASG.ExprFlags.DETERMINISTIC */ | 4 /* ASG.ExprFlags.LOCALLY_DETERMINISTIC */;
                 return { kind: 'expr.sum', type: Type.INT, flags, inGrid: grid.id, patternID, pos };
             }
             default: {
@@ -5247,24 +5060,13 @@ var Resolver;
         }
         return { rules };
     }
-    function _needsReset(stmt) {
-        switch (stmt.kind) {
-            case 'stmt.convchain':
-                return true;
-            case 'stmt.modified.limit':
-                return !stmt.limit.isTransparent || _needsReset(stmt.child);
-            default:
-                return false;
-        }
-    }
-    function _resolveBlockStmt(stmt, ctx, canReset) {
+    function _resolveBlockStmt(stmt, ctx) {
         const { kind, pos } = stmt;
-        const children = ctx.resolveStmts(stmt.children, canReset || stmt.kind === 'stmt.block.markov');
-        const anyResets = canReset && children.some(_needsReset);
+        const children = ctx.resolveStmts(stmt.children);
         if (children.length === 0) {
             return undefined;
         }
-        return { kind: 'stmt', stmt: { kind, children, anyResets, pos } };
+        return { kind: 'stmt', stmt: { kind, children, pos } };
     }
     function _resolvePropsStmt(stmt, ctx) {
         if (!ctx.expectGrid(stmt.pos)) {
@@ -5276,7 +5078,7 @@ var Resolver;
         }
         return { kind: 'stmt', stmt: { kind: stmt.kind, inGrid: ctx.grid.id, pos: stmt.pos, ...props } };
     }
-    function _resolveAllOnceOneStmt(stmt, ctx, canReset) {
+    function _resolveAllOnceOneStmt(stmt, ctx) {
         const { pos } = stmt;
         if (!ctx.expectGrid(pos)) {
             return undefined;
@@ -5326,7 +5128,7 @@ var Resolver;
             r = { kind: `stmt.rules.biased.${kind}`, inGrid, temperature, rewrites, fields, observations, pos };
         }
         if (stmt.kind === 'stmt.rules.once') {
-            const limit = ctx.makeLimit(_makeConstantExpr(Type.INT, 1, pos), canReset);
+            const limit = _makeConstantExpr(Type.INT, 1, pos);
             r = { kind: 'stmt.modified.limit', limit, child: r, pos };
         }
         return { kind: 'stmt', assigns, stmt: r };
@@ -5346,7 +5148,7 @@ var Resolver;
             if (decl.isParam) {
                 rhs = { kind: 'expr.param', type, flags, otherwise: rhs, name, pos };
             }
-            const isMutable = (flags & 1 /* ExprFlags.RUNTIME_CONSTANT */) === 0;
+            const isMutable = (flags & 1 /* ASG.ExprFlags.RUNTIME_CONSTANT */) === 0;
             const variable = ctx.makeVariable(name, type, flags, isMutable ? undefined : rhs, decl.isParam, decl.name.pos);
             return [
                 // constants will be folded, or assigned in preamble; not assigned in program body
@@ -5384,7 +5186,7 @@ var Resolver;
                 if (grid === PROP_ERROR) {
                     return undefined;
                 }
-                return { kind: 'expr.attr.grid', type, flags: 31 /* ExprFlags.CONSTANT */, grid, attr: attr, pos };
+                return { kind: 'expr.attr.grid', type, flags: 31 /* ASG.ExprFlags.CONSTANT */, grid, attr: attr, pos };
             }
             else if (left.kind === 'expr.constant') {
                 if (kind === 'dict') {
@@ -5409,7 +5211,7 @@ var Resolver;
             const entryExprs = new Map();
             const entryTypes = new Map();
             const value = new Map();
-            let ok = true, flags = 31 /* ExprFlags.ALL */;
+            let ok = true, flags = 31 /* ASG.ExprFlags.ALL */;
             for (const [{ name }, v] of expr.pairs) {
                 const resolved = ctx.resolveExpr(v);
                 if (resolved !== undefined) {
@@ -5472,9 +5274,9 @@ var Resolver;
         'expr.name.keyword': (expr, ctx) => {
             const { name, pos } = expr;
             const flags = {
-                at: 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */ | 16 /* ExprFlags.GRID_INDEPENDENT */,
-                origin: 2 /* ExprFlags.DETERMINISTIC */ | 4 /* ExprFlags.LOCALLY_DETERMINISTIC */ | 16 /* ExprFlags.GRID_INDEPENDENT */ | 1 /* ExprFlags.RUNTIME_CONSTANT */ | 8 /* ExprFlags.POSITION_INDEPENDENT */,
-                random: 16 /* ExprFlags.GRID_INDEPENDENT */ | 8 /* ExprFlags.POSITION_INDEPENDENT */,
+                at: 2 /* ASG.ExprFlags.DETERMINISTIC */ | 4 /* ASG.ExprFlags.LOCALLY_DETERMINISTIC */ | 16 /* ASG.ExprFlags.GRID_INDEPENDENT */,
+                origin: 2 /* ASG.ExprFlags.DETERMINISTIC */ | 4 /* ASG.ExprFlags.LOCALLY_DETERMINISTIC */ | 16 /* ASG.ExprFlags.GRID_INDEPENDENT */ | 1 /* ASG.ExprFlags.RUNTIME_CONSTANT */ | 8 /* ASG.ExprFlags.POSITION_INDEPENDENT */,
+                random: 16 /* ASG.ExprFlags.GRID_INDEPENDENT */ | 8 /* ASG.ExprFlags.POSITION_INDEPENDENT */,
             }[name];
             switch (name) {
                 case 'random':
@@ -5737,7 +5539,7 @@ var Resolver;
             if (anneal !== undefined && anneal.kind === 'expr.constant' && anneal.constant.value < 0) {
                 ctx.error(`'anneal' must be non-negative`, stmt.anneal.pos);
             }
-            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern)).sort();
+            const output = ISet.toArray(ISet.of(ctx.grid.alphabet.key.length, sample.pattern));
             if (output.length < 2) {
                 ctx.error(`'sample' must use at least two different alphabet symbols`, stmt.sample.pos);
                 return undefined;
@@ -5769,8 +5571,8 @@ var Resolver;
                     pos,
                 } };
         },
-        'stmt.decl': (stmt, ctx, canReset) => {
-            let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children, canReset));
+        'stmt.decl': (stmt, ctx) => {
+            let [decl, stmts] = ctx.resolveDecl(stmt.declaration, () => ctx.resolveStmts(stmt.children));
             stmts ??= [];
             if (decl !== undefined) {
                 stmts.unshift(decl);
@@ -5778,18 +5580,18 @@ var Resolver;
             return { kind: 'stmts', stmts };
         },
         'stmt.log': _resolvePropsStmt,
-        'stmt.modified.limit': (stmt, ctx, canReset) => {
-            const value = _resolveProp(stmt, 'arg', 'int', ctx);
-            const r = ctx.resolveStmt(stmt.child, canReset);
-            if (value === PROP_ERROR) {
+        'stmt.modified.limit': (stmt, ctx) => {
+            const limit = _resolveProp(stmt, 'arg', 'int', ctx);
+            const r = ctx.resolveStmt(stmt.child);
+            if (limit === PROP_ERROR) {
                 return undefined;
             }
-            if (value.kind === 'expr.constant' && value.constant.value <= 0) {
-                ctx.error(`limit must be positive (was ${value})`, stmt.arg.pos);
+            if (limit.kind === 'expr.constant' && limit.constant.value <= 0) {
+                ctx.error(`limit must be positive (was ${limit})`, stmt.arg.pos);
             }
             // TODO: loosen this to allow e.g. random limits; problem is that limit initialisers will be hoisted
             // to the start of their parent blocks, where referenced variables might not yet be assigned
-            if ((value.flags & 1 /* ExprFlags.RUNTIME_CONSTANT */) === 0) {
+            if ((limit.flags & 1 /* ASG.ExprFlags.RUNTIME_CONSTANT */) === 0) {
                 ctx.error(`limit must be a runtime constant`, stmt.arg.pos);
             }
             if (r === undefined) {
@@ -5803,7 +5605,6 @@ var Resolver;
                 ctx.error(`statement cannot have multiple limits`, stmt.child.pos);
             }
             const { assigns, stmt: child } = r;
-            const limit = ctx.makeLimit(value, canReset);
             return { kind: 'stmt', assigns, stmt: { kind: 'stmt.modified.limit', limit, child, pos: stmt.pos } };
         },
         'stmt.path': _resolvePropsStmt,
@@ -5914,7 +5715,7 @@ var Resolver;
             ctx.grid = ctx.globals.grids[grid];
             return { kind: 'stmt', stmt: { kind: 'stmt.use', grid, pos: stmt.pos } };
         },
-        'stmt.use.let': (stmt, ctx, canReset) => {
+        'stmt.use.let': (stmt, ctx) => {
             if (stmt.decl.isParam) {
                 ctx.error(`'use let' declaration cannot be a 'param'`, stmt.pos);
             }
@@ -5924,8 +5725,8 @@ var Resolver;
             }
             ctx.grid = ctx.globals.grids[grid];
             const { name, rhs, pos } = stmt.decl;
-            const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ExprFlags.CONSTANT */, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
-            const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children, canReset));
+            const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ASG.ExprFlags.CONSTANT */, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
+            const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children));
             stmts.unshift({ kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos }, { kind: 'stmt.use', grid, pos: stmt.pos });
             return { kind: 'stmts', stmts };
         },
@@ -5938,11 +5739,10 @@ var Resolver;
             ctx.error('program uses no grid', ast.pos);
         }
         ctx.diagnostics.throwIfAnyErrors();
-        const { grids, limits, params, potentials, variables } = ctx.globals;
+        const { grids, params, potentials, variables } = ctx.globals;
         return {
             root,
             grids,
-            limits,
             params,
             potentials,
             variables,
@@ -6122,12 +5922,8 @@ var Tokenizer;
                             // '/' or '//'
                             return ['OP', this.has(col + 1, 14 /* C.SLASH */) ? col + 2 : col + 1, depth, mode];
                         case 13 /* C.MINUS */:
-                            // INT, FLOAT, '-' or '->'
-                            if (!this.has(col + 1, 2 /* C.DIGIT */)) {
-                                return ['OP', this.has(col + 1, 8 /* C.RANGLE */) ? col + 2 : col + 1, depth, mode];
-                            }
-                            ++col;
-                        // intentional fall-through
+                            // '-' or '->'
+                            return ['OP', this.has(col + 1, 8 /* C.RANGLE */) ? col + 2 : col + 1, depth, mode];
                         case 2 /* C.DIGIT */: {
                             const end = this.scan(col, [2 /* C.DIGIT */]);
                             if (!this.has(end, 18 /* C.DOT */)) {
@@ -7010,39 +6806,22 @@ var IR;
 })(IR || (IR = {}));
 var IR;
 (function (IR) {
-    class Limits {
-        limits;
-        vars;
-        checks;
-        decrements;
-        constructor(limits) {
-            this.limits = limits;
-            const vars = this.vars = makeArray(limits.length, IR.NAMES.limit);
-            this.checks = vars.map(v => IR.OP.gt(v, IR.ZERO));
-            this.decrements = vars.map(v => IR.assign(v, '-=', IR.ONE));
-        }
-        declare(c) {
-            const { vars } = this;
-            return IR.declVars(this.limits.map((limit, i) => ({
-                name: vars[i],
-                type: IR.INT_TYPE,
-                initialiser: limit.canReset ? undefined : c.expr(limit.initialiser),
-            })), true);
-        }
-        reset(limitID, c) {
-            const limit = this.limits[limitID];
-            return limit.canReset
-                ? IR.assign(this.vars[limitID], '=', c.expr(limit.initialiser))
-                : fail();
-        }
-        check(limitID) {
-            return this.checks[limitID];
-        }
-        decrement(limitID) {
-            return this.decrements[limitID];
-        }
+    // all type declarations here must be JSON serialisable, since `JSON.stringify` is used to detect repeated IR code and simplify it
+    const JSON_KEY = Symbol();
+    function key(a) {
+        return a[JSON_KEY] ??= JSON.stringify(a);
     }
-    IR.Limits = Limits;
+    IR.key = key;
+    function equals(a, b) {
+        if (a === b) {
+            return true;
+        }
+        if (a === undefined || b === undefined || a.kind !== b.kind) {
+            return false;
+        }
+        return key(a) === key(b);
+    }
+    IR.equals = equals;
 })(IR || (IR = {}));
 ///<reference path="names.ts"/>
 var IR;
@@ -8621,26 +8400,24 @@ var ISet;
             const x = i << 5;
             let setPart = set[i];
             while (setPart !== 0) {
-                // position of the highest 1 bit
-                const dx = 31 - Math.clz32(setPart);
+                const lowBit = setPart & -setPart;
+                const dx = 31 - Math.clz32(lowBit);
                 // 'x ^ dx' is equivalent to `x + dx` here
                 if (f(x ^ dx) === STOP_ITERATION) {
                     return false;
                 }
                 // clear this bit
-                setPart ^= 1 << dx;
+                setPart ^= lowBit;
             }
         }
         return true;
     }
     /**
-     * Calls the function `f` for each element of the set, not necessarily in
-     * order.
+     * Calls the function `f` for each element of the set, in order.
      */
     ISet.forEach = _forEach;
     /**
-     * Returns a new array of the natural numbers in the given set, not
-     * necessarily in order.
+     * Returns a new array of the natural numbers in the given set, in order.
      */
     function toArray(set) {
         const arr = [];
@@ -8650,7 +8427,7 @@ var ISet;
     ISet.toArray = toArray;
     /**
      * Returns a new array by mapping the natural numbers in the given set,
-     * not necessarily in order.
+     * in order.
      */
     function map(set, f) {
         const arr = [];

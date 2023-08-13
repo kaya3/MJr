@@ -9,9 +9,7 @@ namespace Compiler {
         },
     } = IR;
     
-    export class Stmt_Convolution implements StmtCompiler {
-        constructor(readonly stmt: ASG.ConvolutionStmt) {}
-        
+    export class Stmt_Convolution extends StmtCompiler<ASG.ConvolutionStmt> {
         compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {stmt} = this;
             const g = c.grids[stmt.inGrid];

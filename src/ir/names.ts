@@ -1,4 +1,5 @@
-///<reference path="./ir.ts"/>
+///<reference path="./expr.ts"/>
+///<reference path="./stmt.ts"/>
 
 namespace IR {
     export const NAMES = {

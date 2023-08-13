@@ -1,5 +1,5 @@
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 ///<reference path="../ir/prng.ts"/>
 
 namespace Compiler {

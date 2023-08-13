@@ -1,5 +1,5 @@
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
 
 namespace Compiler {
     const {
@@ -10,9 +10,7 @@ namespace Compiler {
         OP,
     } = IR;
     
-    export class Stmt_BasicOne implements StmtCompiler {
-        constructor(readonly stmt: ASG.BasicRulesStmt) {}
-        
+    export class Stmt_BasicOne extends StmtCompiler<ASG.BasicRulesStmt> {
         compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
             const {rewrites} = this.stmt;
             const g = c.grids[this.stmt.inGrid];

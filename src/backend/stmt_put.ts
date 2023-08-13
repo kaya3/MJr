@@ -1,5 +1,6 @@
 ///<reference path="../ir/names.ts"/>
-///<reference path="../ir/ops.ts"/>
+///<reference path="../ir/expr.ts"/>
+///<reference path="../ir/stmt.ts"/>
 
 namespace Compiler {
     const {
@@ -10,10 +11,8 @@ namespace Compiler {
         OP,
     } = IR;
     
-    export class Stmt_Put {
-        constructor(readonly stmt: ASG.PutStmt) {}
-        
-        compile(c: Compiler): IR.Stmt {
+    export class Stmt_Put extends StmtCompiler<ASG.PutStmt> {
+        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt {
             const {stmt} = this;
             const g = c.grids[stmt.inGrid];
             const {pattern} = this.stmt;
@@ -47,6 +46,7 @@ namespace Compiler {
                     OP.and(isEffective, writeCondition(c, g, pattern, P, stmt.condition)),
                     doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate),
                 ),
+                ifFalse,
             ]);
         }
     }

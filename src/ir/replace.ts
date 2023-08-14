@@ -39,8 +39,6 @@ namespace IR {
                     _replaceVarDecl(node.decl, from, to),
                     replace(node.child, from, to),
                 );
-            case 'expr.op.access':
-                return access(replace(node.left, from, to), replace(node.right, from, to));
             case 'expr.op.binary':
                 const left = replace(node.left, from, to),
                     right = replace(node.right, from, to);
@@ -109,7 +107,11 @@ namespace IR {
             case 'stmt.return':
                 return return_(node.expr && replace(node.expr, from, to));
             case 'stmt.switch':
-                throw new Error();
+                return switchCases(
+                    replace(node.expr, from, to),
+                    node.cases.map(c => ({values: c.values, then: replace(c.then, from, to)})),
+                    node.exhaustive,
+                );
             case 'stmt.while':
                 return while_(replace(node.condition, from, to), replace(node.then, from, to));
             case 'stmt.yield':

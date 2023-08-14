@@ -78,7 +78,7 @@ namespace CodeGen {
         public writeExpr(expr: IR.Expr, minPrecedence: number = 0): void {
             switch(expr.kind) {
                 case 'expr.letin': {
-                    if(this.writeAssignExpr !== undefined) {
+                    if(this.writeAssignExpr !== undefined && IR.exprIsContextIndependent(expr.decl.initialiser)) {
                         this._toAssign.set(expr.decl.name.name, expr.decl.initialiser);
                         this.writeExpr(expr.child, minPrecedence);
                         return;

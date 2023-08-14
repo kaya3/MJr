@@ -143,7 +143,7 @@ namespace Compiler {
         }
         
         compileReset(c: Compiler): IR.Stmt {
-            const init = compileExpr(c, this.stmt.limit);
+            const init = c.expr(this.stmt.limit);
             return IR.block([
                 IR.declVar(this.limitVar, IR.INT_TYPE, init, true),
                 this.child.compileReset(c),
@@ -166,7 +166,7 @@ namespace Compiler {
         }
         
         compileTransparent(c: Compiler, ifTrue: IR.Stmt): IR.Stmt {
-            const init = compileExpr(c, this.stmt.limit);
+            const init = c.expr(this.stmt.limit);
             if(init === IR.ONE) {
                 return this.child.compile(c, ifTrue, IR.PASS);
             }

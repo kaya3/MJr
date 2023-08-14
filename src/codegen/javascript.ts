@@ -47,7 +47,7 @@ namespace CodeGen {
                 out.write(';');
             },
             'stmt.block': (out, stmt) => {
-                out.write(' {');
+                out.write('{');
                 out.indent();
                 for(const c of stmt.children) { out.writeStmt(c); }
                 out.dedent();
@@ -80,6 +80,7 @@ namespace CodeGen {
                 out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
                 out.write(')');
                 out.writeReturnType(stmt.returnType, stmt.yields);
+                out.write(' ');
                 out.writeIndentedBlock(stmt.body);
             },
             'stmt.decl.vars': (out, stmt) => {
@@ -102,12 +103,12 @@ namespace CodeGen {
                     out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`; ${i} >= `);
                     out.writeExpr(low, Precedence.CMP);
-                    out.write(`; --${i})`);
+                    out.write(`; --${i}) `);
                 } else {
                     out.writeExpr(low);
                     out.write(`; ${i} < `);
                     out.writeExpr(high, Precedence.CMP);
-                    out.write(`; ++${i})`);
+                    out.write(`; ++${i}) `);
                 }
                 out.writeIndentedBlock(body);
             },
@@ -117,17 +118,15 @@ namespace CodeGen {
                 while(true) {
                     out.write('if(');
                     out.writeExpr(cur.condition);
-                    out.write(')');
+                    out.write(') ');
                     // intented block has braces, avoiding parsing hazard of `if(...) if(...) ... else ...`
                     out.writeIndentedBlock(cur.then);
                     
                     cur = cur.otherwise;
                     if(cur === undefined) { break; }
                     
-                    out.write(' else');
-                    if(cur.kind === 'stmt.if') {
-                        out.write(' ');
-                    } else {
+                    out.write(' else ');
+                    if(cur.kind !== 'stmt.if') {
                         out.writeIndentedBlock(cur);
                         break;
                     }
@@ -191,15 +190,8 @@ namespace CodeGen {
                 out.beginLine();
                 out.write('while(');
                 out.writeExpr(stmt.condition);
-                out.write(')');
-                
-                if(then.kind === 'stmt.switch') {
-                    // main loop is like `while(...) switch(...) { ... }`, don't need two levels of indentation for switch body
-                    out.write(' ');
-                    out.writeSwitch(then);
-                } else {
-                    out.writeIndentedBlock(then);
-                }
+                out.write(') ');
+                out.writeIndentedBlock(then);
             },
             'stmt.yield': (out, stmt) => {
                 out.beginLine();
@@ -213,7 +205,7 @@ namespace CodeGen {
         };
         
         readonly EXPR_WRITE_FUNCS: ExprWriteFuncs<this> = {
-            'expr.array.const': [Precedence.MAX, (out, expr) => {
+            'expr.array.const': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 const {from} = expr;
                 const bits = uintBitsFours(expr.domainSize);
                 const s = arrayToHex(from, bits);
@@ -221,7 +213,7 @@ namespace CodeGen {
                 out.writeLongStringLiteral(s, expr.rowLength * s.length / from.length);
                 out.write(')');
             }],
-            'expr.array.new': [Precedence.MAX, (out, expr) => {
+            'expr.array.new': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 const bits = uintBits(expr.domainSize);
                 out.write(`new Uint${bits}Array(`);
                 out.writeExpr(expr.length);
@@ -240,7 +232,17 @@ namespace CodeGen {
                 }, keys.length, 1);
                 out.write('}');
             }],
-            'expr.letin': [0, fail],
+            'expr.letin': [Precedence.MAX, (out, expr) => {
+                out.write('(');
+                let e: IR.Expr = expr;
+                do {
+                    this.writeAssignExpr(e.decl.name, e.decl.initialiser);
+                    out.write(', ');
+                    e = e.child;
+                } while(e.kind === 'expr.letin');
+                this.writeExpr(e);
+                out.write(')');
+            }],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
             'expr.literal.int': _literal,
@@ -250,12 +252,6 @@ namespace CodeGen {
             }],
             'expr.name': [Precedence.MAX, (out, expr) => {
                 out.write(expr.name);
-            }],
-            'expr.op.access': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                out.writeExpr(expr.left, Precedence.ATTR_ACCESS_CALL);
-                out.write('[');
-                out.writeExpr(expr.right);
-                out.write(']');
             }],
             'expr.op.call.lib.constructor': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 out.write(`new ${RUNTIME_LIB_NAME}.${expr.className}`);
@@ -283,7 +279,7 @@ namespace CodeGen {
             }],
             'expr.param': [Precedence.NULL_COALESCE, (out, expr) => {
                 out.write(`params?.${expr.name} ?? `);
-                out.writeExpr(expr.otherwise, Precedence.NULL_COALESCE + 1);
+                out.writeExpr(expr.otherwise, Precedence.NULL_COALESCE);
             }],
             'expr.op.ternary': [Precedence.TERNARY, (out, expr) => {
                 out.writeExpr(expr.condition, Precedence.TERNARY + 1);
@@ -297,7 +293,7 @@ namespace CodeGen {
         readonly BINARY_OPS = (function(): BinaryOpSpecs {
             function _intOp(p: Precedence, op: string): BinaryOpSpec {
                 // all of these ops are left-associative
-                return binaryOp(Precedence.BITWISE_OR, '(', p, ` ${op} `, p + 1, ') | 0');
+                return binaryOp(Precedence.BITWISE_NOT, '~~(', p, ` ${op} `, p + 1, ')');
             }
             function _func(name: 'Math.imul' | keyof typeof MJr.OPS): BinaryOpSpec {
                 return binaryOp(Precedence.ATTR_ACCESS_CALL, `${name}(`, Precedence.MIN, ', ', Precedence.MIN, ')');
@@ -313,6 +309,8 @@ namespace CodeGen {
                 GE = infixOp(Precedence.CMP, '>=');
             
             return {
+                array_access: binaryOp(Precedence.ATTR_ACCESS_CALL, '', Precedence.ATTR_ACCESS_CALL, '[', Precedence.MIN, ']'),
+                
                 bool_and: infixOp(Precedence.BOOL_AND, '&&', Associativity.BOTH),
                 bool_or: infixOp(Precedence.BOOL_OR, '||', Associativity.BOTH),
                 bool_eq: EQ,
@@ -421,9 +419,9 @@ namespace CodeGen {
             this.write(') {');
             this.indent();
             for(const c of stmt.cases) {
+                this.beginLine();
                 for(const value of c.values) {
-                    this.beginLine();
-                    this.write(`case ${value}:`);
+                    this.write(`case ${value}: `);
                 }
                 this.writeIndentedBlock(IR.block([c.then, IR.BREAK]));
             }

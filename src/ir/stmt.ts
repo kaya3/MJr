@@ -200,12 +200,34 @@ namespace IR {
             }
         }
         
-        const cases = Array.from(map.values());
-        const flags = _reduceFlags(expr.flags, casesByIndex);
+        return switchCases(expr, Array.from(map.values()), exhaustive);
+    }
+    
+    function _eqAny(expr: Expr, values: readonly number[]): Expr {
+        return values.length > 1 && values.every(v => v < values.length)
+            ? OP.lt(expr, int(values.length))
+            : values.map(v => OP.eq(expr, int(v))).reduce(OP.or, FALSE);
+    }
+    export function switchCases(expr: Expr, cases: readonly Case[], exhaustive: boolean): Stmt {
+        if(exprHasSideEffects(expr)) { fail(expr); }
+        
+        if(cases.length === 0) {
+            return PASS;
+        } else if(cases.length === 1) {
+            const a = cases[0];
+            return exhaustive ? a.then : if_(_eqAny(expr, a.values), a.then);
+        } else if(cases.length === 2 && exhaustive) {
+            const a = cases[0], b = cases[1];
+            return if_(_eqAny(expr, a.values), a.then, b.then);
+        }
+        
+        let flags = expr.flags;
+        for(const c of cases) { flags &= c.then.flags; }
+        
         return cases.length === 0 ? PASS
-            : cases.length === 1 && exhaustive ? firstCase
+            : cases.length === 1 && exhaustive ? cases[0].then
             : cases.length <= 2 && cases[0].values.length === 1 ? if_(OP.eq(expr, int(cases[0].values[0])), cases[0].then, cases.length === 2 ? cases[1].then : undefined)
-            : {kind: 'stmt.switch', expr, cases, flags};
+            : {kind: 'stmt.switch', expr, cases, exhaustive, flags};
     }
     export function throw_(message: string): ThrowStmt {
         return {kind: 'stmt.throw', message, flags: NodeFlags.DO_NOTHING & ~NodeFlags.NO_THROWS};
@@ -227,7 +249,7 @@ namespace IR {
         }
         if(then.kind === 'stmt.block' && then.children[then.children.length - 1] === BREAK) {
             const r = block(then.children.slice(0, then.children.length - 1));
-            if(r.flags & NodeFlags.NO_BREAKS) {
+            if((r.flags & NodeFlags.NO_BREAKS) !== 0) {
                 return r;
             }
         }

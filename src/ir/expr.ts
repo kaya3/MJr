@@ -65,7 +65,7 @@ namespace IR {
     
     export function access(left: Expr, right: Expr): ArrayAccessExpr {
         const flags = left.flags & right.flags;
-        return {kind: 'expr.op.access', left, right, flags};
+        return {kind: 'expr.op.binary', op: 'array_access', left, right, flags};
     }
     export function libConstructorCall(className: LibClass, args: readonly Expr[]): CallLibConstructorExpr {
         return {kind: 'expr.op.call.lib.constructor', className, args, flags: _reduceFlags(NodeFlags.NEW_MUT_OBJECT, args)};
@@ -99,7 +99,7 @@ namespace IR {
         return {kind: 'expr.op.ternary', condition, then, otherwise, flags};
     }
     
-    export function binaryOp(op: Op.BinaryOp, left: Expr, right: Expr): Expr {
+    export function binaryOp(op: Op.BinaryOp | 'array_access', left: Expr, right: Expr): Expr {
         switch(op) {
             case 'int_plus':
                 if(left === ZERO) { return right; }

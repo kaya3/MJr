@@ -231,7 +231,17 @@ namespace CodeGen {
                 }, keys.length, 1);
                 out.write('}');
             }],
-            'expr.letin': [0, fail],
+            'expr.letin': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
+                out.write('(');
+                let e: IR.Expr = expr;
+                do {
+                    this.writeAssignExpr(e.decl.name, e.decl.initialiser);
+                    out.write(', ');
+                    e = e.child;
+                } while(e.kind === 'expr.letin');
+                this.writeExpr(e);
+                out.write(')[-1]');
+            }],
             'expr.literal.bool': [Precedence.MAX, (out, expr) => {
                 out.write(expr.value ? 'True' : 'False');
             }],
@@ -247,12 +257,6 @@ namespace CodeGen {
             }],
             'expr.name': [Precedence.MAX, (out, expr) => {
                 out.write(_name(expr.name));
-            }],
-            'expr.op.access': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                out.writeExpr(expr.left, Precedence.ATTR_ACCESS_CALL);
-                out.write('[');
-                out.writeExpr(expr.right);
-                out.write(']');
             }],
             'expr.op.call.lib.constructor': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
                 js.write(`${RUNTIME_LIB_NAME}.${_name(expr.className)}`);
@@ -320,6 +324,8 @@ namespace CodeGen {
                 GE = _cmpOp('>=');
             
             return {
+                array_access: binaryOp(Precedence.ATTR_ACCESS_CALL, '', Precedence.ATTR_ACCESS_CALL, '[', Precedence.MIN, ']'),
+                
                 bool_and: infixOp(Precedence.BOOL_AND, 'and', Associativity.BOTH),
                 bool_or: infixOp(Precedence.BOOL_OR, 'or', Associativity.BOTH),
                 bool_eq: EQ,

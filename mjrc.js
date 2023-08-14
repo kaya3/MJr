@@ -86,6 +86,10 @@ var IR;
         return (expr.flags & 31 /* NodeFlags.NO_SIDE_EFFECTS */) !== 31 /* NodeFlags.NO_SIDE_EFFECTS */;
     }
     IR.exprHasSideEffects = exprHasSideEffects;
+    function exprIsContextIndependent(expr) {
+        return (expr.flags & 64 /* NodeFlags.CONTEXT_INDEPENDENT */) !== 0;
+    }
+    IR.exprIsContextIndependent = exprIsContextIndependent;
     function _reduceFlags(flags, nodes) {
         for (const node of nodes) {
             flags &= node.flags;
@@ -169,7 +173,7 @@ var IR;
     IR.constArray = constArray;
     function access(left, right) {
         const flags = left.flags & right.flags;
-        return { kind: 'expr.op.access', left, right, flags };
+        return { kind: 'expr.op.binary', op: 'array_access', left, right, flags };
     }
     IR.access = access;
     function libConstructorCall(className, args) {
@@ -815,14 +819,39 @@ var IR;
                 }
             }
         }
-        const cases = Array.from(map.values());
-        const flags = IR._reduceFlags(expr.flags, casesByIndex);
-        return cases.length === 0 ? IR.PASS
-            : cases.length === 1 && exhaustive ? firstCase
-                : cases.length <= 2 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, IR.int(cases[0].values[0])), cases[0].then, cases.length === 2 ? cases[1].then : undefined)
-                    : { kind: 'stmt.switch', expr, cases, flags };
+        return switchCases(expr, Array.from(map.values()), exhaustive);
     }
     IR.switch_ = switch_;
+    function _eqAny(expr, values) {
+        return values.length > 1 && values.every(v => v < values.length)
+            ? IR.OP.lt(expr, IR.int(values.length))
+            : values.map(v => IR.OP.eq(expr, IR.int(v))).reduce(IR.OP.or, IR.FALSE);
+    }
+    function switchCases(expr, cases, exhaustive) {
+        if (IR.exprHasSideEffects(expr)) {
+            fail(expr);
+        }
+        if (cases.length === 0) {
+            return IR.PASS;
+        }
+        else if (cases.length === 1) {
+            const a = cases[0];
+            return exhaustive ? a.then : if_(_eqAny(expr, a.values), a.then);
+        }
+        else if (cases.length === 2 && exhaustive) {
+            const a = cases[0], b = cases[1];
+            return if_(_eqAny(expr, a.values), a.then, b.then);
+        }
+        let flags = expr.flags;
+        for (const c of cases) {
+            flags &= c.then.flags;
+        }
+        return cases.length === 0 ? IR.PASS
+            : cases.length === 1 && exhaustive ? cases[0].then
+                : cases.length <= 2 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, IR.int(cases[0].values[0])), cases[0].then, cases.length === 2 ? cases[1].then : undefined)
+                    : { kind: 'stmt.switch', expr, cases, exhaustive, flags };
+    }
+    IR.switchCases = switchCases;
     function throw_(message) {
         return { kind: 'stmt.throw', message, flags: 63 /* NodeFlags.DO_NOTHING */ & ~8 /* NodeFlags.NO_THROWS */ };
     }
@@ -846,7 +875,7 @@ var IR;
         }
         if (then.kind === 'stmt.block' && then.children[then.children.length - 1] === IR.BREAK) {
             const r = block(then.children.slice(0, then.children.length - 1));
-            if (r.flags & 2 /* NodeFlags.NO_BREAKS */) {
+            if ((r.flags & 2 /* NodeFlags.NO_BREAKS */) !== 0) {
                 return r;
             }
         }
@@ -1223,7 +1252,7 @@ var Compiler;
             this.limitVar = IR.NAMES.limit(stmtID);
         }
         compileReset(c) {
-            const init = Compiler.compileExpr(c, this.stmt.limit);
+            const init = c.expr(this.stmt.limit);
             return IR.block([
                 IR.declVar(this.limitVar, IR.INT_TYPE, init, true),
                 this.child.compileReset(c),
@@ -1239,7 +1268,7 @@ var Compiler;
             ]), ifFalse), ifFalse);
         }
         compileTransparent(c, ifTrue) {
-            const init = Compiler.compileExpr(c, this.stmt.limit);
+            const init = c.expr(this.stmt.limit);
             if (init === IR.ONE) {
                 return this.child.compile(c, ifTrue, IR.PASS);
             }
@@ -1946,7 +1975,7 @@ var CodeGen;
         writeExpr(expr, minPrecedence = 0) {
             switch (expr.kind) {
                 case 'expr.letin': {
-                    if (this.writeAssignExpr !== undefined) {
+                    if (this.writeAssignExpr !== undefined && IR.exprIsContextIndependent(expr.decl.initialiser)) {
                         this._toAssign.set(expr.decl.name.name, expr.decl.initialiser);
                         this.writeExpr(expr.child, minPrecedence);
                         return;
@@ -2115,7 +2144,7 @@ var CodeGen;
                 out.write(';');
             },
             'stmt.block': (out, stmt) => {
-                out.write(' {');
+                out.write('{');
                 out.indent();
                 for (const c of stmt.children) {
                     out.writeStmt(c);
@@ -2152,6 +2181,7 @@ var CodeGen;
                 out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
                 out.write(')');
                 out.writeReturnType(stmt.returnType, stmt.yields);
+                out.write(' ');
                 out.writeIndentedBlock(stmt.body);
             },
             'stmt.decl.vars': (out, stmt) => {
@@ -2174,13 +2204,13 @@ var CodeGen;
                     out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`; ${i} >= `);
                     out.writeExpr(low, 9 /* Precedence.CMP */);
-                    out.write(`; --${i})`);
+                    out.write(`; --${i}) `);
                 }
                 else {
                     out.writeExpr(low);
                     out.write(`; ${i} < `);
                     out.writeExpr(high, 9 /* Precedence.CMP */);
-                    out.write(`; ++${i})`);
+                    out.write(`; ++${i}) `);
                 }
                 out.writeIndentedBlock(body);
             },
@@ -2190,18 +2220,15 @@ var CodeGen;
                 while (true) {
                     out.write('if(');
                     out.writeExpr(cur.condition);
-                    out.write(')');
+                    out.write(') ');
                     // intented block has braces, avoiding parsing hazard of `if(...) if(...) ... else ...`
                     out.writeIndentedBlock(cur.then);
                     cur = cur.otherwise;
                     if (cur === undefined) {
                         break;
                     }
-                    out.write(' else');
-                    if (cur.kind === 'stmt.if') {
-                        out.write(' ');
-                    }
-                    else {
+                    out.write(' else ');
+                    if (cur.kind !== 'stmt.if') {
                         out.writeIndentedBlock(cur);
                         break;
                     }
@@ -2262,15 +2289,8 @@ var CodeGen;
                 out.beginLine();
                 out.write('while(');
                 out.writeExpr(stmt.condition);
-                out.write(')');
-                if (then.kind === 'stmt.switch') {
-                    // main loop is like `while(...) switch(...) { ... }`, don't need two levels of indentation for switch body
-                    out.write(' ');
-                    out.writeSwitch(then);
-                }
-                else {
-                    out.writeIndentedBlock(then);
-                }
+                out.write(') ');
+                out.writeIndentedBlock(then);
             },
             'stmt.yield': (out, stmt) => {
                 out.beginLine();
@@ -2283,7 +2303,7 @@ var CodeGen;
             },
         };
         EXPR_WRITE_FUNCS = {
-            'expr.array.const': [18 /* Precedence.MAX */, (out, expr) => {
+            'expr.array.const': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
                     const { from } = expr;
                     const bits = CodeGen.uintBitsFours(expr.domainSize);
                     const s = CodeGen.arrayToHex(from, bits);
@@ -2291,7 +2311,7 @@ var CodeGen;
                     out.writeLongStringLiteral(s, expr.rowLength * s.length / from.length);
                     out.write(')');
                 }],
-            'expr.array.new': [18 /* Precedence.MAX */, (out, expr) => {
+            'expr.array.new': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
                     const bits = CodeGen.uintBits(expr.domainSize);
                     out.write(`new Uint${bits}Array(`);
                     out.writeExpr(expr.length);
@@ -2310,7 +2330,17 @@ var CodeGen;
                     }, keys.length, 1);
                     out.write('}');
                 }],
-            'expr.letin': [0, fail],
+            'expr.letin': [18 /* Precedence.MAX */, (out, expr) => {
+                    out.write('(');
+                    let e = expr;
+                    do {
+                        this.writeAssignExpr(e.decl.name, e.decl.initialiser);
+                        out.write(', ');
+                        e = e.child;
+                    } while (e.kind === 'expr.letin');
+                    this.writeExpr(e);
+                    out.write(')');
+                }],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
             'expr.literal.int': _literal,
@@ -2320,12 +2350,6 @@ var CodeGen;
                 }],
             'expr.name': [18 /* Precedence.MAX */, (out, expr) => {
                     out.write(expr.name);
-                }],
-            'expr.op.access': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    out.writeExpr(expr.left, 17 /* Precedence.ATTR_ACCESS_CALL */);
-                    out.write('[');
-                    out.writeExpr(expr.right);
-                    out.write(']');
                 }],
             'expr.op.call.lib.constructor': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
                     out.write(`new ${RUNTIME_LIB_NAME}.${expr.className}`);
@@ -2353,7 +2377,7 @@ var CodeGen;
                 }],
             'expr.param': [3 /* Precedence.NULL_COALESCE */, (out, expr) => {
                     out.write(`params?.${expr.name} ?? `);
-                    out.writeExpr(expr.otherwise, 3 /* Precedence.NULL_COALESCE */ + 1);
+                    out.writeExpr(expr.otherwise, 3 /* Precedence.NULL_COALESCE */);
                 }],
             'expr.op.ternary': [2 /* Precedence.TERNARY */, (out, expr) => {
                     out.writeExpr(expr.condition, 2 /* Precedence.TERNARY */ + 1);
@@ -2366,13 +2390,14 @@ var CodeGen;
         BINARY_OPS = (function () {
             function _intOp(p, op) {
                 // all of these ops are left-associative
-                return CodeGen.binaryOp(5 /* Precedence.BITWISE_OR */, '(', p, ` ${op} `, p + 1, ') | 0');
+                return CodeGen.binaryOp(14 /* Precedence.BITWISE_NOT */, '~~(', p, ` ${op} `, p + 1, ')');
             }
             function _func(name) {
                 return CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, `${name}(`, 0 /* Precedence.MIN */, ', ', 0 /* Precedence.MIN */, ')');
             }
             const PLUS = CodeGen.infixOp(11 /* Precedence.PLUS_MINUS */, '+', 3 /* Associativity.BOTH */), MINUS = CodeGen.infixOp(11 /* Precedence.PLUS_MINUS */, '-'), EQ = CodeGen.infixOp(8 /* Precedence.EQ */, '==='), NE = CodeGen.infixOp(8 /* Precedence.EQ */, '!=='), LT = CodeGen.infixOp(9 /* Precedence.CMP */, '<'), LE = CodeGen.infixOp(9 /* Precedence.CMP */, '<='), GT = CodeGen.infixOp(9 /* Precedence.CMP */, '>'), GE = CodeGen.infixOp(9 /* Precedence.CMP */, '>=');
             return {
+                array_access: CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, '', 17 /* Precedence.ATTR_ACCESS_CALL */, '[', 0 /* Precedence.MIN */, ']'),
                 bool_and: CodeGen.infixOp(4 /* Precedence.BOOL_AND */, '&&', 3 /* Associativity.BOTH */),
                 bool_or: CodeGen.infixOp(3 /* Precedence.BOOL_OR */, '||', 3 /* Associativity.BOTH */),
                 bool_eq: EQ,
@@ -2467,9 +2492,9 @@ var CodeGen;
             this.write(') {');
             this.indent();
             for (const c of stmt.cases) {
+                this.beginLine();
                 for (const value of c.values) {
-                    this.beginLine();
-                    this.write(`case ${value}:`);
+                    this.write(`case ${value}: `);
                 }
                 this.writeIndentedBlock(IR.block([c.then, IR.BREAK]));
             }
@@ -2780,7 +2805,17 @@ var CodeGen;
                     }, keys.length, 1);
                     out.write('}');
                 }],
-            'expr.letin': [0, fail],
+            'expr.letin': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
+                    out.write('(');
+                    let e = expr;
+                    do {
+                        this.writeAssignExpr(e.decl.name, e.decl.initialiser);
+                        out.write(', ');
+                        e = e.child;
+                    } while (e.kind === 'expr.letin');
+                    this.writeExpr(e);
+                    out.write(')[-1]');
+                }],
             'expr.literal.bool': [18 /* Precedence.MAX */, (out, expr) => {
                     out.write(expr.value ? 'True' : 'False');
                 }],
@@ -2798,12 +2833,6 @@ var CodeGen;
                 }],
             'expr.name': [18 /* Precedence.MAX */, (out, expr) => {
                     out.write(_name(expr.name));
-                }],
-            'expr.op.access': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    out.writeExpr(expr.left, 17 /* Precedence.ATTR_ACCESS_CALL */);
-                    out.write('[');
-                    out.writeExpr(expr.right);
-                    out.write(']');
                 }],
             'expr.op.call.lib.constructor': [17 /* Precedence.ATTR_ACCESS_CALL */, (js, expr) => {
                     js.write(`${RUNTIME_LIB_NAME}.${_name(expr.className)}`);
@@ -2857,6 +2886,7 @@ var CodeGen;
             // PLUS and MULT are not strictly right-associative for floats
             const PLUS = CodeGen.infixOp(12 /* Precedence.PLUS_MINUS */, '+'), MINUS = CodeGen.infixOp(12 /* Precedence.PLUS_MINUS */, '-'), MULT = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '*'), DIV = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '/'), FLOORDIV = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '//'), MOD = CodeGen.infixOp(13 /* Precedence.MULT_DIV_MOD */, '%'), EQ = _cmpOp('=='), NE = _cmpOp('!='), LT = _cmpOp('<'), LE = _cmpOp('<='), GT = _cmpOp('>'), GE = _cmpOp('>=');
             return {
+                array_access: CodeGen.binaryOp(17 /* Precedence.ATTR_ACCESS_CALL */, '', 17 /* Precedence.ATTR_ACCESS_CALL */, '[', 0 /* Precedence.MIN */, ']'),
                 bool_and: CodeGen.infixOp(5 /* Precedence.BOOL_AND */, 'and', 3 /* Associativity.BOTH */),
                 bool_or: CodeGen.infixOp(4 /* Precedence.BOOL_OR */, 'or', 3 /* Associativity.BOTH */),
                 bool_eq: EQ,
@@ -7283,8 +7313,6 @@ var IR;
                 return IR.dict(node.type, node.values.map(v => replace(v, from, to)));
             case 'expr.letin':
                 return IR.letIn(_replaceVarDecl(node.decl, from, to), replace(node.child, from, to));
-            case 'expr.op.access':
-                return IR.access(replace(node.left, from, to), replace(node.right, from, to));
             case 'expr.op.binary':
                 const left = replace(node.left, from, to), right = replace(node.right, from, to);
                 switch (node.op) {
@@ -7352,7 +7380,7 @@ var IR;
             case 'stmt.return':
                 return IR.return_(node.expr && replace(node.expr, from, to));
             case 'stmt.switch':
-                throw new Error();
+                return IR.switchCases(replace(node.expr, from, to), node.cases.map(c => ({ values: c.values, then: replace(c.then, from, to) })), node.exhaustive);
             case 'stmt.while':
                 return IR.while_(replace(node.condition, from, to), replace(node.then, from, to));
             case 'stmt.yield':

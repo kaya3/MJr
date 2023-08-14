@@ -32,7 +32,7 @@ namespace IR {
     export interface PassStmt extends _StmtNode<'pass', {}> {}
     export interface PreambleStmt extends _StmtNode<'preamble', {paramTypes: DictType, emitChecks: boolean, libVersion: number, opsUsed: readonly Op[]}> {}
     export interface ReturnStmt extends _StmtNode<'return', {expr: Expr | undefined}> {}
-    export interface SwitchStmt extends _StmtNode<'switch', {expr: Expr, cases: readonly Case[]}> {}
+    export interface SwitchStmt extends _StmtNode<'switch', {expr: Expr, cases: readonly Case[], exhaustive: boolean}> {}
     export interface ThrowStmt extends _StmtNode<'throw', {message: string}> {}
     export interface WhileStmt extends _StmtNode<'while', {condition: Expr, then: Stmt}> {}
     export interface YieldStmt extends _StmtNode<'yield', {expr: Expr | undefined}> {}
@@ -40,7 +40,7 @@ namespace IR {
     export type Expr = AttrExpr | LetInExpr | LiteralExpr | NameExpr | ObjectExpr | OpExpr | ParamExpr
     
     export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
-    export type BinaryOp = Op.BinaryOp | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
+    export type BinaryOp = Op.BinaryOp | 'array_access' | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
     export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz' | 'float_log2'
     export type Op = BinaryOp | UnaryOp
     
@@ -63,7 +63,7 @@ namespace IR {
     export interface NewArrayExpr extends _ExprNode<'array.new', {domainSize: number, length: Expr}> {}
     
     export type OpExpr = ArrayAccessExpr | BinaryOpExpr | CallLibExpr | CallLocalExpr | TernaryExpr | UnaryOpExpr
-    export interface ArrayAccessExpr extends _ExprNode<'op.access', {left: Expr, right: Expr}> {}
+    export interface ArrayAccessExpr extends _ExprNode<'op.binary', {op: 'array_access', left: Expr, right: Expr}> {}
     export interface BinaryOpExpr extends _ExprNode<'op.binary', {op: BinaryOp, left: Expr, right: Expr}> {}
     export interface CallLocalExpr extends _ExprNode<'op.call.local', {name: NameExpr, args: readonly Expr[]}> {}
     export interface TernaryExpr extends _ExprNode<'op.ternary', {condition: Expr, then: Expr, otherwise: Expr}> {}
@@ -147,6 +147,10 @@ namespace IR {
     
     export function exprHasSideEffects(expr: Expr): boolean {
         return (expr.flags & NodeFlags.NO_SIDE_EFFECTS) !== NodeFlags.NO_SIDE_EFFECTS;
+    }
+    
+    export function exprIsContextIndependent(expr: Expr): boolean {
+        return (expr.flags & NodeFlags.CONTEXT_INDEPENDENT) !== 0;
     }
     
     export function _reduceFlags(flags: NodeFlags, nodes: readonly (Stmt | Expr)[]): NodeFlags {

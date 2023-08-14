@@ -1217,6 +1217,14 @@ var Compiler;
                 isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
             ]);
         }
+        compileTransparent(c, ifTrue) {
+            const ifTrueContinue = IR.block([ifTrue, IR.CONTINUE]);
+            return IR.while_(IR.TRUE, IR.block([
+                c.checkMaxIterations,
+                ...this.children.map(child => child.compile(c, ifTrueContinue, IR.PASS)),
+                IR.BREAK,
+            ]));
+        }
     }
     Compiler.Stmt_Markov = Stmt_Markov;
     class Stmt_Sequence extends Stmt_Block {
@@ -1229,7 +1237,7 @@ var Compiler;
                     : child.compileReset(c);
             }
             function _compileChild(child) {
-                return child instanceof Stmt_Limit
+                return child instanceof Stmt_Markov || child instanceof Stmt_Limit
                     ? child.compileTransparent(c, setFlag)
                     : IR.while_(IR.TRUE, IR.block([
                         c.checkMaxIterations,

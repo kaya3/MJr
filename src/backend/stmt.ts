@@ -100,6 +100,15 @@ namespace Compiler {
                 isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
             ]);
         }
+        
+        compileTransparent(c: Compiler, ifTrue: IR.Stmt): IR.Stmt {
+            const ifTrueContinue = IR.block([ifTrue, IR.CONTINUE]);
+            return IR.while_(IR.TRUE, IR.block([
+                c.checkMaxIterations,
+                ...this.children.map(child => child.compile(c, ifTrueContinue, IR.PASS)),
+                IR.BREAK,
+            ]));
+        }
     }
     
     export class Stmt_Sequence extends Stmt_Block<ASG.SequenceStmt> {
@@ -117,7 +126,7 @@ namespace Compiler {
             }
             
             function _compileChild(child: StmtCompiler): IR.Stmt {
-                return child instanceof Stmt_Limit
+                return child instanceof Stmt_Markov || child instanceof Stmt_Limit
                     ? child.compileTransparent(c, setFlag)
                     : IR.while_(IR.TRUE, IR.block([
                         c.checkMaxIterations,

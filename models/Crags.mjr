@@ -23,12 +23,11 @@ one: [WD/DW] -> [.W/..]
 
 # replace small sections of wall with boulders
 sequence:
-    sequence:
-        once: [D] -> [A]
-        @limit minSize - 2
-        one: [AD] -> [.A]
-        one: [AD] -> [BB]
-        one: [B[AD]] -> [.B]
+    once: [D] -> [A]
+    @limit minSize - 2
+    one: [AD] -> [.A]
+    one: [AD] -> [BB]
+    one: [B[AD]] -> [.B]
 
 # randomly remove some boulders
 @limit 1

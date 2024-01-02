@@ -1,89 +1,81 @@
-///<reference path="names.ts"/>
+///<reference path="factory.ts"/>
 
 namespace IR {
-    const {
-        MASK, MASK_CLEAR, MASK_HASNT, MASK_SET,
-        WIDTH, HEIGHT,
-        AT_X, AT_Y,
-        G, I, N, P, S,
-    } = NAMES;
+    function _maskN(length: Expr): Expr {
+        return OP.divConstant(OP.addConstant(length, 31), 32);
+    }
     
     export class Mask {
-        private scale: number = 0;
+        public readonly arr: IR.MutableArray;
+        private readonly clearFunc: IR.ConstNameExpr;
+        private readonly setFunc: IR.ConstNameExpr;
+        private readonly hasntFunc: IR.ConstNameExpr;
+        private readonly capacity: IR.DeferredExpr;
         
-        public readonly name = MASK;
-        
-        private maskN(length: Expr): Expr {
-            return OP.divConstant(OP.addConstant(length, 31), 32);
+        public constructor(private readonly ir: Factory) {
+            const capacity = this.capacity = ir.deferredExpr('Mask.capacity');
+            this.arr = makeMutableArray(ir, 'mask', capacity, INT32_ARRAY_TYPE.domainSize);
+            this.clearFunc = ir.func('mask_clear');
+            this.setFunc = ir.func('mask_set');
+            this.hasntFunc = ir.func('mask_hasnt');
         }
         
-        public use(g: Grid) {
-            this.scale = Math.max(this.scale, g.grid.scaleX * g.grid.scaleY);
-        }
-        
-        public declare(): Stmt[] {
-            if(this.scale === 0) { return []; }
+        public declare(capacity: Expr): StmtLevelDecl {
+            const {ir, arr} = this;
+            const n = ir.paramDecl('n', INT_TYPE),
+                grid = ir.paramDecl('g', GRID_DATA_ARRAY_TYPE),
+                bitIndex = ir.paramDecl('j', INT_TYPE),
+                setColour = ir.paramDecl('s', BYTE_TYPE);
+            const index = OP.divConstant(bitIndex.name, 32);
+            const bit = OP.lshift(ONE, OP.modConstant(bitIndex.name, 32));
             
-            const {name} = this;
-            const arr = makeMutableArray(
-                name,
-                this.maskN(OP.multConstant(OP.mult(WIDTH, HEIGHT), this.scale)),
-                INT32_ARRAY_TYPE.domainSize,
-            );
-            const index = OP.divConstant(I, 32);
-            const bit = OP.lshift(ONE, OP.modConstant(I, 32));
-            return [
-                declVars(arr.decl),
-                declFunc(
-                    MASK_CLEAR,
+            return multiDecl([
+                replaceInDecl(arr.decl, this.capacity, _maskN(capacity)),
+                funcDecl(
+                    this.clearFunc,
                     undefined,
-                    [N],
-                    [INT_TYPE],
+                    [n],
                     VOID_TYPE,
-                    block([
-                        assign(N, '=', this.maskN(N)),
-                        forRange(I, ZERO, N, [arr.set(I, '=', ZERO)]),
-                    ]),
+                    ir.withConst('len', INT_TYPE, _maskN(n.name), len =>
+                        ir.forRange('i', ZERO, len, i => arr.set(i, '=', ZERO)),
+                    ),
                 ),
-                declFunc(
-                    MASK_SET,
+                funcDecl(
+                    this.setFunc,
                     undefined,
-                    [G, I, S],
-                    [GRID_DATA_ARRAY_TYPE, INT_TYPE, BYTE_TYPE],
+                    [grid, bitIndex, setColour],
                     VOID_TYPE,
-                    block([
-                        assign(access(G, I), '=', S),
+                    seq([
+                        assign(access(grid.name, bitIndex.name), '=', setColour.name),
                         arr.set(index, '|=', bit),
                     ]),
                 ),
-                declFunc(
-                    MASK_HASNT,
+                funcDecl(
+                    this.hasntFunc,
                     undefined,
-                    [I],
-                    [INT_TYPE],
+                    [bitIndex],
                     BOOL_TYPE,
                     return_(OP.eq(OP.bitwiseAnd(arr.get(index), bit), ZERO)),
                 ),
-                BLANK_LINE,
-            ];
+            ]);
         }
         
         public clear(g: Grid): Stmt {
-            return localCallStmt(MASK_CLEAR, [g.n]);
+            return localCallStmt(this.clearFunc, [g.n]);
         }
         
         public set(g: Grid, index: Expr, colour: Expr): Stmt {
-            return localCallStmt(MASK_SET, [g.data.name, index, colour]);
+            return localCallStmt(this.setFunc, [g.data.array, index, colour]);
         }
         
         public hasnt(index: Expr): Expr {
-            return localCall(MASK_HASNT, [index], true);
+            return localCall(this.hasntFunc, [index], true);
         }
         
-        public patternFits(g: Grid, patternExpr: ASG.Prop<'pattern.out'>): Expr {
-            return patternExpr.kind === 'expr.constant'
-                ? patternExpr.constant.value.map((dx, dy) => this.hasnt(g.relativeIndex(dx, dy))).reduce(OP.and)
-                : libMethodCall('Pattern', 'fitsMask', P, [g.useObj(), this.name, AT_X, AT_Y]);
+        public patternFits(g: Grid, p: PatternResult, at: Location): Expr {
+            return p.constant !== undefined
+                ? OP.all(p.constant, (dx, dy) => this.hasnt(g.relativeIndex(at, dx, dy)))
+                : libMethodCall('Pattern', 'fitsMask', p.expr, [g.obj, this.arr.array, at.x, at.y]);
         }
     }
 }

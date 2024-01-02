@@ -1,47 +1,39 @@
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 ///<reference path="stmt.ts"/>
 
 namespace Compiler {
     const {
-        NAMES: {
-            AT,
-            I, P,
-            MATCH, ANY,
-        },
         OP,
     } = IR;
     
-    function _exprIs(expr: ASG.Expression, flags: ASG.ExprFlags): boolean {
-        return (expr.flags & flags) === flags;
-    }
-    
     export class Stmt_BasicAllPrl extends StmtCompiler<ASG.BasicRulesStmt> {
-        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const {stmt} = this;
             const {rewrites} = stmt;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const k = rewrites.length;
-            const out: IR.Stmt[] = [];
             
-            const conditionIsSameEverywhere = rewrites.map(rule =>
-                _exprIs(rule.condition, ASG.ExprFlags.SAME_EVERYWHERE)
-                && rule.to.kind === 'expr.constant'
-            );
-            const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, ASG.ExprFlags.SAME_EVERYWHERE));
+            if(c.config.animate) {
+                ifTrue = IR.seq([g.yield_(), ifTrue]);
+            }
+            
+            const outPatternIsSameEverywhere = rewrites.map(rule => ASG.exprIsSameEverywhere(rule.to));
             
             // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, ASG.ExprFlags.GRID_INDEPENDENT));
+            const patternIsGridDependent = rewrites.map(rule => !ASG.exprIsGridIndependent(rule.to));
+            
             rewrites.forEach((rule, i) => {
                 if(patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
                     c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
                 }
             });
             
-            const matches = c.useTempArray(k);
+            const matches = c.useTempArray(g.grid.scaleX * g.grid.scaleY * k);
             
-            const useMask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
+            const mask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
+                // conservative estimate of whether rewrites can overlap; TODO: check this more accurately
                 if(rule.to.kind === 'expr.constant') {
                     const {value} = rule.to.constant;
                     return value.effectiveWidth > 1 || value.effectiveHeight > 1;
@@ -49,108 +41,111 @@ namespace Compiler {
                     const {type} = rule.to;
                     return type.width > 1 || type.height > 1;
                 }
-            }));
-            if(useMask) { c.mask.use(g); }
-            const shuffle = useMask || !stmt.commutative;
+            })) ? c.useMask(g) : undefined;
             
-            out.push(IR.declVars(rewrites.flatMap((rule, i) =>
-                !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
-                ? [{name: IR.NAMES.tmpPattern(i), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to)}]
-                : []
-            )));
+            const shuffle = mask !== undefined || !stmt.commutative;
             
-            const firstPassConditions = rewrites.map((rule, i) => writeCondition(
-                c,
-                g,
-                outPatternIsSameEverywhere[i] ? rule.to : undefined,
-                IR.NAMES.tmpPattern(i),
-                rule.condition,
-            ));
-            const secondPassConditions = rewrites.map((rule, i) => writeCondition(
-                c,
-                g,
-                outPatternIsSameEverywhere[i] ? undefined : rule.to,
-                P,
-                undefined,
-            ));
+            // tmpPatterns only used when
+            const unusedPositionCtx = ctx.withPosition({
+                index: IR.unusedExpr('at.index'),
+                x: IR.unusedExpr('at.x'),
+                y: IR.unusedExpr('at.y'),
+            });
+            const tmpPatterns = rewrites.map(rule =>
+                c.ir.constDecl('p', IR.PATTERN_TYPE, unusedPositionCtx.expr(rule.to))
+            );
             
-            // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
+            // conditions which must be checked during writing
+            const duringWritesCondition = (ctx: RuleContext, rule: ASG.RewriteRule, p: IR.PatternResult, i: number) =>
+                patternHasEffect(ctx, g, rule.from, p);
+            
+            // if any duringWritesCondition do more than just check the mask, use a flag for whether any rewrites were done
             // but no flag needed if this statement isn't branching anyway
-            const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
+            const flag = (ifTrue !== IR.PASS || ifFalse !== IR.PASS) && rewrites.some(rule => rule.to.kind !== 'expr.constant')
+                ? c.ir.flag()
+                : undefined;
             
-            // optimisation for common case: all rewrites are unconditional and definitely effective
-            if(firstPassConditions.every(c => c === IR.TRUE)) {
+            const out: IR.Stmt[] = [];
+            
+            // optimisation for common case: all rewrites are unconditional
+            const allUnconditional = rewrites.every(rule => ctx.isTautology(rule.condition));
+            
+            if(allUnconditional) {
                 const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-                if(shuffle) {
-                    out.push(
-                        matches.declareCount(IR.ZERO),
-                        sampler.shuffleInto(matches),
-                    );
-                } else {
-                    out.push(
-                        sampler.copyInto(matches.array),
-                        matches.declareCount(sampler.count),
-                    );
-                }
+                out.push(
+                    shuffle ? sampler.shuffleInto(c.prng, matches) : sampler.copyInto(matches),
+                    matches.declareCount(sampler.count),
+                );
             } else {
                 out.push(matches.declareCount(IR.ZERO));
                 for(let i = 0; i < k; ++i) {
-                    const rule = rewrites[i];
-                    const sampler = g.makeSampler([rule.from]);
-                    const condition = firstPassConditions[i];
-                    const match = OP.multAddConstant(AT, k, IR.int(i));
+                    const rule = rewrites[i],
+                        sampler = g.makeSampler([rule.from]);
                     
                     out.push(
                         // if condition is same-everywhere, then we only need to check it once for all matches of this rule
-                        conditionIsSameEverywhere[i]
-                        ? IR.if_(condition, shuffle
-                            ? sampler.shuffleIntoOffset(matches, k, i)
-                            : sampler.copyIntoOffset(matches.array, matches.count, k, i)
+                        ASG.exprIsSameEverywhere(rule.condition)
+                        ? IR.if_(
+                            ctx.expr(rule.condition),
+                            shuffle ? sampler.shuffleIntoOffset(c.prng, matches, k, i) : sampler.copyIntoOffset(matches, matches.count, k, i)
                         )
                         // otherwise, need to check the condition separately for each match
-                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? matches.insertShuffled(match) : matches.push(match)))])
+                        : sampler.forEach(at => {
+                            const match = OP.multAddConstant(at.index, k, IR.int(i));
+                            return IR.if_(
+                                ctx.withPosition(at).expr(rule.condition),
+                                shuffle ? matches.insertShuffled(c.prng, match) : matches.push(match),
+                            );
+                        })
                     );
                 }
             }
             
-            const doWrites = rewrites.map((rule, i) => IR.block([
-                outPatternIsConstant[i] ? IR.PASS : IR.declVar(
-                    P,
-                    IR.PATTERN_TYPE,
-                    // TODO: `c.expr(rule.to)` is only correct when `rule.to` is grid-independent (see above)
-                    outPatternIsSameEverywhere[i] ? IR.NAMES.tmpPattern(i) : c.expr(rule.to),
-                ),
-                IR.if_(
+            const buildCases = (ctx: RuleContext) => rewrites.map((rule, i) => {
+                const buildCase = (p: IR.PatternResult) => IR.if_(
                     OP.and(
-                        secondPassConditions[i],
-                        useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE,
+                        duringWritesCondition(ctx, rule, p, i),
+                        mask !== undefined ? mask.patternFits(g, p, ctx.at) : IR.TRUE,
                     ),
-                    doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false),
-                ),
-            ]));
-            
-            if(c.config.animate) {
-                ifChanged = IR.block([g.yield_(), ifChanged]);
-            }
-            
-            out.push(
-                useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS,
-                IR.if_(
-                    matches.isNotEmpty,
-                    IR.block([
-                        useMask ? c.mask.clear(g) : IR.PASS,
-                        IR.forRange(I, IR.ZERO, matches.count, [
-                            IR.declVar(MATCH, IR.INT_TYPE, matches.get(I)),
-                            g.declareAtIndex(OP.divConstant(MATCH, k)),
-                            IR.switch_(OP.modConstant(MATCH, k), doWrites),
-                        ]),
-                        useFlag ? IR.PASS : ifChanged,
+                    IR.seq([
+                        doWrite(ctx, g, rule.from, p, mask, true, false),
+                        flag !== undefined ? flag.set : IR.PASS,
                     ]),
-                    useFlag ? undefined : then,
-                ),
-                useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS,
+                );
+                
+                return rule.to.kind === 'expr.constant'
+                    ? buildCase({expr: IR.unusedExpr('constant out pattern'), constant: rule.to.constant.value})
+                    : outPatternIsSameEverywhere[i]
+                    ? buildCase({expr: tmpPatterns[i].name, constant: undefined})
+                    : ctx.usePattern(rule.to, buildCase);
+            });
+            
+            const doMain = IR.if_(
+                matches.isNotEmpty,
+                IR.seq([
+                    mask !== undefined ? mask.clear(g) : IR.PASS,
+                    c.ir.forRange('i', IR.ZERO, matches.count, i =>
+                        c.ir.withConst('match', IR.INT_TYPE, matches.get(i), match =>
+                            g.declareAtIndex(OP.divConstant(match, k), at =>
+                                IR.switch_(OP.modConstant(match, k), buildCases(ctx.withPosition(at))),
+                            ),
+                        ),
+                    ),
+                    flag !== undefined ? IR.PASS : ifTrue,
+                ]),
+                flag !== undefined ? undefined : ifFalse,
             );
-            return IR.block(out);
+            out.push(flag !== undefined
+                ? IR.withDecl(flag.decl, IR.seq([
+                    doMain,
+                    IR.if_(flag.check, ifTrue, ifFalse),
+                ]))
+                : doMain,
+            );
+            return [
+                IR.withDecls(tmpPatterns, IR.seq(out)),
+                ctx,
+            ];
         }
     }
 }

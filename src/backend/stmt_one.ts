@@ -1,56 +1,50 @@
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 
 namespace Compiler {
     const {
-        NAMES: {
-            P,
-            ANY,
-        },
         OP,
     } = IR;
     
     export class Stmt_BasicOne extends StmtCompiler<ASG.BasicRulesStmt> {
-        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const {rewrites} = this.stmt;
+            const c = ctx.c;
             const g = c.grids[this.stmt.inGrid];
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
             
-            const writeConditions = rewrites.map(rule => writeCondition(c, g, rule.to, P, rule.condition));
-            
             // optimisation for common case: all rewrites are unconditional and definitely effective
-            const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
+            const allUnconditionalAndEffective = rewrites.every(rule =>
+                rule.to.kind === 'expr.constant'
+                && PatternTree.isDisjoint(rule.from, rule.to.constant.value) && ctx.isTautology(rule.condition),
+            );
             
-            const cases = rewrites.map((rule, i) => IR.block([
-                rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
-                IR.if_(
-                    writeConditions[i],
-                    doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate),
-                ),
-            ]));
-            
-            if(allUnconditionalAndEffective) {
-                return IR.if_(
-                    sampler.isNotEmpty,
-                    IR.block([
-                        sampler.sampleWithReplacement(cases),
-                        ifChanged,
-                    ]),
-                    then,
-                );
-            } else {
-                const matches = c.useTempArray(rewrites.length);
-                return IR.block([
-                    sampler.beginSamplingWithoutReplacement(),
-                    matches.declareCount(sampler.count),
-                    IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                    IR.while_(
-                        OP.and(matches.isNotEmpty, OP.not(ANY)),
-                        sampler.sampleWithoutReplacement(cases, matches.count),
+            const buildCases = (at: IR.Location, ifT: IR.Stmt, ifF: IR.Stmt) => {
+                const ruleCtx = ctx.withPosition(at);
+                return rewrites.map(rule => ruleCtx.usePattern(rule.to, p =>
+                    IR.if_(
+                        writeCondition(ruleCtx, g, rule.from, p, rule.condition),
+                        IR.seq([
+                            doWrite(ruleCtx, g, rule.from, p, undefined, true, true),
+                            ifT,
+                        ]),
+                        ifF,
                     ),
-                    IR.if_(ANY, ifChanged, then),
-                ]);
-            }
+                ));
+            };
+            
+            const r = allUnconditionalAndEffective
+                ? IR.if_(
+                    sampler.isNotEmpty,
+                    IR.seq([
+                        sampler.sampleWithReplacement(c.prng, at => buildCases(at, IR.PASS, IR.PASS)),
+                        ifTrue,
+                    ]),
+                    ifFalse,
+                )
+                : sampler.sampleWithoutReplacement(c.prng, buildCases, ifTrue, ifFalse);
+            
+            return [r, ctx];
         }
     }
 }

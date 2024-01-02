@@ -42,7 +42,9 @@ function dedent(src: string): string {
     const lines = src.split('\n');
     const firstLine = lines.find(line => line.trim().length > 0) ?? fail();
     const initialIndent = firstLine.split(/[^\s]/, 2)[0];
-    return lines.map(line => line.replace(initialIndent, '')).join('\n');
+    return lines.map(line => line.replace(initialIndent, ''))
+        .join('\n')
+        .trim();
 }
 
 const Benchmark = {
@@ -303,7 +305,13 @@ Test.runAll = (): void => {
                 continue;
             }
             
+            const failSrcElem = document.createElement('pre');
+            failSrcElem.className = 'src';
+            failSrcElem.innerText = test.src;
+            rowElem.appendChild(failSrcElem);
+            
             const failInfoElem = document.createElement('pre');
+            failInfoElem.className = 'err';
             rowElem.appendChild(failInfoElem);
             switch(r.result) {
                 case 'fail.assert':

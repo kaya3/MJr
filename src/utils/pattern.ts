@@ -136,6 +136,11 @@ namespace PatternTree {
         return p.kind === 'leaf' || p.kind === 'top';
     }
     
+    export function isDisjoint(p: PatternTree, q: Pattern): boolean {
+        // double negation here due to and/or patterns
+        return !matches(p, p => !p.isDisjoint(q));
+    }
+    
     export function rotate(p: PatternTree): PatternTree {
         switch(p.kind) {
             case 'leaf':
@@ -346,6 +351,10 @@ class Pattern extends MJr.Pattern {
         this.kind = pattern.every(p => p === PatternValue.WILDCARD) ? 'top' : 'leaf';
     }
     
+    public canBe(dx: number, dy: number, c: number): boolean {
+        return ISet.has(this.masks[dx + dy * this.width], c);
+    }
+    
     /**
      * Calls the given function for each non-wildcard, non-union symbol in this
      * pattern.
@@ -373,5 +382,9 @@ class Pattern extends MJr.Pattern {
     
     public some(f: (dx: number, dy: number, c: number) => boolean): boolean {
         return !this.every((dx, dy, c) => !f(dx, dy, c));
+    }
+    
+    public isDisjoint(other: Pattern): boolean {
+        return this.masks.some((mask, i) => ISet.isDisjoint(mask, other.masks[i]));
     }
 }

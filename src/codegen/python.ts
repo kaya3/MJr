@@ -4,9 +4,9 @@ namespace CodeGen {
     const RUNTIME_LIB_NAME = 'MJr';
     
     // https://docs.python.org/3/reference/lexical_analysis.html#keywords
-    const PYTHON_KEYWORDS: readonly string[] = 'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' ');
+    const PYTHON_KEYWORDS = `_ False None True and as assert async await break case class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try while with yield`;
     
-    // operator precedences from https://docs.python.org/3/reference/expressions.html#operator-precedence
+    // https://docs.python.org/3/reference/expressions.html#operator-precedence
     const enum Precedence {
         MAX = 18,
         ATTR_ACCESS_CALL = 17,
@@ -32,6 +32,10 @@ namespace CodeGen {
     }] as const;
     
     export class Python extends Base {
+        readonly RESERVED_WORDS: string = `${RUNTIME_LIB_NAME} ${PYTHON_KEYWORDS} Error Fraction array float int32 int_ctz math print range str`;
+        protected readonly LBLOCK = ":";
+        protected readonly RBLOCK = "";
+        
         public constructor(config: Compiler.Config) {
             super(config);
             if(config.indentSpaces === 0) { this.diagnostics.configError(`Python output requires 'indentSpaces' to be non-zero`); }
@@ -45,15 +49,6 @@ namespace CodeGen {
                 out.write(` ${op} `);
                 out.writeExpr(right);
             },
-            'stmt.block': (out, stmt) => {
-                out.write(':');
-                out.indent();
-                for(const c of stmt.children) { out.writeStmt(c); }
-                out.dedent();
-            },
-            'stmt.blankline': (out, stmt) => {
-                out.beginLine();
-            },
             'stmt.break': (out, stmt) => {
                 out.beginLine();
                 out.write('break');
@@ -66,19 +61,8 @@ namespace CodeGen {
                 out.beginLine();
                 out.write('continue');
             },
-            'stmt.decl.func': (out, stmt) => {
-                const {params, paramTypes} = stmt;
-                out.beginLine();
-                out.write('def ');
-                out.writeExpr(stmt.name);
-                out.write('(');
-                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
-                out.write(')');
-                out.writeReturnType(stmt.returnType);
-                out.writeIndentedBlock(stmt.body);
-            },
-            'stmt.decl.vars': (out, stmt) => {
-                for(const decl of stmt.decls) { out.writeVarDecl(decl); }
+            'stmt.export': (out, stmt) => {
+                out.writeDecl(stmt.decl);
             },
             'stmt.expr': (out, stmt) => {
                 out.beginLine();
@@ -87,7 +71,7 @@ namespace CodeGen {
             'stmt.for.range': (out, stmt) => {
                 const {low, high} = stmt;
                 out.beginLine();
-                out.write(`for ${_name(stmt.index.name)} in range(`);
+                out.write(`for ${this.getName(stmt.index.name)} in range(`);
                 if(stmt.reverse) {
                     out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`, `);
@@ -203,6 +187,23 @@ namespace CodeGen {
             },
         };
         
+        protected readonly DECL_WRITE_FUNCS: DeclWriteFuncs<this> = {
+            'decl.func': (out, decl) => {
+                const {params} = decl;
+                out.beginLine();
+                out.write(`def ${this.getName(decl.name)}(`);
+                out.withScope(() => {
+                    out.writeList(i => out.writeVarDecl(params[i]), params.length);
+                    out.write(')');
+                    out.writeReturnType(decl.returnType);
+                    out.writeIndentedBlock(decl.body);
+                });
+            },
+            'decl.var.const': (out, decl) => this.writeVarDecl(decl),
+            'decl.var.mut': (out, decl) => this.writeVarDecl(decl),
+            'decl.var.param': (out, decl) => this.writeVarDecl(decl),
+        };
+        
         readonly EXPR_WRITE_FUNCS: ExprWriteFuncs<this> = {
             'expr.array.const': [Precedence.MAX, (out, expr) => {
                 const {from, domainSize, rowLength} = expr;
@@ -235,11 +236,11 @@ namespace CodeGen {
                 out.write('(');
                 let e: IR.Expr = expr;
                 do {
-                    this.writeAssignExpr(e.decl.name, e.decl.initialiser);
+                    out.writeAssignExpr(e.decl.name, e.decl.initialiser);
                     out.write(', ');
                     e = e.child;
                 } while(e.kind === 'expr.letin');
-                this.writeExpr(e);
+                out.writeExpr(e);
                 out.write(')[-1]');
             }],
             'expr.literal.bool': [Precedence.MAX, (out, expr) => {
@@ -256,35 +257,32 @@ namespace CodeGen {
                 out.write('None');
             }],
             'expr.name': [Precedence.MAX, (out, expr) => {
-                out.write(_name(expr.name));
+                out.write(out.getName(expr));
             }],
-            'expr.op.call.lib.constructor': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
-                js.write(`${RUNTIME_LIB_NAME}.${_name(expr.className)}`);
-                js.write(`(`);
-                js.writeExprList(expr.args);
-                js.write(')');
+            'expr.op.call.lib.constructor': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
+                out.write(`${RUNTIME_LIB_NAME}.${out.getLibName(expr.className)}(`);
+                out.writeExprList(expr.args);
+                out.write(')');
             }],
-            'expr.op.call.lib.function': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
-                js.write(`${RUNTIME_LIB_NAME}.${_name(expr.name)}`);
-                js.write(`(`);
-                js.writeExprList(expr.args);
-                js.write(')');
+            'expr.op.call.lib.function': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
+                out.write(`${RUNTIME_LIB_NAME}.${out.getLibName(expr.name)}(`);
+                out.writeExprList(expr.args);
+                out.write(')');
             }],
-            'expr.op.call.lib.method': [Precedence.ATTR_ACCESS_CALL, (js, expr) => {
-                js.writeExpr(expr.obj);
-                js.write(`.${_name(expr.name)}(`);
-                js.writeExprList(expr.args);
-                js.write(')');
+            'expr.op.call.lib.method': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
+                out.writeExpr(expr.obj);
+                out.write(`.${out.getLibName(expr.name)}(`);
+                out.writeExprList(expr.args);
+                out.write(')');
             }],
             'expr.op.call.local': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                out.writeExpr(expr.name);
-                out.write('(');
+                out.write(`${out.getName(expr.name)}(`);
                 out.writeExprList(expr.args);
                 out.write(')');
             }],
             'expr.param': [Precedence.TERNARY, (out, expr) => {
                 // TODO: take params as **kwargs
-                out.write(`params['${_name(expr.name)}'] if params is not None and '${_name(expr.name)}' in params else `);
+                out.write(`params['${expr.name}'] if params is not None and '${expr.name}' in params else `);
                 out.writeExpr(expr.otherwise, Precedence.TERNARY);
             }],
             'expr.op.ternary': [Precedence.TERNARY, (out, expr) => {
@@ -428,29 +426,20 @@ namespace CodeGen {
             this.writeExpr(right, Precedence.ASSIGN);
         }
         
-        writeParamDecl(name: string, type: IR.IRType): void {
-            this.write(name);
-            if(type.kind === 'nullable') { this.write('=None'); }
-        }
         writeVarDecl(decl: IR.VarDecl): void {
-            if(decl.initialiser === undefined) { return; }
-            this.beginLine();
             this.writeExpr(decl.name);
-            this.write(' = ');
-            this.writeExpr(decl.initialiser);
+            if(decl.kind !== 'decl.var.param') {
+                this.write(' = ');
+                this.writeExpr(decl.initialiser ?? IR.NULL);
+            } else if(decl.isOptional) {
+                this.write('=None');
+            }
         }
         writeReturnType(type: IR.IRType): void {}
     }
     
     export class PythonWithTypes extends Python {
-        writeParamDecl(name: string, type: IR.IRType): void {
-            this.write(name);
-            this.write(': ');
-            this.writeType(type);
-            if(type.kind === 'nullable') { this.write(' = None'); }
-        }
         writeVarDecl(decl: IR.VarDecl): void {
-            this.beginLine();
             this.writeExpr(decl.name);
             this.write(': ');
             this.writeType(decl.type);
@@ -470,7 +459,10 @@ namespace CodeGen {
                     const {keys, values} = type;
                     // TODO: need `stmt.typedecl` or otherwise; declare namedtuple types
                     this.write('{');
-                    this.writeList(i => this.writeParamDecl(keys[i], values[i]), keys.length);
+                    this.writeList(i => {
+                        this.write(`${keys[i]}: `);
+                        this.writeType(values[i]);
+                    }, keys.length);
                     this.write('}');
                     return;
                 }
@@ -493,10 +485,6 @@ namespace CodeGen {
                 }
             }
         }
-    }
-    
-    function _name(ident: string): string {
-        return PYTHON_KEYWORDS.includes(ident) ? `${ident}_` : ident;
     }
     
     function _typecode(bits: 4 | 8 | 12 | 16 | 20 | 24 | 28 | 32): string {

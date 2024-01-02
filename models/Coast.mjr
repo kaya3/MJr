@@ -4,24 +4,22 @@ use let g = grid [BWD]
 
 put [W] at origin
 
-# nested sequence is needed so that the inner limits are reset on each iteration
+@limit 12
 sequence:
-    @limit 12
-    sequence:
-        # grow more land
-        once: [WB] -> [D.]
-        
-        @limit g.area // 4
-        one: [D[^D]] -> [.D]
-        
-        @limit 1
-        all: [D] -> [W]
-        
-        # delete some of the land
-        once: [W] -> [D]
-        
-        @limit g.area // 8
-        one: [DW] -> [.D]
-        
-        @limit 1
-        all: [D] -> [B]
+    # grow more land
+    once: [WB] -> [D.]
+    
+    @limit g.area // 4
+    one: [D[^D]] -> [.D]
+    
+    @limit 1
+    all: [D] -> [W]
+    
+    # delete some of the land
+    once: [W] -> [D]
+    
+    @limit g.area // 8
+    one: [DW] -> [.D]
+    
+    @limit 1
+    all: [D] -> [B]

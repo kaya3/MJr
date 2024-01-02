@@ -1,5 +1,5 @@
 ///<reference path="../ir/types.ts"/>
-///<reference path="./expr.ts"/>
+///<reference path="./ctx.ts"/>
 ///<reference path="./stmt.ts"/>
 ///<reference path="./stmt_all.ts"/>
 ///<reference path="./stmt_convchain.ts"/>
@@ -22,161 +22,171 @@ namespace Compiler {
     ];
     
     // helpers
-    const {
-        NAMES: {
-            WIDTH, HEIGHT, PARAMS, RNG,
-            ITERATIONS,
-        },
-        OP,
-    } = IR;
+    const {OP} = IR;
     
     export interface Compiler {
         readonly config: Config;
         readonly diagnostics: Diagnostics;
         readonly opsUsed: Set<IR.Op>;
         
-        readonly constants: IR.Constants;
+        readonly ir: IR.Factory;
         readonly grids: readonly IR.Grid[];
-        readonly mask: IR.Mask;
+        readonly prng: IR.PRNG;
         
         readonly checkMaxIterations: IR.Stmt;
         
-        getStmtCompiler(stmt: ASG.Statement): StmtCompiler;
-        expr(expr: ASG.Expression): IR.Expr;
         type(type: Type.Type): IR.IRType;
+        dictType(entryTypes: ReadonlyMap<string, Type.Type>): IR.DictType;
+        getStmtCompiler(stmt: ASG.Statement): StmtCompiler;
         
+        internConstant(expr: IR.Expr, type: IR.IRType): IR.ConstNameExpr;
+        useMask(grid: IR.Grid): IR.Mask;
         useTempArray(scale: number): IR.TempArray;
         
         notSupported(msg: string, pos: SourcePosition): void;
-        dictType(entryTypes: ReadonlyMap<string, Type.Type>): IR.DictType;
     }
     
     /**
      * Compiles MJr source code to a high-level intermediate representation.
      */
     class CompilerImpl implements Compiler {
-        readonly diagnostics = new Diagnostics();
-        readonly opsUsed = new Set(ALWAYS_USED_OPS);
+        public readonly diagnostics = new Diagnostics();
+        public readonly opsUsed = new Set(ALWAYS_USED_OPS);
         
-        readonly constants = new IR.Constants();
-        readonly grids: readonly IR.Grid[];
-        readonly mask = new IR.Mask();
+        public readonly ir: IR.Factory;
+        public readonly grids: readonly IR.Grid[];
+        public readonly prng: IR.PRNG;
         
-        readonly declareMaxIterations: IR.Stmt;
+        private readonly entryPointName: IR.ConstNameExpr;
+        private readonly width: IR.ConstNameExpr;
+        private readonly height: IR.ConstNameExpr;
+        private readonly mainDecls: readonly IR.StmtLevelDecl[];
+        private readonly mainParams: readonly IR.ParamDecl[];
         readonly checkMaxIterations: IR.Stmt;
         
+        private readonly mask: IR.Mask;
+        private maskScale = 0;
+        
+        private readonly tempArray: IR.TempArray;
         private tempArrayScale = 0;
         
         constructor(
             private readonly asg: ASG.ASG,
             readonly config: Readonly<Config>,
         ) {
-            this.grids = asg.grids.map(g => new IR.Grid(g));
-            
             for(const g of asg.grids) {
                 if(g.periodic) { this.notSupported('periodic grid', g.pos); }
             }
             
+            const ir = this.ir = new IR.Factory();
+            this.entryPointName = ir.func(config.entryPointName);
+            
+            const width = ir.paramDecl('width', IR.INT_TYPE),
+                height = ir.paramDecl('height', IR.INT_TYPE),
+                rng = ir.paramDecl('rng', IR.PRNG_TYPE, true);
+            
+            this.width = width.name;
+            this.height = height.name;
+            this.grids = asg.grids.map(g => new IR.Grid(ir, g, width.name, height.name));
+            this.prng = new IR.PRNG(rng.name);
+            this.mask = new IR.Mask(ir);
+            this.tempArray = new IR.TempArray(this.ir);
+            
+            const mainDecls: IR.StmtLevelDecl[] = [];
+            
+            const mainParams = [width, height];
+            if(asg.params.size > 0) {
+                const p = ir.paramDecl('params', IR.nullableType({
+                    kind: 'dict',
+                    keys: Array.from(asg.params.keys()),
+                    values: Array.from(asg.params.values(), t => IR.nullableType(this.type(t))),
+                }));
+                mainParams.push(p);
+            }
+            mainParams.push(rng);
+            
             const maxIterations = config.maxIterations;
             if(maxIterations !== 0) {
-                this.declareMaxIterations = IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true);
-                this.checkMaxIterations = IR.block([
-                    IR.assign(ITERATIONS, '+=', IR.ONE),
+                const iterations = ir.varDecl('iterations', IR.INT_TYPE, IR.ZERO);
+                mainDecls.push(iterations);
+                
+                this.checkMaxIterations = IR.seq([
+                    IR.assign(iterations.name, '+=', IR.ONE),
                     IR.if_(
-                        OP.gt(ITERATIONS, IR.int(maxIterations)),
+                        OP.gt(iterations.name, IR.int(maxIterations)),
                         IR.throw_(`Exceeded maximum of ${maxIterations} iterations`),
                     ),
                 ]);
             } else {
-                this.declareMaxIterations = IR.PASS;
                 this.checkMaxIterations = IR.PASS;
             }
+            
+            this.mainDecls = mainDecls;
+            this.mainParams = mainParams;
         }
         
         notSupported(s: string, pos: SourcePosition): void {
             this.diagnostics.compilationError(`${s} is not currently supported`, pos);
         }
         
+        public getStmtCompiler(stmt: ASG.Statement): StmtCompiler {
+            const cls = STMT_COMPILERS[stmt.kind];
+            return new cls(stmt as never, this);
+        }
+        
         compile(): IR.Stmt {
             // YYYY-MM-DD HH:mm:ss GMT+offset
             const date = new Date().toLocaleString('en-SE', {timeZoneName: 'short'});
             
-            const {params, endGridID, root} = this.asg;
-            
+            const {asg, config, grids} = this;
+            const ctx = CompilerContext.root(this);
             // TODO: potentials
             
-            const mainParams: IR.NameExpr[] = [WIDTH, HEIGHT];
-            const mainParamTypes: IR.IRType[] = [IR.INT_TYPE, IR.INT_TYPE];
-            if(params.size > 0) {
-                mainParams.push(PARAMS);
-                mainParamTypes.push(IR.nullableType({
-                    kind: 'dict',
-                    keys: Array.from(params.keys()),
-                    values: Array.from(params.values(), t => IR.nullableType(this.type(t))),
-                }));
-            }
-            mainParams.push(RNG);
-            mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
-            
             // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
-            const rootCompiler = this.getStmtCompiler(root),
-                declRoot = rootCompiler.declare(),
-                compiledRoot = rootCompiler.compile(this, IR.PASS, IR.PASS),
-                endGridObj = this.grids[endGridID].useObj(),
-                gridDecls = this.grids.flatMap(g => g.declare()),
-                matchesDecl = this.declareTempArray(),
-                maskDecl = this.mask.declare(),
-                constDecls = this.constants.declare(),
-                varDecls = declareASGVariables(this, this.asg.variables),
-                otherDecls: IR.Stmt[] = [];
+            const rootCompiler = this.getStmtCompiler(asg.root),
+                declRoot = rootCompiler.declareRoot(ctx),
+                declRootMut = rootCompiler.declareParent(ctx),
+                compiledRoot = rootCompiler.compile(ctx, IR.PASS, IR.PASS)[0],
+                gridDecls = grids.map(g => g.declare()),
+                tmpArraysDecl = this.declareTempArrays();
             
-            // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
-            // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
-            // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
+            // compute maximum grid dimensions, to ensure that loose int operations on array lengths/indices don't overflow
+            // 0x3FFFFFFE is the magic number for the largest allowed array length for an LFSR
             const maxScale = Math.max(
+                this.maskScale,
                 this.tempArrayScale,
-                ...this.grids.map(g => g.getScale()),
+                ...grids.map(g => g.getScale()),
             );
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
-            const checkDims = IR.if_(
-                OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)),
+            const checkDims = config.emitChecks ? IR.if_(
+                OP.or(OP.le(this.width, IR.ZERO), OP.le(this.height, IR.ZERO)),
                 IR.throw_('Grid dimensions must be positive'),
                 IR.if_(
-                    OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)),
+                    OP.or(OP.gt(this.width, maxDim), OP.gt(this.height, maxDim)),
                     IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`),
                 ),
-            );
+            ) : IR.PASS;
             
-            const {animate, emitChecks, entryPointName} = this.config;
-            
-            return IR.declFunc(IR.nameExpr(entryPointName), animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+            return IR.exportDecl(IR.funcDecl(this.entryPointName, config.animate ? IR.REWRITE_INFO_TYPE : undefined, this.mainParams, IR.GRID_TYPE, IR.seq([
                 IR.comment(`compiled by mjrc-${COMPILER_VERSION} on ${date}`),
-                emitChecks ? checkDims : IR.PASS,
+                checkDims,
                 
-                IR.preamble(this.dictType(params), emitChecks, REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
+                IR.preamble(this.dictType(asg.params), config.emitChecks, REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,
                 
-                ...gridDecls,
-                matchesDecl,
-                ...maskDecl,
-                constDecls,
-                ...varDecls,
-                ...otherDecls,
-                this.declareMaxIterations,
-                declRoot,
-                compiledRoot,
-                IR.return_(endGridObj),
-            ]));
-        }
-        
-        private lastStmtID = -1;
-        readonly getStmtCompiler = (stmt: ASG.Statement): StmtCompiler => {
-            const id = ++this.lastStmtID;
-            return new STMT_COMPILERS[stmt.kind](stmt as never, id, this);
-        };
-        
-        expr(expr: ASG.Expression): IR.Expr {
-            return compileExpr(this, expr);
+                IR.withDecls([
+                    ...this.mainDecls,
+                    ...gridDecls,
+                    ...tmpArraysDecl,
+                    ...this.internedConstants.values(),
+                    declRoot,
+                    declRootMut,
+                ], IR.seq([
+                    IR.BLANK_LINE,
+                    compiledRoot,
+                    IR.return_(grids[asg.endGridID].obj),
+                ])),
+            ])));
         }
         
         type(type: Type.Type): IR.IRType {
@@ -190,20 +200,35 @@ namespace Compiler {
             return {kind: 'dict', keys, values: keys.map(k => this.type(entryTypes.get(k)!))};
         }
         
-        private readonly tempArray = new IR.TempArray(IR.NAMES.MATCHES, IR.NAMES.MATCH_COUNT);
+        private readonly internedConstants = new Map<string, IR.ConstDecl>();
+        internConstant(expr: IR.Expr, type: IR.IRType): IR.ConstNameExpr {
+            return getOrCompute(
+                this.internedConstants,
+                IR.key(expr),
+                () => this.ir.constDecl('constant', type, expr),
+            ).name;
+        }
+        
+        useMask(g: IR.Grid): IR.Mask {
+            this.maskScale = Math.max(this.maskScale, g.grid.scaleX * g.grid.scaleY);
+            return this.mask;
+        }
         useTempArray(scale: number): IR.TempArray {
             this.tempArrayScale = Math.max(this.tempArrayScale, scale);
             return this.tempArray;
         }
-        private declareTempArray(): IR.Stmt {
-            if(this.tempArrayScale === 0) { return IR.PASS; }
-            
-            // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
-            const n = OP.multConstant(OP.mult(WIDTH, HEIGHT), this.tempArrayScale);
-            return IR.block([
-                IR.declVar(IR.NAMES.MATCHES, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n)),
-                IR.declVar(IR.NAMES.MATCH_COUNT, IR.INT_TYPE, undefined, true),
-            ]);
+        private declareTempArrays(): IR.StmtLevelDecl[] {
+            const decls: IR.StmtLevelDecl[] = [];
+            if(this.maskScale > 0) {
+                const maskScale = OP.multConstant(OP.mult(this.width, this.height), this.maskScale);
+                decls.push(this.mask.declare(maskScale));
+            }
+            if(this.tempArrayScale > 0) {
+                // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
+                const tempArrayScale = OP.multConstant(OP.mult(this.width, this.height), this.tempArrayScale);
+                decls.push(this.tempArray.declare(tempArrayScale));
+            }
+            return decls;
         }
     }
     
@@ -219,9 +244,9 @@ namespace Compiler {
     };
     
     type StmtKind = ASG.Statement['kind']
-    type StmtCompileClass<K extends StmtKind> = new (stmt: Extract<ASG.Statement, {readonly kind: K}>, stmtID: number, c: Compiler) => StmtCompiler
+    export type StmtCompileClass<K extends StmtKind> = new (stmt: Extract<ASG.Statement, {readonly kind: K}>, c: Compiler) => StmtCompiler
     
-    const STMT_COMPILERS: {readonly [K in StmtKind]: StmtCompileClass<K>} = {
+    export const STMT_COMPILERS: {readonly [K in StmtKind]: StmtCompileClass<K>} = {
         // control-flow
         'stmt.block.markov': Stmt_Markov,
         'stmt.block.sequence': Stmt_Sequence,
@@ -247,7 +272,7 @@ namespace Compiler {
         'stmt.rules.search.one': Stmt_NotSupported,
     };
     
-    type CodeGenClass = new (config: Config) => {diagnostics: Diagnostics, writeStmt(stmt: IR.Stmt): void, render(): string}
+    type CodeGenClass = new (config: Config) => {diagnostics: Diagnostics, beginGenerating(): void, writeStmt(stmt: IR.Stmt): void, render(): string}
     export type CodeGenName = KeysMatching<typeof CodeGen, CodeGenClass>
     
     export function compile(src: string, targetLanguage: CodeGenName, config?: Partial<Config>): string {
@@ -258,8 +283,11 @@ namespace Compiler {
         const result = compiler.compile();
         compiler.diagnostics.throwIfAnyErrors();
         
+        if(result.info.hasFreeVars()) { fail(`compilation result had free variables`, result); }
+        
         const cls: CodeGenClass = CodeGen[targetLanguage];
         const gen = new cls(compiler.config);
+        gen.beginGenerating();
         gen.writeStmt(result);
         
         gen.diagnostics.throwIfAnyErrors();

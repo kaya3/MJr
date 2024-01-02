@@ -36,7 +36,7 @@ namespace ASG {
     export interface FormalVariable extends Readonly<{
         id: number,
         name: string,
-        uniqueName: string,
+        uniqueName: string, // TODO: eliminate this; compiler already handles it
         type: Type.Type,
         flags: ExprFlags,
         initialiser: Expression | undefined,
@@ -151,5 +151,15 @@ namespace ASG {
         SAME_EVERYWHERE = LOCALLY_DETERMINISTIC | POSITION_INDEPENDENT,
         CONSTANT = RUNTIME_CONSTANT | DETERMINISTIC | LOCALLY_DETERMINISTIC | POSITION_INDEPENDENT | GRID_INDEPENDENT,
         ALL = 31,
+    }
+    
+    export function exprIsRuntimeConstant(expr: Expression): boolean {
+        return (expr.flags & ExprFlags.RUNTIME_CONSTANT) !== 0;
+    }
+    export function exprIsGridIndependent(expr: Expression): boolean {
+        return (expr.flags & ExprFlags.GRID_INDEPENDENT) !== 0;
+    }
+    export function exprIsSameEverywhere(expr: Expression): boolean {
+        return (expr.flags & ExprFlags.SAME_EVERYWHERE) === ExprFlags.SAME_EVERYWHERE;
     }
 }

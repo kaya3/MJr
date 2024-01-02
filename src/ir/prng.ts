@@ -1,18 +1,17 @@
-///<reference path="./names.ts"/>
-
 namespace IR {
-    const {RNG} = NAMES;
-    
-    export const PRNG = {
-        nextInt(n: Expr): Expr {
-            return isInt(n) && n.value === 1 ? ZERO
-                : libMethodCall('PRNG', 'nextInt', RNG, [n]);
-        },
+    export class PRNG {
+        public constructor(public readonly name: ConstNameExpr) {}
         
-        nextIntChecked(n: Expr): Expr {
-            return libFunctionCall('nextIntChecked', [RNG, n]);
-        },
+        public nextInt(n: Expr): Expr {
+            return n === ONE ? ZERO : libMethodCall('PRNG', 'nextInt', this.name, [n]);
+        }
+        public nextIntChecked(n: Expr): Expr {
+            return libFunctionCall('nextIntChecked', [this.name, n]);
+        }
         
-        NEXT_DOUBLE: libMethodCall('PRNG', 'nextDouble', RNG, []),
-    };
+        private _nextDouble?: Expr;
+        public nextDouble(): Expr {
+            return this._nextDouble ??= libMethodCall('PRNG', 'nextDouble', this.name, []);
+        }
+    }
 }

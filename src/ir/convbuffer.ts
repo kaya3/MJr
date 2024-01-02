@@ -1,31 +1,50 @@
-///<reference path="./names.ts"/>
+///<reference path="./factory.ts"/>
 
 namespace IR {
     function _key(p: ASG.ConvPattern): string {
-        return `${ISet.key(p.chars)}:${p.includeBoundary}`;
+        return `${ISet.key(p.chars)}:${p.includeBoundary ? 1 : 0}`;
     }
-    
-    const {
-        AT_CONV, AT_X, AT_Y,
-    } = NAMES;
     
     export class ConvBuffer {
         private readonly buffer: MutableArray2D;
-        public readonly width: NameExpr;
-        public readonly height: NameExpr;
-        private readonly n: NameExpr;
-        private readonly values: ReadonlyMap<string, Expr>;
+        public readonly width: ConstNameExpr;
+        public readonly height: ConstNameExpr;
+        private readonly n: ConstNameExpr;
+        private readonly patternIndices: ReadonlyMap<string, readonly number[]>;
         private readonly repsWithBoundary: ISet;
         
+        private readonly constDecls: readonly ConstDecl[];
+        
         public constructor(
-            id: number,
+            private readonly ir: Factory,
             private readonly g: Grid,
             patterns: readonly ASG.ConvPattern[],
             private readonly kernel: Convolution.Kernel,
         ) {
-            this.width = kernel.width === 1 ? g.width : NAMES.convBufferVar(g, id, 'width');
-            this.height = kernel.height === 1 ? g.height : NAMES.convBufferVar(g, id, 'height');
-            const n = this.n = kernel.width === 1 && kernel.height === 1 ? g.n : NAMES.convBufferVar(g, id, 'n');
+            const constDecls: ConstDecl[] = this.constDecls = [];
+            
+            if(kernel.width === 1) {
+                this.width = g.width;
+            } else {
+                const width = ir.constDecl('convBufferWidth', IR.INT_TYPE, OP.addConstant(g.width, kernel.width - 1));
+                constDecls.push(width);
+                this.width = width.name;
+            }
+            if(kernel.height === 1) {
+                this.height = g.height;
+            } else {
+                const height = ir.constDecl('convBufferHeight', IR.INT_TYPE, OP.addConstant(g.height, kernel.height - 1));
+                constDecls.push(height);
+                this.height = height.name;
+            }
+            
+            if(kernel.width === 1 && kernel.height === 1) {
+                this.n = g.n;
+            } else {
+                const n = ir.constDecl('convBufferN', IR.INT_TYPE, OP.mult(this.width, this.height));
+                constDecls.push(n);
+                this.n = n.name;
+            }
             
             // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
             const alphabetKey = g.grid.alphabet.key;
@@ -55,7 +74,8 @@ namespace IR {
             const allowedReps = ISet.full(alphabetPartition.countSubsets());
             const toCover: ISet[] = [];
             for(let i = 0; i < patterns.length; ++i) {
-                const p = patterns[i], m = mappedReps[i];
+                const p = patterns[i],
+                    m = mappedReps[i];
                 if(p.includeBoundary) {
                     toCover.push(m);
                 } else {
@@ -69,85 +89,73 @@ namespace IR {
                 ISet.add(repsWithBoundary, numReps);
             }
             
-            const buffer = this.buffer = makeMutableArray2D(
-                NAMES.convBufferVar(g, id, 'buffer'),
+            this.buffer = makeMutableArray2D(
+                ir,
+                'convBuffer',
                 int(numReps + (anyExtraBoundary ? 1 : 0)),
-                n,
+                this.n,
                 kernel.width * kernel.height,
             );
             
-            const boundaryExpr = anyExtraBoundary ? buffer.get(int(numReps), AT_CONV) : ZERO;
-            
-            const values = this.values = new Map<string, Expr>();
+            const patternIndices = this.patternIndices = new Map<string, readonly number[]>();
             patterns.forEach((p, i) => {
                 const reps = mappedReps[i];
-                const exprs: Expr[] = ISet.map(
-                    reps,
-                    j => buffer.get(int(j), AT_CONV),
-                );
+                const indices: number[] = ISet.toArray(reps);
                 // sanity check
-                if(exprs.length === 0) { fail(); }
+                if(indices.length === 0) { fail(); }
                 
                 if(p.includeBoundary && ISet.isDisjoint(reps, repsWithBoundary)) {
-                    exprs.push(boundaryExpr);
+                    indices.push(numReps);
                 }
                 
-                values.set(_key(p), exprs.reduce(OP.add));
+                patternIndices.set(_key(p), indices);
             });
         }
         
-        public declare(): Stmt {
-            const {g, kernel, width, height, buffer} = this;
+        public declare(): StmtLevelDecl {
+            const {ir, g, kernel, buffer} = this;
             const {centreX, centreY} = kernel;
             
-            const decls: VarDeclWithInitialiser[] = [];
-            if(width !== g.width) {
-                const w = OP.addConstant(g.width, kernel.width - 1);
-                decls.push({name: width, type: INT_TYPE, initialiser: w});
-            }
-            if(height !== g.height) {
-                const h = OP.addConstant(g.height, kernel.height - 1);
-                decls.push({name: height, type: INT_TYPE, initialiser: h});
-            }
-            decls.push(
-                {name: this.n, type: INT_TYPE, initialiser: OP.mult(width, height)},
-                ...buffer.decl,
-            );
-            
-            const out: Stmt[] = [declVars(decls)];
+            const atX = ir.loopVarDecl('x'), atY = ir.loopVarDecl('y');
             
             const boundaryValues = kernel.boundaryValues();
-            const xLoop: Stmt[] = [];
-            const yLoop: Stmt[] = [];
+            const xLoop: Stmt[] = [],
+                yLoop: Stmt[] = [],
+                noLoop: Stmt[] = [];
             ISet.forEach(this.repsWithBoundary, j => {
                 for(let dy = -centreY; dy <= centreY; ++dy) {
                     const y = dy < 0 ? int(-dy - 1)
-                        : dy === 0 ? AT_Y
+                        : dy === 0 ? atY.name
                         : OP.minusConstant(g.height, dy);
                     for(let dx = -centreX; dx <= centreX; ++dx) {
                         const value = boundaryValues[(centreX + dx) + (centreY + dy) * kernel.width];
                         if(value === 0) { continue; }
                         
                         const x = dx < 0 ? int(-dx - 1)
-                            : dx === 0 ? AT_X
+                            : dx === 0 ? atX.name
                             : OP.minusConstant(g.width, dx);
                         const arr = dx === 0 ? xLoop
                             : dy === 0 ? yLoop
-                            : out;
+                            : noLoop;
                         arr.push(buffer.set(int(j), this.index(x, y), '=', int(value)));
                     }
                 }
             });
-            out.push(
-                forRange(AT_X, int(centreX), OP.minusConstant(g.width, centreX), xLoop),
-                forRange(AT_Y, int(centreY), OP.minusConstant(g.height, centreY), yLoop),
-            );
             
-            return block(out);
+            return initDecl(
+                multiDecl([...this.constDecls, buffer.decl]),
+                seq([
+                    ...noLoop,
+                    forRange(atX, int(centreX), OP.minusConstant(g.width, centreX), IR.seq(xLoop)),
+                    forRange(atY, int(centreY), OP.minusConstant(g.height, centreY), IR.seq(yLoop)),
+                ]),
+            );
         }
         
-        public get(p: ASG.ConvPattern): Expr {
-            return this.values.get(_key(p)) ?? fail();
+        public get(p: ASG.ConvPattern, at: Expr): Expr {
+            return (this.patternIndices.get(_key(p)) ?? fail())
+                .map(j => this.buffer.get(int(j), at))
+                .reduce(OP.add);
         }
         
         public indexRaw(x: Expr, y: Expr): Expr {
@@ -162,17 +170,19 @@ namespace IR {
             );
         }
         
-        public update(i: number, xVar: NameExpr, yVar: NameExpr, op: '+=' | '-='): Stmt {
+        public update(i: number, at: Location, op: '+=' | '-='): Stmt {
+            // x, y must be simple constants since they are repeated
             const {buffer, kernel} = this;
             const out: Stmt[] = [];
+            const iExpr = int(i);
             kernel.forEach((dx, dy, value) => {
                 const index = this.indexRaw(
-                    OP.addConstant(xVar, dx),
-                    OP.addConstant(yVar, dy),
+                    OP.addConstant(at.x, dx),
+                    OP.addConstant(at.y, dy),
                 );
-                out.push(buffer.set(int(i), index, op, int(value)));
+                out.push(buffer.set(iExpr, index, op, int(value)));
             });
-            return block(out);
+            return seq(out);
         }
     }
     

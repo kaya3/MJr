@@ -1,56 +1,63 @@
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 
 namespace Compiler {
-    const {
-        NAMES: {
-            AT, AT_X, AT_Y, AT_CONV,
-            P,
-            ANY,
-        },
-    } = IR;
-    
     export class Stmt_Convolution extends StmtCompiler<ASG.ConvolutionStmt> {
-        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const {stmt} = this;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const buffer = g.makeConvBuffer(stmt.kernel);
             
-            const cases: IR.Stmt[] = emptyArray(g.grid.alphabet.key.length, IR.PASS);
-            for(const rule of stmt.rewrites) {
-                const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
+            const flag = c.ir.flag();
+            
+            function buildCases(at: IR.Location, atConv: IR.ConstExpr): readonly IR.Stmt[] {
+                const convCtx = ctx.withConvPosition(at, atConv);
                 
-                const caseHandler = IR.block([
-                    rule.to.kind === 'expr.constant' ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)),
-                    IR.if_(
-                        writeCondition(c, g, rule.to, P, rule.condition),
-                        doWrite(c, g, rule.from, rule.to, false, ANY, false, false),
-                    ),
-                ]);
-                ISet.forEach(mask, i => {
-                    if(cases[i] !== IR.PASS) { fail(); }
-                    cases[i] = caseHandler;
-                });
+                const cases: IR.Stmt[] = emptyArray(g.grid.alphabet.key.length, IR.PASS);
+                for(const rule of stmt.rewrites) {
+                    const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
+                    
+                    const caseHandler = convCtx.usePattern(rule.to, p =>
+                        IR.if_(
+                            writeCondition(convCtx, g, rule.from, p, rule.condition),
+                            IR.seq([
+                                doWrite(convCtx, g, rule.from, p, undefined, false, false),
+                                flag.set,
+                            ]),
+                        ),
+                    );
+                    ISet.forEach(mask, i => {
+                        if(cases[i] !== IR.PASS) { fail(); }
+                        cases[i] = caseHandler;
+                    });
+                }
+                return cases;
             }
             
             // TODO: different strategy if rules don't cover the whole alphabet?
-            return IR.block([
-                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
-                    g.declareAtXY(AT_X, AT_Y),
-                    IR.declVar(AT_CONV, IR.INT_TYPE, buffer.index(AT_X, AT_Y)),
-                    IR.switch_(g.data.get(AT), cases),
-                ])]),
+            const r = IR.withDecl(flag.decl, IR.seq([
+                c.ir.forRange('y', IR.ZERO, g.height, y =>
+                    c.ir.forRange('x', IR.ZERO, g.width, x =>
+                        g.declareAtXY(x, y, at =>
+                            c.ir.withConst('atConv', IR.INT_TYPE, buffer.index(x, y), atConv =>
+                                IR.switch_(g.data.get(at.index), buildCases(at, atConv)),
+                            ),
+                        ),
+                    ),
+                ),
                 IR.if_(
-                    ANY,
-                    IR.block([
+                    flag.check,
+                    IR.seq([
                         // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
                         g.update(IR.ZERO, IR.ZERO, g.width, g.height),
                         c.config.animate ? g.yield_() : IR.PASS,
-                        ifChanged,
+                        ifTrue,
                     ]),
-                    then,
+                    ifFalse,
                 ),
-            ]);
+            ]));
+            
+            return [r, ctx];
         }
     }
 }

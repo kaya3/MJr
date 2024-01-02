@@ -1,119 +1,118 @@
-///<reference path="names.ts"/>
-
 namespace IR {
+    export interface SamplerTarget extends Omit<MutableArray, 'decl'> {}
+    
     export interface AbstractSampler {
         readonly count: Expr;
         readonly isNotEmpty: Expr;
-        declare(): Stmt,
-        handleMatch(f: 'add' | 'del', patternIndex: Expr): Stmt;
-        sampleWithReplacement(cases: readonly Stmt[]): Stmt;
-        beginSamplingWithoutReplacement(): Stmt;
-        sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt;
-        copyInto(matchesArray: NameExpr): Stmt;
-        copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt;
-        shuffleInto(matches: TempArray): Stmt;
-        shuffleIntoOffset(matches: TempArray, m: number, c: number): Stmt;
-        forEach(then: readonly Stmt[]): Stmt;
+        declare(): StmtLevelDecl,
+        handleMatch(f: 'add' | 'del', patternIndex: Expr, at: Location): Stmt;
+        sampleWithReplacement(
+            prng: PRNG,
+            cases: (at: Location) => readonly Stmt[],
+        ): Stmt;
+        sampleWithoutReplacement(
+            prng: PRNG,
+            cases: (at: Location, ifT: Stmt, ifF: Stmt) => readonly Stmt[],
+            ifTrue: Stmt,
+            ifFalse: Stmt,
+        ): Stmt;
+        copyInto(matches: SamplerTarget): Stmt;
+        copyIntoOffset(matches: SamplerTarget, offset: Expr, m: number, c: number): Stmt;
+        shuffleInto(prng: PRNG, matches: TempArray): Stmt;
+        shuffleIntoOffset(prng: PRNG, matches: TempArray, m: number, c: number): Stmt;
+        forEach(then: (at: Location) => Stmt): Stmt;
     }
     
-    const {
-        RNG,
-        I, J,
-        S, MATCH,
-        AT, AT_X, AT_Y,
-    } = NAMES;
-    
     export class Sampler implements AbstractSampler {
-        private readonly name: NameExpr;
+        private readonly decl: ConstDecl;
         public readonly count: Expr;
         public readonly isNotEmpty: Expr;
         private readonly arr: Expr;
-        private readonly capacity: Expr;
-        private readonly declareMatchAt: Stmt;
-        private readonly matchPatternIndex: Expr;
         
         public constructor(
-            id: number,
+            private readonly ir: Factory,
             public readonly g: Grid,
             public readonly numPatterns: number,
         ) {
-            this.name = NAMES.sampler(g, id);
-            this.count = attr(this.name, 'count');
-            this.isNotEmpty = OP.gt(this.count, ZERO);
-            this.arr = attr(this.name, 'arr');
-            this.capacity = OP.multConstant(g.n, numPatterns);
+            const capacity = OP.multConstant(g.n, numPatterns);
             
-            this.declareMatchAt = this.g.declareAtIndex(OP.divConstant(MATCH, this.numPatterns));
-            this.matchPatternIndex = OP.modConstant(MATCH, this.numPatterns);
+            this.decl = ir.constDecl(`sampler`, SAMPLER_TYPE, libConstructorCall('Sampler', [capacity]));
+            this.count = attr(this.decl.name, 'count');
+            this.isNotEmpty = OP.gt(this.count, ZERO);
+            this.arr = attr(this.decl.name, 'arr');
         }
         
-        public declare(): Stmt {
-            return declVar(this.name, SAMPLER_TYPE, libConstructorCall('Sampler', [this.capacity]));
+        public declare(): StmtLevelDecl {
+            return this.decl;
         }
         
-        public handleMatch(f: 'add' | 'del', patternIndex: Expr): Stmt {
-            const match = OP.multAddConstant(AT, this.numPatterns, patternIndex);
-            return libMethodCallStmt('Sampler', f, this.name, [match]);
+        public handleMatch(f: 'add' | 'del', patternIndex: Expr, at: Location): Stmt {
+            const match = OP.multAddConstant(at.index, this.numPatterns, patternIndex);
+            return libMethodCallStmt('Sampler', f, this.decl.name, [match]);
         }
         
-        public sampleWithReplacement(cases: readonly Stmt[]): Stmt {
-            return block([
-                IR.declVar(
-                    MATCH,
-                    IR.INT_TYPE,
-                    access(this.arr, PRNG.nextInt(this.count)),
-                ),
-                this.declareMatchAt,
-                switch_(this.matchPatternIndex, cases),
+        private matchSwitch(match: ConstExpr, cases: (at: Location) => readonly Stmt[]): Stmt {
+            const k = this.numPatterns;
+            return this.g.declareAtIndex(OP.divConstant(match, k), at =>
+                switch_(OP.modConstant(match, k), cases(at)),
+            );
+        }
+        
+        public sampleWithReplacement(prng: PRNG, cases: (at: Location) => readonly Stmt[]): Stmt {
+            return this.ir.withConst('match', INT_TYPE, access(this.arr, prng.nextInt(this.count)), match =>
+                this.matchSwitch(match, cases),
+            );
+        }
+        
+        public sampleWithoutReplacement(
+            prng: PRNG,
+            cases: (at: Location, ifT: Stmt, ifF: Stmt) => readonly Stmt[],
+            ifTrue: Stmt,
+            ifFalse: Stmt,
+        ): Stmt {
+            const ir = this.ir;
+            const flag = ir.flag();
+            return ir.withVar('count', INT_TYPE, this.count, count =>
+                withDecl(flag.decl, IR.seq([
+                    IR.while_(
+                        OP.and(OP.not(flag.check), OP.gt(count, ZERO)),
+                        ir.withConst('match', INT_TYPE, libMethodCall('Sampler', 'sample', this.decl.name, [count, prng.name]), match =>
+                            seq([
+                                this.matchSwitch(match, at => cases(at, flag.set, PASS)),
+                                assign(count, '-=', ONE),
+                            ]),
+                        ),
+                    ),
+                    IR.if_(flag.check, ifTrue, ifFalse),
+                ])),
+            );
+        }
+        
+        public copyInto(matchesArray: SamplerTarget): Stmt {
+            return libMethodCallStmt('Sampler', 'copyInto', this.decl.name, [matchesArray.array]);
+        }
+        
+        public copyIntoOffset(matches: SamplerTarget, offset: Expr, m: number, c: number): Stmt {
+            return libMethodCallStmt('Sampler', 'copyIntoOffset', this.decl.name, [matches.array, offset, int(m), int(c)]);
+        }
+        
+        public shuffleInto(prng: PRNG, matches: TempArray): Stmt {
+            return libMethodCallStmt('Sampler', 'shuffleInto', this.decl.name, [matches.array, prng.name]);
+        }
+        
+        public shuffleIntoOffset(prng: PRNG, matches: TempArray, m: number, c: number): Stmt {
+            return seq([
+                libMethodCallStmt('Sampler', 'shuffleIntoOffset', this.decl.name, [matches.array, matches.count, int(m), int(c), prng.name]),
+                assign(matches.count, '+=', this.count),
             ]);
         }
         
-        public beginSamplingWithoutReplacement(): Stmt {
-            return PASS;
-        }
-        
-        public sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt {
-            return block([
-                declVar(
-                    MATCH,
-                    INT_TYPE,
-                    libMethodCall('Sampler', 'sample', this.name, [count, RNG]),
-                ),
-                this.declareMatchAt,
-                switch_(this.matchPatternIndex, cases),
-                assign(count, '-=', ONE),
-            ]);
-        }
-        
-        public copyInto(matchesArray: NameExpr): Stmt {
-            return libMethodCallStmt('Sampler', 'copyInto', this.name, [matchesArray]);
-        }
-        
-        public copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
-            return libMethodCallStmt('Sampler', 'copyIntoOffset', this.name, [matchesArray, offset, int(m), int(c)]);
-        }
-        
-        public shuffleInto(matchesArray: TempArray): Stmt {
-            return block([
-                libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matchesArray.array, RNG]),
-                IR.assign(matchesArray.count, '+=', this.count),
-            ]);
-        }
-        
-        public shuffleIntoOffset(matchesArray: TempArray, m: number, c: number): Stmt {
-            return block([
-                libMethodCallStmt('Sampler', 'shuffleIntoOffset', this.name, [matchesArray.array, matchesArray.count, int(m), int(c), RNG]),
-                IR.assign(matchesArray.count, '+=', this.count),
-            ]);
-        }
-        
-        public forEach(then: readonly Stmt[]): Stmt {
-            return this.numPatterns === 1
-                ? forRange(I, ZERO, this.count, [
-                    this.g.declareAtIndex(access(this.arr, I)),
-                    ...then,
-                ])
-                : fail();
+        public forEach(then: (at: Location) => Stmt): Stmt {
+            if(this.numPatterns !== 1) { fail(); }
+            
+            return this.ir.forRange('i', ZERO, this.count, i =>
+                this.g.declareAtIndex(access(this.arr, i), then),
+            );
         }
     }
     
@@ -125,138 +124,156 @@ namespace IR {
         private readonly is1x1: boolean;
         
         public constructor(
+            private readonly ir: Factory,
             private readonly g: Grid,
             patternWidth: number,
             patternHeight: number,
         ) {
             this.width = OP.minusConstant(g.width, patternWidth - 1);
             this.height = OP.minusConstant(g.height, patternHeight - 1);
+            // TODO: optimisations also apply for 1-by-N patterns
             this.is1x1 = patternWidth === 1 && patternHeight === 1;
             this.count = this.is1x1 ? g.n : OP.mult(this.width, this.height);
         }
         
-        public declare(): Stmt {
-            return PASS;
+        public declare(): StmtLevelDecl {
+            return NO_DECL;
         }
         
-        public handleMatch(f: "add" | "del", patternIndex: Expr): Stmt {
+        public handleMatch(f: "add" | "del", patternIndex: Expr, at: Location): Stmt {
             fail();
         }
         
-        public sampleWithReplacement(cases: readonly Stmt[]): Stmt {
-            return block([
-                this.is1x1 ? this.g.declareAtIndex(PRNG.nextInt(this.count))
-                : this.g.declareAtXY(PRNG.nextInt(this.width), PRNG.nextInt(this.height)),
-                cases.length === 1 ? cases[0] : fail(),
-            ]);
+        public sampleWithReplacement(prng: PRNG, cases: (at: Location) => readonly Stmt[]): Stmt {
+            const then = (at: Location) => {
+                const cs = cases(at);
+                if(cs.length !== 1) { fail(); }
+                return cs[0];
+            };
+            
+            return this.is1x1
+                ? this.g.declareAtIndex(prng.nextInt(this.count), then)
+                : this.g.declareAtXY(prng.nextInt(this.width), prng.nextInt(this.height), then);
         }
         
-        public beginSamplingWithoutReplacement(): Stmt {
-            return declVar(S, INT_TYPE, OP.add(PRNG.nextInt(this.count), ONE), true);
-        }
-        
-        public sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt {
-            const declAt = this.is1x1
-                ? this.g.declareAtIndex(OP.minus(S, ONE))
-                : this.g.declareAtXY(OP.mod(S, this.width), OP.floordiv(OP.minus(S, ONE), this.width));
-            return block([
-                while_(
+        public sampleWithoutReplacement(
+            prng: PRNG,
+            cases: (at: Location, ifT: Stmt, ifF: Stmt) => readonly Stmt[],
+            ifTrue: Stmt,
+            ifFalse: Stmt,
+        ): Stmt {
+            const ir = this.ir;
+            const flag = ir.flag();
+            return ir.withVar('match', INT_TYPE, OP.add(prng.nextInt(this.count), ONE), match => {
+                const nextMatch = while_(
                     TRUE,
-                    block([
-                        assign(S, '=', ternary(
-                            OP.ne(OP.bitwiseAnd(S, ONE), ZERO),
-                            OP.bitwiseXor(OP.rshift(S, ONE), this.g.useLsfrFeedbackTerm()),
-                            OP.rshift(S, ONE),
+                    seq([
+                        assign(match, '=', ternary(
+                            OP.ne(OP.bitwiseAnd(match, ONE), ZERO),
+                            OP.bitwiseXor(OP.rshift(match, ONE), this.g.lfsrFeedbackTerm),
+                            OP.rshift(match, ONE),
                         )),
-                        if_(OP.le(S, this.count), BREAK),
+                        if_(OP.le(match, this.count), BREAK),
                     ]),
-                ),
-                declAt,
-                cases.length === 1 ? cases[0] : fail(),
-                assign(count, '-=', ONE),
-            ]);
+                );
+                
+                const then = (at: Location) => {
+                    const cs = cases(at, seq([flag.set, BREAK]), PASS);
+                    if(cs.length !== 1) { fail(); }
+                    return cs[0];
+                };
+                
+                const declAt = this.is1x1
+                    ? this.g.declareAtIndex(OP.minus(match, ONE), then)
+                    : this.g.declareAtXY(OP.mod(match, this.width), OP.floordiv(OP.minus(match, ONE), this.width), then);
+                
+                return ir.withVar('count', INT_TYPE, this.count, count =>
+                    withDecl(flag.decl, seq([
+                        while_(
+                            OP.and(OP.not(flag.check), OP.gt(count, ZERO)),
+                            seq([
+                                declAt,
+                                assign(count, '-=', ONE),
+                                nextMatch,
+                            ]),
+                        ),
+                        IR.if_(flag.check, ifTrue, ifFalse),
+                    ])),
+                );
+            });
         }
         
-        public copyInto(matchesArray: NameExpr): Stmt {
-            return this.copyIntoOffset(matchesArray, ZERO, 1, 0);
+        public copyInto(matches: SamplerTarget): Stmt {
+            return this.copyIntoOffset(matches, ZERO, 1, 0);
         }
         
-        public copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
+        public copyIntoOffset(matches: SamplerTarget, offset: Expr, m: number, c: number): Stmt {
+            const {ir} = this;
             return this.is1x1
-                ? forRange(AT, ZERO, this.count, [
-                    IR.assign(IR.access(matchesArray, OP.add(AT, offset)), '=', OP.multAddConstant(AT, m, int(c))),
-                ])
-                : block([
-                    IR.declVar(J, INT_TYPE, offset, true),
-                    forRange(AT_Y, ZERO, this.height, [
-                        forRange(AT_X, ZERO, this.width, [
-                            IR.assign(IR.access(matchesArray, J), '=', OP.multAddConstant(this.g.index(AT_X, AT_Y), m, int(c))),
-                            IR.assign(J, '+=', ONE),
-                        ]),
-                    ]),
-                ]);
+                ? this.forEach(at =>
+                    matches.set(OP.add(at.index, offset), '=', OP.multAddConstant(at.index, m, int(c))),
+                )
+                : ir.withVar('j', INT_TYPE, offset, j =>
+                    this.forEach(at => seq([
+                        matches.set(j, '=', OP.multAddConstant(at.index, m, int(c))),
+                        assign(j, '+=', ONE),
+                    ])),
+                );
         }
         
-        public shuffleInto(matches: TempArray): Stmt {
-            return this.shuffleIntoOffset(matches, 1, 0);
+        public shuffleInto(prng: PRNG, matches: TempArray): Stmt {
+            return this.shuffleIntoOffset(prng, matches, 1, 0);
         }
         
-        public shuffleIntoOffset(matches: TempArray, m: number, c: number): Stmt {
+        public shuffleIntoOffset(prng: PRNG, matches: TempArray, m: number, c: number): Stmt {
+            return this.forEach(at =>
+                matches.insertShuffled(prng, OP.multAddConstant(at.index, m, int(c)))
+            );
+        }
+        
+        public forEach(then: (at: Location) => Stmt): Stmt {
+            const {ir, g} = this;
             return this.is1x1
-                ? forRange(AT, ZERO, this.count, matches.insertShuffled(OP.multAddConstant(AT, m, int(c))))
-                : forRange(AT_Y, ZERO, this.height, [
-                    forRange(AT_X, ZERO, this.width, matches.insertShuffled(OP.multAddConstant(this.g.index(AT_X, AT_Y), m, int(c)))),
-                ]);
-        }
-        
-        public forEach(then: readonly Stmt[]): Stmt {
-            return this.is1x1
-                ? forRange(AT, ZERO, this.count, [
-                    this.g.declareAtIndex(AT),
-                    ...then,
-                ])
-                : forRange(AT_Y, ZERO, this.height, [
-                    forRange(AT_X, ZERO, this.width, [
-                        this.g.declareAtXY(AT_X, AT_Y),
-                        ...then,
-                    ])
-                ]);
+                ? ir.forRange('i', ZERO, this.count, i =>
+                    g.declareAtIndex(i, then),
+                )
+                : ir.forRange('y', ZERO, this.height, y =>
+                    ir.forRange('x', ZERO, this.width, x =>
+                        g.declareAtXY(x, y, then),
+                    )
+                );
         }
     }
     
     export class EmptySampler implements AbstractSampler {
         public readonly count: Expr = ZERO;
         public readonly isNotEmpty: Expr = FALSE;
-        declare(): Stmt {
-            return PASS;
+        declare(): StmtLevelDecl {
+            return NO_DECL;
         }
-        handleMatch(f: "add" | "del", patternIndex: Expr): Stmt {
+        handleMatch(): Stmt {
             fail();
         }
-        sampleWithReplacement(cases: readonly Stmt[]): Stmt {
-            return throw_(`empty sampler`);
+        sampleWithReplacement(): Stmt {
+            return exprStmt(unusedExpr(`empty sampler`));
         }
-        beginSamplingWithoutReplacement(): Stmt {
+        sampleWithoutReplacement(prng: PRNG, cases: (at: Location, ifT: Stmt, ifF: Stmt) => readonly Stmt[], ifTrue: Stmt, ifFalse: Stmt): Stmt {
+            return exprStmt(unusedExpr(`empty sampler`));
+        }
+        copyInto(matches: SamplerTarget): Stmt {
             return PASS;
         }
-        sampleWithoutReplacement(cases: readonly Stmt[], count: NameExpr): Stmt {
-            return throw_(`empty sampler`);
-        }
-        copyInto(matchesArray: NameExpr): Stmt {
+        copyIntoOffset(matches: SamplerTarget, offset: Expr, m: number, c: number): Stmt {
             return PASS;
         }
-        copyIntoOffset(matchesArray: NameExpr, offset: Expr, m: number, c: number): Stmt {
+        shuffleInto(prng: PRNG, matches: TempArray): Stmt {
+            return matches.declareCount(ZERO);
+        }
+        shuffleIntoOffset(prng: PRNG, matches: TempArray, m: number, c: number): Stmt {
             return PASS;
         }
-        shuffleInto(matches: TempArray): Stmt {
+        forEach(then: (at: Location) => Stmt): Stmt {
             return PASS;
         }
-        shuffleIntoOffset(matches: TempArray, m: number, c: number): Stmt {
-            return PASS;
-        }
-        forEach(then: readonly Stmt[]): Stmt {
-            return PASS;
-        }
-        
     }
 }

@@ -13,21 +13,29 @@ var IR;
     IR.SAMPLER_TYPE = { kind: 'sampler' };
     IR.STR_TYPE = { kind: 'str' };
     IR.VOID_TYPE = { kind: 'void' };
-    IR.GRID_DATA_ARRAY_TYPE = mutableArrayType(128);
-    IR.INT32_ARRAY_TYPE = mutableArrayType(2 ** 32);
-    function mutableArrayType(domainSize) {
+    IR.GRID_DATA_ARRAY_TYPE = mutArrayType(128);
+    IR.INT32_ARRAY_TYPE = mutArrayType(2 ** 32);
+    function mutArrayType(domainSize) {
         return { kind: 'array.mutable', domainSize };
     }
-    IR.mutableArrayType = mutableArrayType;
+    IR.mutArrayType = mutArrayType;
     function constArrayType(domainSize) {
         return { kind: 'array.const', domainSize };
     }
     IR.constArrayType = constArrayType;
     function nullableType(componentType) {
-        return { kind: 'nullable', componentType };
+        return componentType.kind === 'nullable' ? componentType : { kind: 'nullable', componentType };
     }
     IR.nullableType = nullableType;
 })(IR || (IR = {}));
+/**
+ * Abstract syntax tree for a high-level intermediate representation (IR) which
+ * is output by the compiler. The IR is converted into output source code by a
+ * class in the `CodeGen` namespace.
+ *
+ * The IR should be convertible to most imperative languages, so long as they
+ * allow local function declarations to access constants from the outer scope.
+ */
 var IR;
 (function (IR) {
     // all type declarations here must be JSON serialisable, since `JSON.stringify` is used to detect repeated IR code and simplify it
@@ -46,117 +54,256 @@ var IR;
         return key(a) === key(b);
     }
     IR.equals = equals;
-    IR.LOCAL_FUNCTION_FLAGS = {
-        mask_clear: 30 /* NodeFlags.STATE_UPDATE */,
-        mask_set: 30 /* NodeFlags.STATE_UPDATE */,
-        mask_hasnt: 31 /* NodeFlags.STATE_GET */,
+})(IR || (IR = {}));
+var IR;
+(function (IR) {
+    function _addAll(a, b) {
+        if (b !== undefined) {
+            for (const x of b) {
+                a.add(x);
+            }
+        }
+    }
+    class Info {
+        flags;
+        freeVarsGet;
+        freeVarsSet;
+        static DO_NOTHING = new Info(511 /* Flags.DO_NOTHING */);
+        static BREAK = new Info(511 /* Flags.DO_NOTHING */ & ~2 /* Flags.NO_BREAKS */ & ~256 /* Flags.CAN_COMPLETE_NORMALLY */);
+        static CONTINUE = new Info(511 /* Flags.DO_NOTHING */ & ~4 /* Flags.NO_CONTINUES */ & ~256 /* Flags.CAN_COMPLETE_NORMALLY */);
+        static RETURN = new Info(511 /* Flags.DO_NOTHING */ & ~8 /* Flags.NO_RETURNS */ & ~256 /* Flags.CAN_COMPLETE_NORMALLY */);
+        static THROW = new Info(511 /* Flags.DO_NOTHING */ & ~16 /* Flags.NO_THROWS */ & ~256 /* Flags.CAN_COMPLETE_NORMALLY */);
+        static OUTPUT = new Info(511 /* Flags.DO_NOTHING */ & ~32 /* Flags.NO_OUTPUT */);
+        static DEFERRED = new Info(256 /* Flags.CAN_COMPLETE_NORMALLY */, new Set([-1]), new Set([-1]));
+        static UNREACHABLE = new Info(511 /* Flags.DO_NOTHING */ & ~256 /* Flags.CAN_COMPLETE_NORMALLY */);
+        static FRESH_VALUE = new Info(319 /* Flags.NO_SIDE_EFFECTS */ | 128 /* Flags.CONTEXT_INDEPENDENT */);
+        static STATE_GET = new Info(383 /* Flags.STATE_GET */);
+        static STATE_UPDATE = new Info(318 /* Flags.STATE_UPDATE */);
+        static PREAMBLE = new Info(319 /* Flags.NO_SIDE_EFFECTS */ & ~16 /* Flags.NO_THROWS */);
+        static constGet(id) {
+            return new Info(511 /* Flags.DO_NOTHING */, new Set([id]));
+        }
+        static varGet(id) {
+            return new Info(383 /* Flags.STATE_GET */, new Set([id]));
+        }
+        static varSet(id) {
+            return new Info(318 /* Flags.STATE_UPDATE */, undefined, new Set([id]));
+        }
+        static seq(nodes) {
+            return Info.DO_NOTHING.thenSeq(nodes);
+        }
+        constructor(flags, freeVarsGet, freeVarsSet) {
+            this.flags = flags;
+            this.freeVarsGet = freeVarsGet;
+            this.freeVarsSet = freeVarsSet;
+            if (freeVarsGet?.size === 0) {
+                this.freeVarsGet = undefined;
+            }
+            if (freeVarsSet?.size === 0) {
+                this.freeVarsSet = undefined;
+            }
+        }
+        toJSON() { }
+        withFlags(flags) {
+            return new Info(flags, this.freeVarsGet, this.freeVarsSet);
+        }
+        withUnionVars(flags, other) {
+            const freeVarsGet = new Set(this.freeVarsGet), freeVarsSet = new Set(this.freeVarsSet);
+            _addAll(freeVarsGet, other.freeVarsGet);
+            _addAll(freeVarsSet, other.freeVarsSet);
+            return new Info(flags, freeVarsGet, freeVarsSet);
+        }
+        then(other) {
+            return this.withUnionVars(this.flags & other.flags, other);
+        }
+        thenSeq(others) {
+            let flags = this.flags;
+            const freeVarsGet = new Set(this.freeVarsGet), freeVarsSet = new Set(this.freeVarsSet);
+            for (const other of others) {
+                flags &= other.info.flags;
+                _addAll(freeVarsGet, other.info.freeVarsGet);
+                _addAll(freeVarsSet, other.info.freeVarsSet);
+            }
+            return new Info(flags, freeVarsGet, freeVarsSet);
+        }
+        or(other) {
+            const a = this.flags, b = other.flags, c = (a | b) & 256 /* Flags.CAN_COMPLETE_NORMALLY */;
+            return this.withUnionVars((a & b) | c, other);
+        }
+        asLoopBody(infinite) {
+            let flags = this.flags | 6 /* Flags.NO_BREAKS_OR_CONTINUES */;
+            if (this.canBreak()) {
+                flags |= 256 /* Flags.CAN_COMPLETE_NORMALLY */;
+            }
+            else if (infinite) {
+                flags &= ~256 /* Flags.CAN_COMPLETE_NORMALLY */;
+            }
+            return this.withFlags(flags);
+        }
+        asVarDecl(name) {
+            const freeVarsGet = new Set(this.freeVarsGet);
+            const freeVarsSet = new Set(this.freeVarsSet);
+            freeVarsGet.delete(name.id);
+            freeVarsSet.delete(name.id);
+            return new Info(this.flags, freeVarsGet, freeVarsSet);
+        }
+        asFuncDecl(name) {
+            return this.asVarDecl(name)
+                .withFlags(511 /* Flags.DO_NOTHING */);
+        }
+        canGetVar(name) {
+            const s = this.freeVarsGet;
+            return s !== undefined
+                && (s.has(name.id) || s.has(-1));
+        }
+        canSetVar(name) {
+            const s = this.freeVarsSet;
+            return s !== undefined
+                && (s.has(name.id) || s.has(-1));
+        }
+        canUseVar(name) {
+            return this.canGetVar(name) || this.canSetVar(name);
+        }
+        hasFreeVars() {
+            return this.freeVarsGet !== undefined || this.freeVarsSet !== undefined;
+        }
+        hasSideEffects() {
+            return (this.flags & 319 /* Flags.NO_SIDE_EFFECTS */) !== 319 /* Flags.NO_SIDE_EFFECTS */;
+        }
+        isTimeIndependent() {
+            return (this.flags & 447 /* Flags.TIME_INDEPENDENT */) === 447 /* Flags.TIME_INDEPENDENT */;
+        }
+        isLocallyDeterministic() {
+            return (this.flags & 64 /* Flags.LOCALLY_DETERMINISTIC */) !== 0;
+        }
+        canCompleteNormally() {
+            return (this.flags & 256 /* Flags.CAN_COMPLETE_NORMALLY */) !== 0;
+        }
+        canBreakOrContinue() {
+            return (this.flags & 6 /* Flags.NO_BREAKS_OR_CONTINUES */) !== 6 /* Flags.NO_BREAKS_OR_CONTINUES */;
+        }
+        canBreak() {
+            return (this.flags & 2 /* Flags.NO_BREAKS */) === 0;
+        }
+        commutesWith(other) {
+            return (!this.hasSideEffects() || other.info.isTimeIndependent())
+                && (!other.info.hasSideEffects() || this.isTimeIndependent());
+        }
+    }
+    IR.Info = Info;
+    IR.LOCAL_FUNCTION_INFO = {
+        mask_clear: Info.STATE_UPDATE,
+        mask_set: Info.STATE_UPDATE,
+        mask_hasnt: Info.STATE_GET,
     };
-    IR.LIB_FUNCTION_FLAGS = {
-        lfsrFeedbackTerm: 127 /* NodeFlags.PURE_FUNCTION */,
-        nextIntChecked: 95 /* NodeFlags.RAND_CALL */ & ~8 /* NodeFlags.NO_THROWS */,
+    IR.LIB_FUNCTION_INFO = {
+        lfsrFeedbackTerm: Info.DO_NOTHING,
+        nextIntChecked: Info.FRESH_VALUE.or(Info.THROW),
     };
-    IR.LIB_METHOD_FLAGS = {
+    IR.LIB_METHOD_INFO = {
         Grid: {
-            index: 127 /* NodeFlags.PURE_FUNCTION */,
-            toString: 31 /* NodeFlags.STATE_GET */,
-            wrapIndex: 127 /* NodeFlags.PURE_FUNCTION */,
+            index: Info.DO_NOTHING.or(Info.THROW),
+            toString: Info.STATE_GET,
+            wrapIndex: Info.DO_NOTHING,
         },
         PRNG: {
-            nextDouble: 95 /* NodeFlags.RAND_CALL */,
-            nextInt: 95 /* NodeFlags.RAND_CALL */,
+            nextDouble: Info.FRESH_VALUE,
+            nextInt: Info.FRESH_VALUE,
         },
         Pattern: {
-            fitsMask: 31 /* NodeFlags.STATE_GET */,
-            hasEffect: 31 /* NodeFlags.STATE_GET */,
-            put: 30 /* NodeFlags.STATE_UPDATE */,
+            fitsMask: Info.STATE_GET,
+            hasEffect: Info.STATE_GET,
+            put: Info.STATE_UPDATE,
         },
         RewriteInfo: {},
         Sampler: {
-            add: 30 /* NodeFlags.STATE_UPDATE */,
-            copyInto: 30 /* NodeFlags.STATE_UPDATE */,
-            copyIntoOffset: 30 /* NodeFlags.STATE_UPDATE */,
-            del: 30 /* NodeFlags.STATE_UPDATE */,
-            has: 31 /* NodeFlags.STATE_GET */,
-            sample: 31 /* NodeFlags.STATE_GET */,
-            shuffleInto: 30 /* NodeFlags.STATE_UPDATE */,
-            shuffleIntoOffset: 30 /* NodeFlags.STATE_UPDATE */,
+            add: Info.STATE_UPDATE,
+            copyInto: Info.STATE_UPDATE,
+            copyIntoOffset: Info.STATE_UPDATE,
+            del: Info.STATE_UPDATE,
+            has: Info.STATE_GET,
+            sample: Info.STATE_GET,
+            shuffleInto: Info.STATE_UPDATE,
+            shuffleIntoOffset: Info.STATE_UPDATE,
         },
     };
-    function exprHasSideEffects(expr) {
-        return (expr.flags & 31 /* NodeFlags.NO_SIDE_EFFECTS */) !== 31 /* NodeFlags.NO_SIDE_EFFECTS */;
-    }
-    IR.exprHasSideEffects = exprHasSideEffects;
-    function exprIsContextIndependent(expr) {
-        return (expr.flags & 64 /* NodeFlags.CONTEXT_INDEPENDENT */) !== 0;
-    }
-    IR.exprIsContextIndependent = exprIsContextIndependent;
-    function _reduceFlags(flags, nodes) {
-        for (const node of nodes) {
-            flags &= node.flags;
-        }
-        return flags;
-    }
-    IR._reduceFlags = _reduceFlags;
+    IR.LIB_CONSTRUCTOR_INFO = {
+        Grid: Info.FRESH_VALUE,
+        Pattern: Info.DO_NOTHING,
+        RewriteInfo: Info.DO_NOTHING,
+        Sampler: Info.FRESH_VALUE,
+    };
 })(IR || (IR = {}));
 ///<reference path="./ir.ts"/>
+///<reference path="./info.ts"/>
 var IR;
 (function (IR) {
     function float(value) {
         return value === 0 ? IR.FLOAT_ZERO
             : value === 1 ? IR.FLOAT_ONE
                 : value === -1 ? IR.FLOAT_MINUS_ONE
-                    : { kind: 'expr.literal.float', value, flags: 127 /* NodeFlags.CONSTANT */ };
+                    : { kind: 'expr.literal.float', value, info: IR.Info.DO_NOTHING };
     }
     IR.float = float;
     function int(value) {
         return value === 0 ? IR.ZERO
             : value === 1 ? IR.ONE
                 : value === -1 ? IR.MINUS_ONE
-                    : { kind: 'expr.literal.int', value, flags: 127 /* NodeFlags.CONSTANT */ };
+                    : { kind: 'expr.literal.int', value, info: IR.Info.DO_NOTHING };
     }
     IR.int = int;
     function str(value) {
-        return { kind: 'expr.literal.str', value, flags: 127 /* NodeFlags.CONSTANT */ };
+        return { kind: 'expr.literal.str', value, info: IR.Info.DO_NOTHING };
     }
     IR.str = str;
     function isInt(expr) {
         return expr.kind === 'expr.literal.int';
     }
     IR.isInt = isInt;
+    function isSimpleConstant(expr) {
+        return expr.kind.startsWith('expr.literal.')
+            || (expr.kind === 'expr.name' && !expr.isMutable)
+            || expr.kind === 'expr.unused.error';
+    }
+    IR.isSimpleConstant = isSimpleConstant;
     // singleton objects for common values
-    IR.TRUE = { kind: 'expr.literal.bool', value: true, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.FALSE = { kind: 'expr.literal.bool', value: false, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.NULL = { kind: 'expr.literal.null', flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.ZERO = { kind: 'expr.literal.int', value: 0, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.ONE = { kind: 'expr.literal.int', value: 1, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.MINUS_ONE = { kind: 'expr.literal.int', value: -1, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.FLOAT_ZERO = { kind: 'expr.literal.float', value: 0, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.FLOAT_ONE = { kind: 'expr.literal.float', value: 1, flags: 127 /* NodeFlags.CONSTANT */ };
-    IR.FLOAT_MINUS_ONE = { kind: 'expr.literal.float', value: -1, flags: 127 /* NodeFlags.CONSTANT */ };
+    IR.TRUE = { kind: 'expr.literal.bool', value: true, info: IR.Info.DO_NOTHING };
+    IR.FALSE = { kind: 'expr.literal.bool', value: false, info: IR.Info.DO_NOTHING };
+    IR.NULL = { kind: 'expr.literal.null', info: IR.Info.DO_NOTHING };
+    IR.ZERO = { kind: 'expr.literal.int', value: 0, info: IR.Info.DO_NOTHING };
+    IR.ONE = { kind: 'expr.literal.int', value: 1, info: IR.Info.DO_NOTHING };
+    IR.MINUS_ONE = { kind: 'expr.literal.int', value: -1, info: IR.Info.DO_NOTHING };
+    IR.FLOAT_ZERO = { kind: 'expr.literal.float', value: 0, info: IR.Info.DO_NOTHING };
+    IR.FLOAT_ONE = { kind: 'expr.literal.float', value: 1, info: IR.Info.DO_NOTHING };
+    IR.FLOAT_MINUS_ONE = { kind: 'expr.literal.float', value: -1, info: IR.Info.DO_NOTHING };
+    function unusedExpr(error) {
+        return { kind: 'expr.unused.error', error, info: IR.Info.DO_NOTHING };
+    }
+    IR.unusedExpr = unusedExpr;
     function attr(left, attr) {
-        return { kind: 'expr.attr', left, attr, flags: left.flags };
+        return { kind: 'expr.attr', left, attr, info: left.info };
     }
     IR.attr = attr;
     function letIn(decl, child) {
-        const flags = decl.initialiser.flags & child.flags;
-        return { kind: 'expr.letin', decl, child, flags };
+        if (isSimpleConstant(decl.initialiser)) {
+            return IR.replace(child, decl.name, decl.initialiser);
+        }
+        const info = decl.initialiser.info
+            .then(child.info);
+        return { kind: 'expr.letin', decl, child, info };
     }
     IR.letIn = letIn;
-    function nameExpr(name) {
-        return { kind: 'expr.name', name, flags: 31 /* NodeFlags.NO_SIDE_EFFECTS */ };
-    }
-    IR.nameExpr = nameExpr;
+    // TODO: replace with null-coalescing operator in IR
     function param(name, otherwise) {
-        return { kind: 'expr.param', name, otherwise, flags: otherwise.flags };
+        return { kind: 'expr.param', name, otherwise, info: otherwise.info };
     }
     IR.param = param;
     function dict(type, values) {
-        const flags = IR._reduceFlags(127 /* NodeFlags.CONSTANT */, values);
-        return { kind: 'expr.dict', type, values, flags };
+        return { kind: 'expr.dict', type, values, info: IR.Info.seq(values) };
     }
     IR.dict = dict;
     function newArray(length, domainSize) {
-        return { kind: 'expr.array.new', length, domainSize, flags: 95 /* NodeFlags.NEW_MUT_OBJECT */ };
+        return { kind: 'expr.array.new', length, domainSize, info: length.info.then(IR.Info.FRESH_VALUE) };
     }
     IR.newArray = newArray;
     function newGridDataArray(length) {
@@ -168,35 +315,41 @@ var IR;
     }
     IR.newInt32Array = newInt32Array;
     function constArray(from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
-        return { kind: 'expr.array.const', from, domainSize, rowLength, flags: 95 /* NodeFlags.NEW_MUT_OBJECT */ };
+        return { kind: 'expr.array.const', from, domainSize, rowLength, info: IR.Info.DO_NOTHING };
     }
     IR.constArray = constArray;
     function access(left, right) {
-        const flags = left.flags & right.flags;
-        return { kind: 'expr.op.binary', op: 'array_access', left, right, flags };
+        const info = left.info
+            .then(right.info);
+        return { kind: 'expr.op.binary', op: 'array_access', left, right, info };
     }
     IR.access = access;
     function libConstructorCall(className, args) {
-        return { kind: 'expr.op.call.lib.constructor', className, args, flags: IR._reduceFlags(95 /* NodeFlags.NEW_MUT_OBJECT */, args) };
+        const info = IR.LIB_CONSTRUCTOR_INFO[className].thenSeq(args);
+        return { kind: 'expr.op.call.lib.constructor', className, args, info };
     }
     IR.libConstructorCall = libConstructorCall;
     function libFunctionCall(name, args) {
-        const flags = IR._reduceFlags(IR.LIB_FUNCTION_FLAGS[name], args);
-        return { kind: 'expr.op.call.lib.function', name, args, flags };
+        const info = IR.LIB_FUNCTION_INFO[name].thenSeq(args);
+        return { kind: 'expr.op.call.lib.function', name, args, info };
     }
     IR.libFunctionCall = libFunctionCall;
     function libMethodCall(className, name, obj, args) {
-        const flags = IR._reduceFlags(IR.LIB_METHOD_FLAGS[className][name], args);
-        return { kind: 'expr.op.call.lib.method', className, name, obj, args, flags };
+        const info = obj.info
+            .then(IR.LIB_METHOD_INFO[className][name].thenSeq(args));
+        return { kind: 'expr.op.call.lib.method', className, name, obj, args, info };
     }
     IR.libMethodCall = libMethodCall;
     function localCall(name, args, isGetter = false) {
-        const flags = IR._reduceFlags(isGetter ? 31 /* NodeFlags.STATE_GET */ : 30 /* NodeFlags.STATE_UPDATE */, args);
-        return { kind: 'expr.op.call.local', name, args, flags };
+        // TODO: replace isGetter with inference
+        const info = name.info
+            .then(isGetter ? IR.Info.STATE_GET : IR.Info.STATE_UPDATE)
+            .thenSeq(args);
+        return { kind: 'expr.op.call.local', name, args, info };
     }
     IR.localCall = localCall;
     function ternary(condition, then, otherwise) {
-        if (IR.exprHasSideEffects(condition)) {
+        if (condition.info.hasSideEffects()) {
             fail(condition);
         }
         if (condition === IR.TRUE) {
@@ -214,8 +367,9 @@ var IR;
             then = otherwise;
             otherwise = tmp;
         }
-        const flags = condition.flags & then.flags & otherwise.flags;
-        return { kind: 'expr.op.ternary', condition, then, otherwise, flags };
+        const info = condition.info
+            .then(then.info.or(otherwise.info));
+        return { kind: 'expr.op.ternary', condition, then, otherwise, info };
     }
     IR.ternary = ternary;
     function binaryOp(op, left, right) {
@@ -338,6 +492,12 @@ var IR;
         switch (op) {
             case 'bool_not':
                 return IR.OP.not(child);
+            case 'int_ctz':
+                return IR.OP.countTrailingZeros(child);
+            case 'int_not':
+                return IR.OP.bitwiseNot(child);
+            case 'float_log2':
+                return IR.OP.log2(child);
             case 'float_uminus':
             case 'fraction_uminus':
             case 'int_uminus':
@@ -380,15 +540,16 @@ var IR;
         str_ne: 'str_eq',
     });
     function _binOp(op, left, right) {
-        const flags = left.flags & right.flags;
-        return { kind: 'expr.op.binary', op, left, right, flags };
+        const info = left.info
+            .then(right.info);
+        return { kind: 'expr.op.binary', op, left, right, info };
     }
     function _unOp(op, child) {
-        let flags = child.flags;
+        let info = child.info;
         if (op === 'int_checkzero' || op === 'float_checkzero') {
-            flags &= ~8 /* NodeFlags.NO_THROWS */;
+            info = info.or(IR.Info.THROW);
         }
-        return { kind: 'expr.op.unary', op, child, flags };
+        return { kind: 'expr.op.unary', op, child, info };
     }
     function _isPowerOfTwo(x) {
         return x > 0 && (x & (x - 1)) === 0;
@@ -425,6 +586,20 @@ var IR;
                 return expr.child;
             }
             return _unOp('bool_not', expr);
+        },
+        all(xs, f) {
+            let r = IR.TRUE;
+            xs.forEach((...args) => {
+                r = IR.OP.and(r, f(...args));
+            });
+            return r;
+        },
+        some(xs, f) {
+            let r = IR.FALSE;
+            xs.forEach((...args) => {
+                r = IR.OP.or(r, f(...args));
+            });
+            return r;
         },
         add(left, right) {
             if (left.kind === 'expr.op.binary' && (left.op === 'loose_int_plus' || left.op === 'loose_int_minus') && isInt(right)) {
@@ -596,38 +771,16 @@ var IR;
         },
     };
 })(IR || (IR = {}));
-/**
- * Abstract syntax tree for a high-level intermediate representation (IR) which
- * is output by the compiler. The IR is converted into output source code by a
- * class in the `CodeGen` namespace.
- *
- * The IR should be convertible to most imperative languages, so long as they
- * allow local function declarations to access constants from the outer scope.
- */
+///<reference path="./ir.ts"/>
+///<reference path="./info.ts"/>
 var IR;
 (function (IR) {
     IR.DEFAULT_ROW_LENGTH = 16;
-    function constArrayDecl(name, from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
-        return {
-            name,
-            type: IR.constArrayType(domainSize),
-            initialiser: IR.constArray(from, domainSize, rowLength),
-        };
-    }
-    IR.constArrayDecl = constArrayDecl;
-    function newArrayDecl(name, length, domainSize) {
-        return {
-            name,
-            type: IR.mutableArrayType(domainSize),
-            initialiser: IR.newArray(length, domainSize),
-        };
-    }
-    IR.newArrayDecl = newArrayDecl;
     // singletons
-    IR.BLANK_LINE = { kind: 'stmt.blankline', flags: 63 /* NodeFlags.DO_NOTHING */ };
-    IR.BREAK = { kind: 'stmt.break', flags: 63 /* NodeFlags.DO_NOTHING */ & ~2 /* NodeFlags.NO_BREAKS */ };
-    IR.CONTINUE = { kind: 'stmt.continue', flags: 63 /* NodeFlags.DO_NOTHING */ & ~2 /* NodeFlags.NO_BREAKS */ };
-    IR.PASS = { kind: 'stmt.pass', flags: 63 /* NodeFlags.DO_NOTHING */ };
+    IR.BLANK_LINE = { kind: 'stmt.blankline', info: IR.Info.DO_NOTHING };
+    IR.BREAK = { kind: 'stmt.break', info: IR.Info.BREAK };
+    IR.CONTINUE = { kind: 'stmt.continue', info: IR.Info.BREAK };
+    IR.PASS = { kind: 'stmt.pass', info: IR.Info.DO_NOTHING };
     function assign(left, op, right) {
         if (IR.isInt(right)) {
             if (right.value === 0) {
@@ -647,76 +800,105 @@ var IR;
             op = op === '+=' ? '-=' : '+=';
             right = right.child;
         }
-        const flags = left.flags & right.flags & ~1 /* NodeFlags.NO_STATE_CHANGES */;
-        return { kind: 'stmt.assign', op, left, right, flags };
+        let info = left.kind === 'expr.name' && op === '='
+            ? IR.Info.DO_NOTHING
+            : left.info;
+        info = info.then(right.info)
+            .then(left.kind === 'expr.name' ? IR.Info.varSet(left.id) : IR.Info.STATE_UPDATE);
+        return { kind: 'stmt.assign', op, left, right, info };
     }
     IR.assign = assign;
-    function block(children) {
-        children = children.flatMap(c => c.kind === 'stmt.block' ? c.children
-            : c === IR.PASS ? []
-                : [c]);
-        return children.length === 0 ? IR.PASS
-            : children.length === 1 ? children[0]
-                : { kind: 'stmt.block', children, flags: IR._reduceFlags(63 /* NodeFlags.DO_NOTHING */, children) };
-    }
-    IR.block = block;
-    function comment(comment) {
-        return { kind: 'stmt.comment', comment, flags: 63 /* NodeFlags.DO_NOTHING */ };
-    }
-    IR.comment = comment;
-    function declFunc(name, yields, params, paramTypes, returnType, body) {
-        return { kind: 'stmt.decl.func', name, yields, params, paramTypes, returnType, body, flags: 63 /* NodeFlags.DO_NOTHING */ };
-    }
-    IR.declFunc = declFunc;
-    function declVar(name, type, initialiser, mutable = false) {
-        return declVars([{ name, type, initialiser }], mutable);
-    }
-    IR.declVar = declVar;
-    function declVars(decls, mutable = false) {
-        let flags = 63 /* NodeFlags.DO_NOTHING */ & ~1 /* NodeFlags.NO_STATE_CHANGES */;
-        for (const decl of decls) {
-            if (decl.initialiser !== undefined) {
-                flags &= decl.initialiser.flags;
+    function seq(stmts) {
+        const children = [];
+        for (const stmt of stmts) {
+            if (stmt.kind === 'stmt.sequence') {
+                children.push(...stmt.children);
+            }
+            else if (stmt !== IR.PASS) {
+                children.push(stmt);
+            }
+            if (!stmt.info.canCompleteNormally()) {
+                break;
             }
         }
-        return decls.length > 0 ? { kind: 'stmt.decl.vars', decls, mutable, flags } : IR.PASS;
+        return children.length === 0 ? IR.PASS
+            : children.length === 1 ? children[0]
+                : { kind: 'stmt.sequence', children, info: IR.Info.seq(children) };
     }
-    IR.declVars = declVars;
-    function forRange(index, low, high, stmts, reverse = false) {
-        const body = block(stmts);
-        const flags = body.flags | 2 /* NodeFlags.NO_BREAKS */;
-        return body === IR.PASS ? IR.PASS : { kind: 'stmt.for.range', index, low, high, reverse, body, flags };
+    IR.seq = seq;
+    function comment(comment) {
+        return { kind: 'stmt.comment', comment, info: IR.Info.DO_NOTHING };
+    }
+    IR.comment = comment;
+    function exportDecl(decl) {
+        return { kind: 'stmt.export', decl, info: IR.Info.DO_NOTHING };
+    }
+    IR.exportDecl = exportDecl;
+    function forRange(index, low, high, body, reverse = false) {
+        if (body === IR.PASS) {
+            return IR.PASS;
+        }
+        else if (body.kind === 'stmt.if' && !body.condition.info.hasSideEffects() && body.condition.info.isLocallyDeterministic() && !body.condition.info.canUseVar(index.name)) {
+            // replace `for if(cond) A else B` with `if(cond) { for A } else { for B }`
+            // only allowed if cond is safe to repeatedly evaluate and doesn't involve loop variable
+            return if_(body.condition, forRange(index, low, high, body.then, reverse), forRange(index, low, high, body.otherwise ?? IR.PASS, reverse));
+        }
+        else if (body.kind === 'stmt.decl' && !body.decl.info.hasSideEffects() && body.decl.info.isLocallyDeterministic() && !body.decl.info.canUseVar(index.name)) {
+            // replace `for decl in A` with `decl in for A`
+            // only allowed if decl is safe to repeatedly evaluate and doesn't involve loop variable
+            return withDecl(body.decl, forRange(index, low, high, body.child, reverse));
+        }
+        let info = body.info.asLoopBody(false);
+        if (!IR.isInt(low) || !IR.isInt(high)) {
+            // possible that body executes 0 times
+            info = info.or(IR.Info.DO_NOTHING);
+        }
+        else if (low.value === high.value) {
+            return IR.PASS;
+        }
+        else if (low.value + 1 === high.value && !body.info.canBreakOrContinue()) {
+            return withConst(index.name, IR.INT_TYPE, low, body);
+        }
+        if (!body.info.canCompleteNormally() && !body.info.canBreakOrContinue()) {
+            const first = reverse ? IR.OP.minusConstant(high, 1) : low;
+            return if_(IR.OP.lt(low, high), withConst(index.name, IR.INT_TYPE, first, body));
+        }
+        info = low.info
+            .then(high.info)
+            .then(info.asVarDecl(index.name));
+        return { kind: 'stmt.for.range', index, low, high, reverse, body, info };
     }
     IR.forRange = forRange;
-    function forRangeReverse(index, low, high, stmts) {
-        return forRange(index, low, high, stmts, true);
+    function forRangeReverse(index, low, high, body) {
+        return forRange(index, low, high, body, true);
     }
     IR.forRangeReverse = forRangeReverse;
     function if_(condition, then, otherwise) {
-        if (IR.exprHasSideEffects(condition)) {
-            fail(condition);
+        if (condition.info.hasSideEffects()) {
+            fail('if statement condition must not have side-effects', condition);
         }
-        if (otherwise === IR.PASS) {
-            otherwise = undefined;
+        if (otherwise === undefined) {
+            otherwise = IR.PASS;
         }
         // assumes condition is pure
         if (condition === IR.TRUE) {
             return then;
         }
         else if (condition === IR.FALSE) {
-            return otherwise ?? IR.PASS;
+            return otherwise;
         }
         else if (IR.equals(then, otherwise)) {
             return then;
         }
         else if (then === IR.PASS) {
-            return otherwise === undefined ? IR.PASS : if_(IR.OP.not(condition), otherwise);
+            // otherwise !== PASS by above
+            return if_(IR.OP.not(condition), otherwise);
         }
-        else if (then.kind === 'stmt.assign' && otherwise !== undefined && otherwise.kind === 'stmt.assign' && IR.equals(then.left, otherwise.left) && then.op === otherwise.op) {
+        else if (then.kind === 'stmt.assign' && otherwise.kind === 'stmt.assign' && IR.equals(then.left, otherwise.left) && then.op === otherwise.op) {
             // replace `if(c) { x = a; } else { x = b; }` with `x = c ? a : b;`
             return assign(then.left, then.op, IR.ternary(condition, then.right, otherwise.right));
         }
-        else if (then.kind === 'stmt.for.range' && then.low === IR.ZERO && (IR.equals(condition, IR.OP.gt(then.high, IR.ZERO)) || IR.equals(condition, IR.OP.lt(IR.ZERO, then.high))) && otherwise === undefined) {
+        else if (then.kind === 'stmt.for.range' && (IR.equals(condition, IR.OP.lt(then.low, then.high)) || IR.equals(condition, IR.OP.gt(then.high, then.low))) && otherwise === IR.PASS) {
             // omit redundant `if` statement guarding a `for` loop
             return then;
         }
@@ -728,31 +910,42 @@ var IR;
             // replace `if(c1) { if(c2) B else A } else B` with `if(c1 && !c2) A else B`
             return if_(IR.OP.and(condition, IR.OP.not(then.condition)), then.otherwise ?? IR.PASS, otherwise);
         }
-        else if (then.kind === 'stmt.block' && otherwise !== undefined && otherwise.kind === 'stmt.block') {
+        else if (then.kind === 'stmt.sequence' && otherwise.kind === 'stmt.sequence') {
             // replace `if(c) { ...; A } else { ...; A }` with `if(c) { ... } else { ... } A`
-            // moving from the start of each block instead of the end would be unsound, since it could change the condition's value
             const thenC = then.children, otherC = otherwise.children;
-            let i = thenC.length, j = otherC.length;
-            while (i > 0 && j > 0 && IR.equals(thenC[i - 1], otherC[j - 1])) {
-                --i;
-                --j;
+            let i = 0, j = thenC.length, k = otherC.length;
+            // moving the condition forwards is only sound if it is time-independent
+            while (i < thenC.length && i < otherC.length && condition.info.commutesWith(thenC[i]) && IR.equals(thenC[i], otherC[i])) {
+                ++i;
             }
-            if (i < thenC.length) {
-                return block([
-                    if_(condition, block(thenC.slice(0, i)), block(otherC.slice(0, j))),
-                    ...thenC.slice(i),
+            while (j > i && k > i && IR.equals(thenC[j - 1], otherC[k - 1])) {
+                --j;
+                --k;
+            }
+            if (i > 0 || j < thenC.length) {
+                return seq([
+                    ...thenC.slice(0, i),
+                    if_(condition, seq(thenC.slice(i, j)), seq(otherC.slice(i, k))),
+                    ...thenC.slice(j),
                 ]);
             }
         }
-        let flags = condition.flags & then.flags;
-        if (otherwise !== undefined) {
-            flags &= otherwise.flags;
+        if (!then.info.canCompleteNormally() && otherwise !== IR.PASS) {
+            return seq([if_(condition, then), otherwise]);
         }
-        return { kind: 'stmt.if', condition, then, otherwise, flags };
+        else if (!otherwise.info.canCompleteNormally()) {
+            return seq([if_(IR.OP.not(condition), otherwise), then]);
+        }
+        const info = condition.info
+            .then(then.info.or(otherwise.info));
+        if (otherwise === IR.PASS) {
+            otherwise = undefined;
+        }
+        return { kind: 'stmt.if', condition, then, otherwise, info };
     }
     IR.if_ = if_;
     function exprStmt(expr) {
-        return IR.exprHasSideEffects(expr) ? { kind: 'stmt.expr', expr, flags: expr.flags } : IR.PASS;
+        return expr.info.hasSideEffects() ? { kind: 'stmt.expr', expr, info: expr.info } : IR.PASS;
     }
     IR.exprStmt = exprStmt;
     function libFunctionCallStmt(f, args) {
@@ -768,23 +961,22 @@ var IR;
     }
     IR.localCallStmt = localCallStmt;
     function log(expr) {
-        const flags = expr.flags & ~16 /* NodeFlags.NO_OUTPUT */;
-        return { kind: 'stmt.log', expr, flags };
+        return { kind: 'stmt.log', expr, info: IR.Info.OUTPUT };
     }
     IR.log = log;
     function preamble(paramTypes, emitChecks, libVersion, opsUsed) {
-        return { kind: 'stmt.preamble', paramTypes, emitChecks, libVersion, opsUsed, flags: 32 /* NodeFlags.LOCALLY_DETERMINISTIC */ };
+        return { kind: 'stmt.preamble', paramTypes, emitChecks, libVersion, opsUsed, info: IR.Info.PREAMBLE };
     }
     IR.preamble = preamble;
     function return_(expr) {
-        const flags = (expr !== undefined ? expr.flags : 63 /* NodeFlags.DO_NOTHING */) & ~4 /* NodeFlags.NO_RETURNS */;
-        return { kind: 'stmt.return', expr, flags };
+        const info = expr !== undefined ? expr.info.then(IR.Info.RETURN) : IR.Info.RETURN;
+        return { kind: 'stmt.return', expr, info };
     }
     IR.return_ = return_;
     function switch_(expr, casesByIndex, optimise = false) {
-        // TODO: optimisation depends on referential transparency
-        if (IR.exprHasSideEffects(expr)) {
-            fail(expr);
+        // TODO: some transformations depend on expr being locally constant, since we repeat it in some conditions, or replace it with its value when optimising
+        if (expr.info.hasSideEffects()) {
+            fail('switch statement scrutinee must not have side-effects', expr);
         }
         if (casesByIndex.length === 0) {
             return IR.PASS;
@@ -806,8 +998,8 @@ var IR;
                 exhaustive = false;
                 continue;
             }
-            if ((c.flags & 2 /* NodeFlags.NO_BREAKS */) === 0) {
-                fail(c);
+            if (c.info.canBreakOrContinue()) {
+                fail('switch statement cases cannot contain break/continue', c);
             }
             const k = IR.key(c);
             getOrCompute(map, k, () => ({ values: [], then: c })).values.push(i);
@@ -825,11 +1017,11 @@ var IR;
     function _eqAny(expr, values) {
         return values.length > 1 && values.every(v => v < values.length)
             ? IR.OP.lt(expr, IR.int(values.length))
-            : values.map(v => IR.OP.eq(expr, IR.int(v))).reduce(IR.OP.or, IR.FALSE);
+            : IR.OP.some(values, v => IR.OP.eq(expr, IR.int(v)));
     }
     function switchCases(expr, cases, exhaustive) {
-        if (IR.exprHasSideEffects(expr)) {
-            fail(expr);
+        if (expr.info.hasSideEffects()) {
+            fail('switch statement scrutinee must not have side-effects', expr);
         }
         if (cases.length === 0) {
             return IR.PASS;
@@ -842,283 +1034,426 @@ var IR;
             const a = cases[0], b = cases[1];
             return if_(_eqAny(expr, a.values), a.then, b.then);
         }
-        let flags = expr.flags;
+        let info = exhaustive ? IR.Info.UNREACHABLE : IR.Info.DO_NOTHING;
         for (const c of cases) {
-            flags &= c.then.flags;
+            info = info.or(c.then.info);
         }
-        return cases.length === 0 ? IR.PASS
-            : cases.length === 1 && exhaustive ? cases[0].then
-                : cases.length <= 2 && cases[0].values.length === 1 ? if_(IR.OP.eq(expr, IR.int(cases[0].values[0])), cases[0].then, cases.length === 2 ? cases[1].then : undefined)
-                    : { kind: 'stmt.switch', expr, cases, exhaustive, flags };
+        info = expr.info.then(info);
+        return { kind: 'stmt.switch', expr, cases, exhaustive, info };
     }
     IR.switchCases = switchCases;
     function throw_(message) {
-        return { kind: 'stmt.throw', message, flags: 63 /* NodeFlags.DO_NOTHING */ & ~8 /* NodeFlags.NO_THROWS */ };
+        return { kind: 'stmt.throw', message, info: IR.Info.THROW };
     }
     IR.throw_ = throw_;
     function while_(condition, then) {
-        if (IR.exprHasSideEffects(condition)) {
-            fail(condition);
-        }
-        if (then === IR.BREAK) {
-            return IR.PASS;
+        if (condition.info.hasSideEffects()) {
+            fail('while statement condition must not have side-effects', condition);
         }
         if (then.kind === 'stmt.if') {
             if (then.then === IR.BREAK) {
-                condition = IR.OP.and(condition, IR.OP.not(then.condition));
-                then = then.otherwise ?? IR.PASS;
+                return while_(IR.OP.and(condition, IR.OP.not(then.condition)), then.otherwise ?? IR.PASS);
             }
             else if (then.otherwise === IR.BREAK) {
-                condition = IR.OP.and(condition, then.condition);
-                then = then.then;
+                return while_(IR.OP.and(condition, then.condition), then.then);
             }
         }
-        if (then.kind === 'stmt.block' && then.children[then.children.length - 1] === IR.BREAK) {
-            const r = block(then.children.slice(0, then.children.length - 1));
-            if ((r.flags & 2 /* NodeFlags.NO_BREAKS */) !== 0) {
-                return r;
+        else if (then.kind === 'stmt.sequence') {
+            const firstChild = then.children[0], lastChild = then.children[then.children.length - 1];
+            if (firstChild.kind === 'stmt.if') {
+                if (firstChild.then === IR.BREAK) {
+                    return while_(IR.OP.and(condition, IR.OP.not(firstChild.condition)), seq([firstChild.otherwise ?? IR.PASS, ...then.children.slice(1)]));
+                }
+                else if (firstChild.otherwise === IR.BREAK) {
+                    return while_(IR.OP.and(condition, firstChild.condition), seq([firstChild.then, ...then.children.slice(1)]));
+                }
+            }
+            if (lastChild === IR.BREAK) {
+                const r = seq(then.children.slice(0, then.children.length - 1));
+                if (!r.info.canBreakOrContinue()) {
+                    return r;
+                }
+            }
+            else if (lastChild === IR.CONTINUE) {
+                const r = seq(then.children.slice(0, then.children.length - 1));
+                return while_(condition, r);
             }
         }
-        // the compiler won't ever output an infinite loop that does nothing; if the loop body is empty, then the condition must be false
-        const flags = condition.flags & (then.flags | 2 /* NodeFlags.NO_BREAKS */);
-        return then === IR.PASS || then === IR.BREAK ? IR.PASS
-            : { kind: 'stmt.while', condition, then, flags };
+        if (condition === IR.FALSE || then == IR.BREAK) {
+            return IR.PASS;
+        }
+        else if (then === IR.PASS || then === IR.CONTINUE) {
+            // the compiler shouldn't ever output an infinite loop that does nothing
+            fail(`empty while loop should have impossible condition`, condition);
+        }
+        else if (!then.info.canBreakOrContinue() && !then.info.canCompleteNormally()) {
+            // if the body won't finish then the loop won't iterate more than once
+            return if_(condition, then);
+        }
+        const info = condition.info
+            .then(then.info.asLoopBody(condition === IR.TRUE));
+        return { kind: 'stmt.while', condition, then, info };
     }
     IR.while_ = while_;
+    function withDecls(decls, child) {
+        for (let i = decls.length - 1; i >= 0; --i) {
+            child = withDecl(decls[i], child);
+        }
+        return child;
+    }
+    IR.withDecls = withDecls;
+    function withDecl(decl, child) {
+        switch (decl.kind) {
+            case 'decl.none':
+                return child;
+            case 'decl.multi':
+                return withDecls(decl.children, child);
+            case 'decl.init':
+                return withDecl(decl.child, seq([decl.stmt, child]));
+            case 'decl.var.const':
+                return withConst(decl.name, decl.type, decl.initialiser, child);
+            case 'decl.var.mut':
+                return withVar(decl.name, decl.type, decl.initialiser, child);
+            case 'decl.func':
+                return withFunc(decl, child);
+        }
+    }
+    IR.withDecl = withDecl;
+    function withConst(name, type, initialiser, child) {
+        if (!child.info.canGetVar(name)) {
+            return seq([exprStmt(initialiser), child]);
+        }
+        else if (IR.isSimpleConstant(initialiser)) {
+            return IR.replace(child, name, initialiser);
+        }
+        else if (!initialiser.info.hasSideEffects() && child.kind === 'stmt.if' && child.otherwise === undefined && !child.condition.info.canUseVar(name) && child.condition.info.commutesWith(initialiser)) {
+            // replace `const x = A; if(B) C` with `if(B) { const x = A; C }
+            return if_(child.condition, withConst(name, type, initialiser, child.then));
+        }
+        const info = initialiser.info
+            .then(child.info.asVarDecl(name));
+        return { kind: 'stmt.decl', decl: { kind: 'decl.var.const', name, type, initialiser, info: initialiser.info }, child, info };
+    }
+    IR.withConst = withConst;
+    function withVar(name, type, initialiser, child) {
+        if (!child.info.canGetVar(name)) {
+            // TODO: remove assignment statements from child
+            if (!child.info.canSetVar(name)) {
+                return initialiser === undefined ? child : seq([exprStmt(initialiser), child]);
+            }
+        }
+        else if (!child.info.canSetVar(name)) {
+            const constName = { kind: 'expr.name', id: name.id, namePart: name.namePart, isMutable: false, info: IR.Info.constGet(name.id) };
+            return withConst(constName, type, initialiser ?? fail(), IR.replace(child, name, constName));
+        }
+        if (initialiser === undefined && child.kind === 'stmt.sequence') {
+            const firstChild = child.children[0];
+            if (firstChild.kind === 'stmt.assign' && firstChild.op === '=' && IR.equals(firstChild.left, name)) {
+                return withVar(name, type, firstChild.right, seq(child.children.slice(1)));
+            }
+        }
+        let info = child.info.asVarDecl(name);
+        if (initialiser !== undefined) {
+            info = initialiser.info.then(info);
+        }
+        return { kind: 'stmt.decl', decl: { kind: 'decl.var.mut', name, type, initialiser, info: initialiser !== undefined ? initialiser.info : IR.Info.DO_NOTHING }, child, info };
+    }
+    IR.withVar = withVar;
+    function withFunc(decl, child) {
+        if (!child.info.canGetVar(decl.name)) {
+            return child;
+        }
+        return { kind: 'stmt.decl', decl, child, info: decl.info.then(child.info) };
+    }
+    IR.withFunc = withFunc;
     function yield_(expr) {
-        const flags = (expr !== undefined ? expr.flags : 63 /* NodeFlags.DO_NOTHING */) & ~16 /* NodeFlags.NO_OUTPUT */;
-        return { kind: 'stmt.yield', expr, flags };
+        const info = expr !== undefined ? expr.info.then(IR.Info.OUTPUT) : IR.Info.OUTPUT;
+        return { kind: 'stmt.yield', expr, info };
     }
     IR.yield_ = yield_;
 })(IR || (IR = {}));
 ///<reference path="./expr.ts"/>
 ///<reference path="./stmt.ts"/>
+///<reference path="./types.ts"/>
 var IR;
 (function (IR) {
-    IR.NAMES = {
-        WIDTH: IR.nameExpr('width'),
-        HEIGHT: IR.nameExpr('height'),
-        PARAMS: IR.nameExpr('params'),
-        RNG: IR.nameExpr('rng'),
-        STATE: IR.nameExpr('state'),
-        ITERATIONS: IR.nameExpr('iterations'),
-        AT: IR.nameExpr('at'),
-        AT_X: IR.nameExpr('atX'),
-        AT_Y: IR.nameExpr('atY'),
-        AT_CONV: IR.nameExpr('atConv'),
-        MATCHES: IR.nameExpr('matches'),
-        MATCH_COUNT: IR.nameExpr('count'),
-        MATCH: IR.nameExpr('m'),
-        ANY: IR.nameExpr('any'),
-        G: IR.nameExpr('g'),
-        I: IR.nameExpr('i'),
-        J: IR.nameExpr('j'),
-        N: IR.nameExpr('n'),
-        P: IR.nameExpr('p'),
-        START_X: IR.nameExpr('startX'),
-        START_Y: IR.nameExpr('startY'),
-        END_X: IR.nameExpr('endX'),
-        END_Y: IR.nameExpr('endY'),
-        EFFECTIVE_WIDTH: IR.nameExpr('w'),
-        EFFECTIVE_HEIGHT: IR.nameExpr('h'),
-        S: IR.nameExpr('s'),
-        OLD_S: IR.nameExpr('oldS'),
-        T: IR.nameExpr('t'),
-        OLD_T: IR.nameExpr('oldT'),
-        U: IR.nameExpr('u'),
-        MASK: IR.nameExpr('mask'),
-        MASK_CLEAR: IR.nameExpr('mask_clear'),
-        MASK_SET: IR.nameExpr('mask_set'),
-        MASK_HASNT: IR.nameExpr('mask_hasnt'),
-        constant(id) {
-            return IR.nameExpr(`constant${id}`);
-        },
-        counter(g, id) {
-            return IR.nameExpr(`grid${g.grid.id}_counter${id}`);
-        },
-        flag(id) {
-            return IR.nameExpr(`f${id}`);
-        },
-        limit(id) {
-            return IR.nameExpr(`limit${id}`);
-        },
-        sampler(g, id) {
-            return IR.nameExpr(`grid${g.grid.id}_sampler${id}`);
-        },
-        tmpPattern(id) {
-            return IR.nameExpr(`p${id}`);
-        },
-        variable(v) {
-            return IR.nameExpr(`_${v.uniqueName}`);
-        },
-        convBufferVar(g, id, v) {
-            return IR.nameExpr(`grid${g.grid.id}_conv${id}_${v}`);
-        },
-        gridVar(g, v) {
-            return IR.nameExpr(`grid${g.grid.id}_${v}`);
-        },
-        matcherVar(g, id, v) {
-            return IR.nameExpr(`grid${g.grid.id}_matcher${id}_${v}`);
-        },
-        otherVar(stmtID, name) {
-            return IR.nameExpr(`stmt${stmtID}_${name}`);
-        },
-    };
+    class Factory {
+        lastID = -1;
+        nextName(namePart, isMutable) {
+            const id = ++this.lastID;
+            return { kind: 'expr.name', id, namePart, isMutable, info: isMutable ? IR.Info.varGet(id) : IR.Info.constGet(id) };
+        }
+        deferredExpr(purpose) {
+            return { kind: 'expr.unused.deferred', id: ++this.lastID, purpose, info: IR.Info.DEFERRED };
+        }
+        func(namePart) {
+            return this.nextName(namePart, false);
+        }
+        constDecl(namePart, type, initialiser) {
+            const name = this.nextName(namePart, false);
+            return { kind: 'decl.var.const', name, type, initialiser, info: initialiser.info };
+        }
+        loopVarDecl(namePart = 'i', type = IR.INT_TYPE) {
+            const name = this.nextName(namePart, false);
+            return { kind: 'decl.var.loop', name, type, info: IR.Info.DO_NOTHING };
+        }
+        paramDecl(namePart, type, isOptional = false) {
+            const name = this.nextName(namePart, false);
+            let initialiser = undefined;
+            if (isOptional) {
+                type = IR.nullableType(type);
+                initialiser = IR.NULL;
+            }
+            return { kind: 'decl.var.param', name, type, isOptional, initialiser, info: IR.Info.DO_NOTHING };
+        }
+        varDecl(namePart, type, initialiser) {
+            const name = this.nextName(namePart, true);
+            const info = initialiser !== undefined ? initialiser.info : IR.Info.DO_NOTHING;
+            return { kind: 'decl.var.mut', name, type, initialiser, info };
+        }
+        flag() {
+            const decl = this.varDecl('flag', IR.BOOL_TYPE, IR.FALSE);
+            return {
+                decl,
+                set: IR.assign(decl.name, '=', IR.TRUE),
+                unset: IR.assign(decl.name, '=', IR.FALSE),
+                check: decl.name,
+            };
+        }
+        constArrayDecl(namePart, from, domainSize, rowLength = IR.DEFAULT_ROW_LENGTH) {
+            return this.constDecl(namePart, IR.constArrayType(domainSize), IR.constArray(from, domainSize, rowLength));
+        }
+        mutArrayDecl(namePart, length, domainSize) {
+            return this.constDecl(namePart, IR.mutArrayType(domainSize), IR.newArray(length, domainSize));
+        }
+        withConst(namePart, type, initialiser, child) {
+            if (IR.isSimpleConstant(initialiser)) {
+                return child(initialiser);
+            }
+            const name = this.nextName(namePart, false);
+            return IR.withConst(name, type, initialiser, child(name));
+        }
+        withVar(namePart, type, initialiser, child) {
+            const name = this.nextName(namePart, true);
+            return IR.withVar(name, type, initialiser, child(name));
+        }
+        forRange(namePart, low, high, body, reverse = false) {
+            const decl = this.loopVarDecl(namePart);
+            return IR.forRange(decl, low, high, body(decl.name), reverse);
+        }
+        forRangeReverse(namePart, low, high, body) {
+            return this.forRange(namePart, low, high, body, true);
+        }
+    }
+    IR.Factory = Factory;
 })(IR || (IR = {}));
-///<reference path="./names.ts"/>
 var IR;
 (function (IR) {
-    const { RNG } = IR.NAMES;
-    IR.PRNG = {
+    class PRNG {
+        name;
+        constructor(name) {
+            this.name = name;
+        }
         nextInt(n) {
-            return IR.isInt(n) && n.value === 1 ? IR.ZERO
-                : IR.libMethodCall('PRNG', 'nextInt', RNG, [n]);
-        },
+            return n === IR.ONE ? IR.ZERO : IR.libMethodCall('PRNG', 'nextInt', this.name, [n]);
+        }
         nextIntChecked(n) {
-            return IR.libFunctionCall('nextIntChecked', [RNG, n]);
-        },
-        NEXT_DOUBLE: IR.libMethodCall('PRNG', 'nextDouble', RNG, []),
-    };
+            return IR.libFunctionCall('nextIntChecked', [this.name, n]);
+        }
+        _nextDouble;
+        nextDouble() {
+            return this._nextDouble ??= IR.libMethodCall('PRNG', 'nextDouble', this.name, []);
+        }
+    }
+    IR.PRNG = PRNG;
 })(IR || (IR = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 ///<reference path="../ir/prng.ts"/>
+///<reference path="compiler.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT, AT_X, AT_Y, }, OP, PRNG, } = IR;
-    function compileExpr(c, expr) {
-        switch (expr.kind) {
-            case 'expr.attr.dict':
-                return IR.attr(c.expr(expr.left), expr.attr);
-            case 'expr.attr.grid':
-                return c.grids[expr.grid].attr(expr.attr);
-            case 'expr.attr.position': {
-                const g = c.grids[expr.left.type.inGrid];
-                // optimise common cases
-                if (expr.left.kind === 'expr.name.keyword') {
-                    switch (expr.left.name) {
-                        case 'at':
-                            return expr.attr === 'x' ? AT_X
-                                : expr.attr === 'y' ? AT_Y
-                                    : fail();
-                        case 'origin':
-                            return expr.attr === 'x' ? g.originX
-                                : expr.attr === 'y' ? g.originY
-                                    : fail();
+    const { OP, } = IR;
+    const UNUSED_POSITION = {
+        index: IR.unusedExpr('at.index'),
+        x: IR.unusedExpr('at.x'),
+        y: IR.unusedExpr('at.y'),
+    };
+    const UNUSED_AT_CONV = IR.unusedExpr('at.conv');
+    class CompilerContext {
+        c;
+        variables;
+        at;
+        atConv;
+        static root(c) {
+            return new CompilerContext(c, new Map(), undefined, undefined);
+        }
+        constructor(c, variables, at, atConv) {
+            this.c = c;
+            this.variables = variables;
+            this.at = at;
+            this.atConv = atConv;
+        }
+        withVariable(id, name) {
+            const variables = new Map(this.variables);
+            variables.set(id, name);
+            return new CompilerContext(this.c, variables, this.at, this.atConv);
+        }
+        withPosition(at) {
+            return new CompilerContext(this.c, this.variables, at, this.atConv);
+        }
+        withConvPosition(at, atConv) {
+            return new CompilerContext(this.c, this.variables, at, atConv);
+        }
+        expr(expr) {
+            switch (expr.kind) {
+                case 'expr.attr.dict': {
+                    return IR.attr(this.expr(expr.left), expr.attr);
+                }
+                case 'expr.attr.grid': {
+                    return this.c.grids[expr.grid].attr(expr.attr);
+                }
+                case 'expr.attr.position': {
+                    const g = this.c.grids[expr.left.type.inGrid];
+                    // optimise common cases
+                    if (expr.left.kind === 'expr.name.keyword') {
+                        switch (expr.left.name) {
+                            case 'at':
+                                const at = this.at ?? fail();
+                                return expr.attr === 'x' ? at.x
+                                    : expr.attr === 'y' ? at.y
+                                        : fail();
+                            case 'origin':
+                                return expr.attr === 'x' ? g.originX
+                                    : expr.attr === 'y' ? g.originY
+                                        : fail();
+                        }
                     }
-                }
-                const pos = c.expr(expr.left);
-                return expr.attr === 'x' ? OP.mod(pos, g.width)
-                    : expr.attr === 'y' ? OP.floordiv(pos, g.width)
-                        : fail();
-            }
-            case 'expr.constant':
-                return compileLiteral(c, expr.constant, expr.pos);
-            case 'expr.count':
-                return c.grids[expr.inGrid].makeCounter(expr.patterns);
-            case 'expr.decl': {
-                // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
-                const { variable, rhs } = expr.decl;
-                if (variable.references === 0) {
-                    return c.expr(rhs);
-                }
-                const decl = {
-                    name: IR.NAMES.variable(variable),
-                    // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
-                    type: c.type(variable.type),
-                    initialiser: c.expr(rhs),
-                };
-                return IR.letIn(decl, c.expr(expr.child));
-            }
-            case 'expr.dict': {
-                const type = c.dictType(expr.type.entryTypes);
-                return IR.dict(type, type.keys.map(k => c.expr(expr.entryExprs.get(k))));
-            }
-            case 'expr.name.keyword': {
-                switch (expr.name) {
-                    case 'at':
-                        return AT;
-                    case 'origin':
-                        return expr.type.kind === 'position'
-                            ? c.grids[expr.type.inGrid].useOrigin()
+                    const pos = this.expr(expr.left);
+                    return expr.attr === 'x' ? OP.mod(pos, g.width)
+                        : expr.attr === 'y' ? OP.floordiv(pos, g.width)
                             : fail();
-                    case 'random':
-                        return PRNG.NEXT_DOUBLE;
-                    default:
-                        fail();
                 }
-            }
-            case 'expr.name.simple':
-                return IR.NAMES.variable(expr.variable);
-            case 'expr.op.binary': {
-                const r = IR.binaryOp(expr.op, c.expr(expr.left), c.expr(expr.right));
-                // `IR.binaryOp` may optimise e.g. `0 - x` to `-x`
-                if (r.kind === 'expr.op.binary' || r.kind === 'expr.op.unary') {
-                    c.opsUsed.add(r.op);
+                case 'expr.constant': {
+                    return this.compileLiteral(expr.constant, expr.pos);
                 }
-                return r;
-            }
-            case 'expr.op.ternary':
-                return IR.ternary(c.expr(expr.condition), c.expr(expr.then), c.expr(expr.otherwise));
-            case 'expr.op.unary': {
-                const r = IR.unaryOp(expr.op, c.expr(expr.child));
-                // `IR.unaryOp` may optimise e.g. `not x == y` to `x != y`
-                if (r.kind === 'expr.op.binary' || r.kind === 'expr.op.unary') {
-                    c.opsUsed.add(r.op);
+                case 'expr.count': {
+                    return this.c.grids[expr.inGrid].makeCounter(expr.patterns);
                 }
-                return r;
-            }
-            case 'expr.param':
-                return IR.param(expr.name, c.expr(expr.otherwise));
-            case 'expr.randint': {
-                const max = c.expr(expr.max);
-                return !IR.isInt(max) ? PRNG.nextIntChecked(max)
-                    : max.value > 0 ? PRNG.nextInt(max)
-                        : fail();
-            }
-            case 'expr.sum': {
-                const g = c.grids[expr.inGrid];
-                const p = g.grid.convPatterns.getByID(expr.patternID);
-                return g.makeConvBuffer(p.kernel).get(p);
+                case 'expr.decl': {
+                    // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
+                    const { variable, rhs } = expr.decl;
+                    if (variable.references === 0) {
+                        return this.expr(rhs);
+                    }
+                    const decl = this.c.ir.constDecl(variable.name, 
+                    // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
+                    this.c.type(variable.type), this.expr(rhs));
+                    const ctx = this.withVariable(variable.id, decl.name);
+                    return IR.letIn(decl, ctx.expr(expr.child));
+                }
+                case 'expr.dict': {
+                    const type = this.c.dictType(expr.type.entryTypes);
+                    return IR.dict(type, type.keys.map(k => this.expr(expr.entryExprs.get(k))));
+                }
+                case 'expr.name.keyword': {
+                    switch (expr.name) {
+                        case 'at':
+                            return (this.at ?? fail()).index;
+                        case 'origin':
+                            return expr.type.kind === 'position'
+                                ? this.c.grids[expr.type.inGrid].origin
+                                : fail();
+                        case 'random':
+                            return this.c.prng.nextDouble();
+                    }
+                    // exhaustivity check
+                    fail(expr);
+                }
+                case 'expr.name.simple': {
+                    return this.variables.get(expr.variable.id) ?? fail(`variable not defined in this context`, expr.variable, this);
+                }
+                case 'expr.op.binary': {
+                    const r = IR.binaryOp(expr.op, this.expr(expr.left), this.expr(expr.right));
+                    // `IR.binaryOp` may optimise e.g. `0 - x` to `-x`
+                    if (r.kind === 'expr.op.binary' || r.kind === 'expr.op.unary') {
+                        this.c.opsUsed.add(r.op);
+                    }
+                    return r;
+                }
+                case 'expr.op.ternary': {
+                    return IR.ternary(this.expr(expr.condition), this.expr(expr.then), this.expr(expr.otherwise));
+                }
+                case 'expr.op.unary': {
+                    const r = IR.unaryOp(expr.op, this.expr(expr.child));
+                    // `IR.unaryOp` may optimise e.g. `not x == y` to `x != y`
+                    if (r.kind === 'expr.op.binary' || r.kind === 'expr.op.unary') {
+                        this.c.opsUsed.add(r.op);
+                    }
+                    return r;
+                }
+                case 'expr.param': {
+                    return IR.param(expr.name, this.expr(expr.otherwise));
+                }
+                case 'expr.randint': {
+                    const prng = this.c.prng, max = this.expr(expr.max);
+                    return !IR.isInt(max) ? prng.nextIntChecked(max)
+                        : max.value > 0 ? prng.nextInt(max)
+                            : fail();
+                }
+                case 'expr.sum': {
+                    const g = this.c.grids[expr.inGrid];
+                    const p = g.grid.convPatterns.getByID(expr.patternID);
+                    return g.makeConvBuffer(p.kernel).get(p, this.atConv ?? fail());
+                }
             }
         }
-    }
-    Compiler.compileExpr = compileExpr;
-    function compileLiteral(c, constant, pos) {
-        switch (constant.kind) {
-            case 'bool': return constant.value ? IR.TRUE : IR.FALSE;
-            case 'float': return IR.float(constant.value);
-            case 'int': return IR.int(constant.value);
-            case 'str': return IR.str(constant.value);
-            case 'dict': {
-                const type = c.dictType(constant.type.entryTypes);
-                const values = Array.from(type.keys, k => compileLiteral(c, constant.value.get(k), pos));
-                return c.constants.intern(IR.dict(type, values), type);
-            }
-            case 'fraction': {
-                const expr = OP.fraction(IR.int(constant.value.p), IR.int(constant.value.q));
-                c.opsUsed.add(expr.op);
-                return c.constants.intern(expr, IR.FRACTION_TYPE);
-            }
-            case 'grid': {
-                return c.grids[constant.value].useObj();
-            }
-            case 'pattern.in': {
-                c.notSupported('input pattern in non-constant expression', pos);
-                return IR.NULL;
-            }
-            case 'pattern.out': {
-                const { width, height, pattern } = constant.value;
-                const patternExpr = IR.constArray(pattern, Math.max(...pattern) + 1, width);
-                return c.constants.intern(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
-            }
-            case 'position': {
-                const { x, y, inGrid } = constant.value;
-                const g = c.grids[inGrid];
-                return c.constants.intern(g.checkedIndex(IR.int(x), IR.int(y)), IR.INT_TYPE);
+        compileLiteral(constant, pos) {
+            switch (constant.kind) {
+                case 'bool': return constant.value ? IR.TRUE : IR.FALSE;
+                case 'float': return IR.float(constant.value);
+                case 'int': return IR.int(constant.value);
+                case 'str': return IR.str(constant.value);
+                case 'dict': {
+                    const type = this.c.dictType(constant.type.entryTypes);
+                    const values = Array.from(type.keys, k => this.compileLiteral(constant.value.get(k), pos));
+                    return this.c.internConstant(IR.dict(type, values), type);
+                }
+                case 'fraction': {
+                    const expr = OP.fraction(IR.int(constant.value.p), IR.int(constant.value.q));
+                    this.c.opsUsed.add(expr.op);
+                    return this.c.internConstant(expr, IR.FRACTION_TYPE);
+                }
+                case 'grid': {
+                    return this.c.grids[constant.value].obj;
+                }
+                case 'pattern.in': {
+                    this.c.notSupported('input pattern in non-constant expression', pos);
+                    return IR.NULL;
+                }
+                case 'pattern.out': {
+                    const { width, height, pattern } = constant.value;
+                    const patternExpr = IR.constArray(pattern, Math.max(...pattern) + 1, width);
+                    return this.c.internConstant(IR.libConstructorCall('Pattern', [IR.int(width), IR.int(height), patternExpr]), IR.PATTERN_TYPE);
+                }
+                case 'position': {
+                    const { x, y, inGrid } = constant.value;
+                    const g = this.c.grids[inGrid];
+                    return this.c.internConstant(g.checkedIndex(IR.int(x), IR.int(y)), IR.INT_TYPE);
+                }
             }
         }
+        usePattern(expr, child) {
+            return this.c.ir.withConst('pattern', IR.PATTERN_TYPE, this.expr(expr), pattern => child({
+                expr: pattern,
+                constant: expr.kind === 'expr.constant' ? expr.constant.value : undefined,
+            }));
+        }
+        isTautology(expr) {
+            return this.withConvPosition(UNUSED_POSITION, UNUSED_AT_CONV).expr(expr) === IR.TRUE;
+        }
     }
+    Compiler.CompilerContext = CompilerContext;
 })(Compiler || (Compiler = {}));
 var Compiler;
 (function (Compiler) {
@@ -1127,199 +1462,250 @@ var Compiler;
         constructor(stmt) {
             this.stmt = stmt;
         }
-        declare() {
-            return IR.PASS;
+        declareRoot(ctx) {
+            return IR.NO_DECL;
         }
-        compileReset(c) {
+        declareParent(ctx) {
+            return IR.NO_DECL;
+        }
+        compileReset(ctx) {
             return IR.PASS;
         }
     }
     Compiler.StmtCompiler = StmtCompiler;
     class Stmt_NotSupported extends StmtCompiler {
-        compile(c, ifTrue, ifFalse) {
+        compile(ctx, ifTrue, ifFalse) {
             const { kind, pos } = this.stmt;
-            c.notSupported(`'${kind}'`, pos);
-            return ifFalse;
+            ctx.c.notSupported(`'${kind}'`, pos);
+            return [ifFalse, ctx];
         }
     }
     Compiler.Stmt_NotSupported = Stmt_NotSupported;
     class Stmt_Assign extends StmtCompiler {
-        compile(c, ifTrue, ifFalse) {
-            const { variable, rhs } = this.stmt;
-            return IR.block([
-                IR.assign(IR.NAMES.variable(variable), '=', c.expr(rhs)),
-                ifFalse,
-            ]);
+        decl;
+        initLate;
+        constructor(stmt, c) {
+            super(stmt);
+            this.initLate = !ASG.exprIsGridIndependent(stmt.rhs);
+            this.decl = c.ir.varDecl(stmt.variable.name, c.type(stmt.variable.type));
+        }
+        _init(ctx) {
+            return IR.assign(this.decl.name, '=', ctx.expr(this.stmt.rhs));
+        }
+        declareParent(ctx) {
+            return this.initLate ? this.decl : IR.initDecl(this.decl, this._init(ctx));
+        }
+        compile(ctx, ifTrue, ifFalse) {
+            return [
+                this.initLate ? IR.seq([this._init(ctx), ifFalse]) : ifFalse,
+                ctx.withVariable(this.stmt.variable.id, this.decl.name),
+            ];
         }
     }
     Compiler.Stmt_Assign = Stmt_Assign;
     class Stmt_Log extends StmtCompiler {
-        compile(c, ifTrue, ifFalse) {
+        compile(ctx, ifTrue, ifFalse) {
             const { expr } = this.stmt;
-            return IR.block([
-                IR.log(c.expr(expr)),
-                ifFalse,
-            ]);
+            return [
+                IR.seq([IR.log(ctx.expr(expr)), ifFalse]),
+                ctx,
+            ];
         }
     }
     Compiler.Stmt_Log = Stmt_Log;
     class Stmt_Use extends StmtCompiler {
-        compile(c, ifTrue, ifFalse) {
-            const { grid } = this.stmt;
-            return IR.block([
-                c.config.animate ? c.grids[grid].yield_() : IR.PASS,
-                ifFalse,
-            ]);
+        compile(ctx, ifTrue, ifFalse) {
+            const c = ctx.c, grid = this.stmt.grid;
+            return [
+                IR.seq([c.config.animate ? c.grids[grid].yield_() : IR.PASS, ifFalse]),
+                ctx,
+            ];
         }
     }
     Compiler.Stmt_Use = Stmt_Use;
     class Stmt_Block extends StmtCompiler {
-        stmtID;
         children;
-        constructor(stmt, stmtID, c) {
+        constructor(stmt, c) {
             super(stmt);
-            this.stmtID = stmtID;
-            this.children = stmt.children.map(c.getStmtCompiler);
+            this.children = stmt.children.map(child => c.getStmtCompiler(child));
         }
-        declare() {
-            return IR.block(this.children.map(child => child.declare()));
+        declareRoot(ctx) {
+            return IR.multiDecl(this.children.map(child => child.declareRoot(ctx)));
+        }
+        declareChildren(ctx) {
+            return IR.multiDecl(this.children.map(child => child.declareParent(ctx)));
+        }
+        resetChildren(ctx) {
+            return IR.seq(this.children.map(child => child.compileReset(ctx)));
         }
     }
     Compiler.Stmt_Block = Stmt_Block;
     class Stmt_Modified extends StmtCompiler {
-        stmtID;
         child;
-        constructor(stmt, stmtID, c) {
+        constructor(stmt, c) {
             super(stmt);
-            this.stmtID = stmtID;
             this.child = c.getStmtCompiler(stmt.child);
         }
-        declare() {
-            return this.child.declare();
+        declareRoot(ctx) {
+            return this.child.declareRoot(ctx);
+        }
+        declareParent(ctx) {
+            return this.child.declareParent(ctx);
         }
     }
     Compiler.Stmt_Modified = Stmt_Modified;
     class Stmt_Markov extends Stmt_Block {
-        compile(c, ifTrue, ifFalse) {
+        compile(ctx, ifTrue, ifFalse) {
             const isConsequential = ifTrue !== IR.PASS || ifFalse !== IR.PASS;
-            const flag = IR.NAMES.otherVar(this.stmtID, 'flag'), declFlag = isConsequential ? IR.declVar(flag, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, setFlagAndContinue = IR.block([
-                isConsequential ? IR.assign(flag, '=', IR.TRUE) : IR.PASS,
-                IR.CONTINUE,
-            ]);
-            return IR.block([
-                ...this.children.map(child => child.compileReset(c)),
-                declFlag,
-                IR.while_(IR.TRUE, IR.block([
-                    c.checkMaxIterations,
-                    ...this.children.map(child => child.compile(c, setFlagAndContinue, IR.PASS)),
-                    IR.BREAK,
-                ])),
-                isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
-            ]);
+            const flag = ctx.c.ir.flag(), setFlagAndContinue = isConsequential ? IR.seq([flag.set, IR.CONTINUE]) : IR.CONTINUE, childDecls = this.declareChildren(ctx), resetChildren = this.resetChildren(ctx);
+            const body = [ctx.c.checkMaxIterations];
+            for (const child of this.children) {
+                const [r, newCtx] = child.compile(ctx, setFlagAndContinue, IR.PASS);
+                body.push(r);
+                ctx = newCtx;
+            }
+            body.push(IR.BREAK);
+            return [IR.withDecl(childDecls, IR.seq([
+                    // TODO: this is not strictly correct, since it resets out of order
+                    resetChildren,
+                    IR.withDecl(isConsequential ? flag.decl : IR.NO_DECL, IR.seq([
+                        IR.while_(IR.TRUE, IR.seq(body)),
+                        IR.if_(flag.check, ifTrue, ifFalse),
+                    ])),
+                ])), ctx];
         }
-        compileTransparent(c, ifTrue) {
-            const ifTrueContinue = IR.block([ifTrue, IR.CONTINUE]);
-            return IR.while_(IR.TRUE, IR.block([
-                c.checkMaxIterations,
-                ...this.children.map(child => child.compile(c, ifTrueContinue, IR.PASS)),
-                IR.BREAK,
-            ]));
+        compileTransparent(ctx, ifTrue) {
+            const ifTrueContinue = IR.seq([ifTrue, IR.CONTINUE]), childDecls = this.declareChildren(ctx), resetChildren = this.resetChildren(ctx);
+            const body = [ctx.c.checkMaxIterations];
+            for (const child of this.children) {
+                const [r, newCtx] = child.compile(ctx, ifTrueContinue, IR.PASS);
+                body.push(r);
+                ctx = newCtx;
+            }
+            body.push(IR.BREAK);
+            return [
+                IR.withDecl(childDecls, IR.seq([
+                    resetChildren,
+                    IR.while_(IR.TRUE, IR.seq(body)),
+                ])),
+                ctx,
+            ];
         }
     }
     Compiler.Stmt_Markov = Stmt_Markov;
     class Stmt_Sequence extends Stmt_Block {
-        compile(c, ifTrue, ifFalse) {
+        compile(ctx, ifTrue, ifFalse) {
             const isConsequential = ifTrue !== IR.PASS || ifFalse !== IR.PASS;
-            const flag = IR.NAMES.otherVar(this.stmtID, 'flag'), declFlag = isConsequential ? IR.declVar(flag, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, setFlag = isConsequential ? IR.assign(flag, '=', IR.TRUE) : IR.PASS;
-            function _resetChild(child) {
-                return child instanceof Stmt_Limit
-                    ? child.compileResetTransparent(c)
-                    : child.compileReset(c);
+            const flag = ctx.c.ir.flag(), setFlag = isConsequential ? flag.set : IR.PASS;
+            const out = [], execChildren = [];
+            for (const child of this.children) {
+                out.push(child instanceof Stmt_Limit
+                    ? child.compileResetTransparent(ctx)
+                    : child.compileReset(ctx));
             }
-            function _compileChild(child) {
-                return child instanceof Stmt_Markov || child instanceof Stmt_Limit
-                    ? child.compileTransparent(c, setFlag)
-                    : IR.while_(IR.TRUE, IR.block([
-                        c.checkMaxIterations,
-                        child.compile(c, setFlag, IR.BREAK),
-                    ]));
+            for (const child of this.children) {
+                if (child instanceof Stmt_Markov || child instanceof Stmt_Limit) {
+                    const [r, newCtx] = child.compileTransparent(ctx, setFlag);
+                    execChildren.push(r);
+                    ctx = newCtx;
+                }
+                else {
+                    const [r, newCtx] = child.compile(ctx, setFlag, IR.BREAK);
+                    execChildren.push(IR.while_(IR.TRUE, IR.seq([ctx.c.checkMaxIterations, r])));
+                    ctx = newCtx;
+                }
             }
-            return IR.block([
-                ...this.children.map(_resetChild),
-                declFlag,
-                ...this.children.map(_compileChild),
-                isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
-            ]);
+            if (isConsequential) {
+                execChildren.push(IR.if_(flag.check, ifTrue, ifFalse));
+            }
+            out.push(IR.withDecl(isConsequential ? flag.decl : IR.NO_DECL, IR.seq(execChildren)));
+            return [
+                IR.withDecl(this.declareChildren(ctx), IR.seq(out)),
+                ctx,
+            ];
         }
     }
     Compiler.Stmt_Sequence = Stmt_Sequence;
     class Stmt_Limit extends Stmt_Modified {
         limitVar;
-        constructor(stmt, stmtID, c) {
-            super(stmt, stmtID, c);
-            this.limitVar = IR.NAMES.limit(stmtID);
+        initLate;
+        constructor(stmt, c) {
+            super(stmt, c);
+            this.initLate = !ASG.exprIsGridIndependent(stmt.limit);
+            this.limitVar = c.ir.varDecl('limit', IR.INT_TYPE);
         }
-        compileReset(c) {
-            const init = c.expr(this.stmt.limit);
-            return IR.block([
-                IR.declVar(this.limitVar, IR.INT_TYPE, init, true),
-                this.child.compileReset(c),
+        _init(ctx) {
+            return IR.assign(this.limitVar.name, '=', ctx.expr(this.stmt.limit));
+        }
+        declareParent(ctx) {
+            return IR.multiDecl([
+                this.initLate ? this.limitVar : IR.initDecl(this.limitVar, this._init(ctx)),
+                this.child.declareParent(ctx),
             ]);
         }
-        compileResetTransparent(c) {
-            return this.child.compileReset(c);
+        compileReset(ctx) {
+            const child = this.child.compileReset(ctx);
+            return this.initLate ? IR.seq([this._init(ctx), child]) : child;
         }
-        compile(c, ifTrue, ifFalse) {
-            return IR.if_(IR.OP.gt(this.limitVar, IR.ZERO), this.child.compile(c, IR.block([
-                IR.assign(this.limitVar, '-=', IR.ONE),
+        compileResetTransparent(ctx) {
+            return this.child.compileReset(ctx);
+        }
+        compile(ctx, ifTrue, ifFalse) {
+            const limit = this.limitVar.name;
+            const [r, newCtx] = this.child.compile(ctx, IR.seq([
+                IR.assign(limit, '-=', IR.ONE),
                 ifTrue,
-            ]), ifFalse), ifFalse);
+            ]), ifFalse);
+            return [
+                IR.if_(IR.OP.gt(limit, IR.ZERO), r, ifFalse),
+                newCtx,
+            ];
         }
-        compileTransparent(c, ifTrue) {
-            const init = c.expr(this.stmt.limit);
+        compileTransparent(ctx, ifTrue) {
+            const init = ctx.expr(this.stmt.limit);
             if (init === IR.ONE) {
-                return this.child.compile(c, ifTrue, IR.PASS);
+                return this.child.compile(ctx, ifTrue, IR.PASS);
             }
-            const loopBody = [c.checkMaxIterations, this.child.compile(c, ifTrue, IR.BREAK)], i = IR.NAMES.otherVar(this.stmtID, 'i');
-            return IR.isInt(init)
-                ? IR.forRange(i, IR.ZERO, init, loopBody)
-                : IR.block([
-                    IR.declVar(this.limitVar, IR.INT_TYPE, init),
-                    IR.forRange(i, IR.ZERO, this.limitVar, loopBody),
-                ]);
+            const c = ctx.c;
+            const [r, newCtx] = this.child.compile(ctx, ifTrue, IR.BREAK);
+            return [
+                c.ir.withConst('max', IR.INT_TYPE, init, max => c.ir.forRange('i', IR.ZERO, max, () => IR.seq([
+                    ctx.c.checkMaxIterations,
+                    r,
+                ]))),
+                newCtx,
+            ];
         }
     }
     Compiler.Stmt_Limit = Stmt_Limit;
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 ///<reference path="stmt.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT, I, P, MATCH, ANY, }, OP, } = IR;
-    function _exprIs(expr, flags) {
-        return (expr.flags & flags) === flags;
-    }
+    const { OP, } = IR;
     class Stmt_BasicAllPrl extends Compiler.StmtCompiler {
-        compile(c, ifChanged, then) {
+        compile(ctx, ifTrue, ifFalse) {
             const { stmt } = this;
             const { rewrites } = stmt;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const k = rewrites.length;
-            const out = [];
-            const conditionIsSameEverywhere = rewrites.map(rule => _exprIs(rule.condition, 12 /* ASG.ExprFlags.SAME_EVERYWHERE */)
-                && rule.to.kind === 'expr.constant');
-            const outPatternIsConstant = rewrites.map(rule => rule.to.kind === 'expr.constant');
-            const outPatternIsSameEverywhere = rewrites.map(rule => _exprIs(rule.to, 12 /* ASG.ExprFlags.SAME_EVERYWHERE */));
+            if (c.config.animate) {
+                ifTrue = IR.seq([g.yield_(), ifTrue]);
+            }
+            const outPatternIsSameEverywhere = rewrites.map(rule => ASG.exprIsSameEverywhere(rule.to));
             // TODO: if rule.to is grid-dependent and not same-everywhere, need to do rewrites on a temporary buffer then copy over afterwards
-            const patternIsGridDependent = rewrites.map(rule => !_exprIs(rule.to, 16 /* ASG.ExprFlags.GRID_INDEPENDENT */));
+            const patternIsGridDependent = rewrites.map(rule => !ASG.exprIsGridIndependent(rule.to));
             rewrites.forEach((rule, i) => {
                 if (patternIsGridDependent[i] && !outPatternIsSameEverywhere[i]) {
                     c.notSupported('output pattern dependent on both grid state and match position', rule.pos);
                 }
             });
-            const matches = c.useTempArray(k);
-            const useMask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
+            const matches = c.useTempArray(g.grid.scaleX * g.grid.scaleY * k);
+            const mask = stmt.kind === 'stmt.rules.basic.all' && (!stmt.commutative || rewrites.some(rule => {
+                // conservative estimate of whether rewrites can overlap; TODO: check this more accurately
                 if (rule.to.kind === 'expr.constant') {
                     const { value } = rule.to.constant;
                     return value.effectiveWidth > 1 || value.effectiveHeight > 1;
@@ -1328,84 +1714,91 @@ var Compiler;
                     const { type } = rule.to;
                     return type.width > 1 || type.height > 1;
                 }
-            }));
-            if (useMask) {
-                c.mask.use(g);
-            }
-            const shuffle = useMask || !stmt.commutative;
-            out.push(IR.declVars(rewrites.flatMap((rule, i) => !outPatternIsConstant[i] && outPatternIsSameEverywhere[i]
-                ? [{ name: IR.NAMES.tmpPattern(i), type: IR.PATTERN_TYPE, initialiser: c.expr(rule.to) }]
-                : [])));
-            const firstPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? rule.to : undefined, IR.NAMES.tmpPattern(i), rule.condition));
-            const secondPassConditions = rewrites.map((rule, i) => Compiler.writeCondition(c, g, outPatternIsSameEverywhere[i] ? undefined : rule.to, P, undefined));
-            // if any second-pass conditions do more than just check the mask, use a flag for whether any rewrites were done
+            })) ? c.useMask(g) : undefined;
+            const shuffle = mask !== undefined || !stmt.commutative;
+            // tmpPatterns only used when
+            const unusedPositionCtx = ctx.withPosition({
+                index: IR.unusedExpr('at.index'),
+                x: IR.unusedExpr('at.x'),
+                y: IR.unusedExpr('at.y'),
+            });
+            const tmpPatterns = rewrites.map(rule => c.ir.constDecl('p', IR.PATTERN_TYPE, unusedPositionCtx.expr(rule.to)));
+            // conditions which must be checked during writing
+            const duringWritesCondition = (ctx, rule, p, i) => Compiler.patternHasEffect(ctx, g, rule.from, p);
+            // if any duringWritesCondition do more than just check the mask, use a flag for whether any rewrites were done
             // but no flag needed if this statement isn't branching anyway
-            const useFlag = (ifChanged !== IR.PASS || then !== IR.PASS) && outPatternIsSameEverywhere.includes(false);
-            // optimisation for common case: all rewrites are unconditional and definitely effective
-            if (firstPassConditions.every(c => c === IR.TRUE)) {
+            const flag = (ifTrue !== IR.PASS || ifFalse !== IR.PASS) && rewrites.some(rule => rule.to.kind !== 'expr.constant')
+                ? c.ir.flag()
+                : undefined;
+            const out = [];
+            // optimisation for common case: all rewrites are unconditional
+            const allUnconditional = rewrites.every(rule => ctx.isTautology(rule.condition));
+            if (allUnconditional) {
                 const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-                if (shuffle) {
-                    out.push(matches.declareCount(IR.ZERO), sampler.shuffleInto(matches));
-                }
-                else {
-                    out.push(sampler.copyInto(matches.array), matches.declareCount(sampler.count));
-                }
+                out.push(shuffle ? sampler.shuffleInto(c.prng, matches) : sampler.copyInto(matches), matches.declareCount(sampler.count));
             }
             else {
                 out.push(matches.declareCount(IR.ZERO));
                 for (let i = 0; i < k; ++i) {
-                    const rule = rewrites[i];
-                    const sampler = g.makeSampler([rule.from]);
-                    const condition = firstPassConditions[i];
-                    const match = OP.multAddConstant(AT, k, IR.int(i));
+                    const rule = rewrites[i], sampler = g.makeSampler([rule.from]);
                     out.push(
                     // if condition is same-everywhere, then we only need to check it once for all matches of this rule
-                    conditionIsSameEverywhere[i]
-                        ? IR.if_(condition, shuffle
-                            ? sampler.shuffleIntoOffset(matches, k, i)
-                            : sampler.copyIntoOffset(matches.array, matches.count, k, i))
+                    ASG.exprIsSameEverywhere(rule.condition)
+                        ? IR.if_(ctx.expr(rule.condition), shuffle ? sampler.shuffleIntoOffset(c.prng, matches, k, i) : sampler.copyIntoOffset(matches, matches.count, k, i))
                         // otherwise, need to check the condition separately for each match
-                        : sampler.forEach([IR.if_(condition, IR.block(shuffle ? matches.insertShuffled(match) : matches.push(match)))]));
+                        : sampler.forEach(at => {
+                            const match = OP.multAddConstant(at.index, k, IR.int(i));
+                            return IR.if_(ctx.withPosition(at).expr(rule.condition), shuffle ? matches.insertShuffled(c.prng, match) : matches.push(match));
+                        }));
                 }
             }
-            const doWrites = rewrites.map((rule, i) => IR.block([
-                outPatternIsConstant[i] ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, 
-                // TODO: `c.expr(rule.to)` is only correct when `rule.to` is grid-independent (see above)
-                outPatternIsSameEverywhere[i] ? IR.NAMES.tmpPattern(i) : c.expr(rule.to)),
-                IR.if_(OP.and(secondPassConditions[i], useMask ? c.mask.patternFits(g, rule.to) : IR.TRUE), Compiler.doWrite(c, g, rule.from, rule.to, useMask, useFlag ? ANY : undefined, true, false)),
-            ]));
-            if (c.config.animate) {
-                ifChanged = IR.block([g.yield_(), ifChanged]);
-            }
-            out.push(useFlag ? IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS, IR.if_(matches.isNotEmpty, IR.block([
-                useMask ? c.mask.clear(g) : IR.PASS,
-                IR.forRange(I, IR.ZERO, matches.count, [
-                    IR.declVar(MATCH, IR.INT_TYPE, matches.get(I)),
-                    g.declareAtIndex(OP.divConstant(MATCH, k)),
-                    IR.switch_(OP.modConstant(MATCH, k), doWrites),
-                ]),
-                useFlag ? IR.PASS : ifChanged,
-            ]), useFlag ? undefined : then), useFlag ? IR.if_(ANY, ifChanged, then) : IR.PASS);
-            return IR.block(out);
+            const buildCases = (ctx) => rewrites.map((rule, i) => {
+                const buildCase = (p) => IR.if_(OP.and(duringWritesCondition(ctx, rule, p, i), mask !== undefined ? mask.patternFits(g, p, ctx.at) : IR.TRUE), IR.seq([
+                    Compiler.doWrite(ctx, g, rule.from, p, mask, true, false),
+                    flag !== undefined ? flag.set : IR.PASS,
+                ]));
+                return rule.to.kind === 'expr.constant'
+                    ? buildCase({ expr: IR.unusedExpr('constant out pattern'), constant: rule.to.constant.value })
+                    : outPatternIsSameEverywhere[i]
+                        ? buildCase({ expr: tmpPatterns[i].name, constant: undefined })
+                        : ctx.usePattern(rule.to, buildCase);
+            });
+            const doMain = IR.if_(matches.isNotEmpty, IR.seq([
+                mask !== undefined ? mask.clear(g) : IR.PASS,
+                c.ir.forRange('i', IR.ZERO, matches.count, i => c.ir.withConst('match', IR.INT_TYPE, matches.get(i), match => g.declareAtIndex(OP.divConstant(match, k), at => IR.switch_(OP.modConstant(match, k), buildCases(ctx.withPosition(at)))))),
+                flag !== undefined ? IR.PASS : ifTrue,
+            ]), flag !== undefined ? undefined : ifFalse);
+            out.push(flag !== undefined
+                ? IR.withDecl(flag.decl, IR.seq([
+                    doMain,
+                    IR.if_(flag.check, ifTrue, ifFalse),
+                ]))
+                : doMain);
+            return [
+                IR.withDecls(tmpPatterns, IR.seq(out)),
+                ctx,
+            ];
         }
     }
     Compiler.Stmt_BasicAllPrl = Stmt_BasicAllPrl;
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT, AT_X, AT_Y, I, OLD_S, ANY, }, OP, PRNG, } = IR;
+    const { OP, } = IR;
     class Stmt_ConvChain extends Compiler.StmtCompiler {
         colourArray;
         c2iArray;
         c2iOffset;
-        matchesArray;
         matchesCount;
+        matchesArray;
         score;
         temperature;
         anneal;
-        constructor(stmt, stmtID, c) {
+        rootDecl;
+        parentDecl;
+        constructor(stmt, c) {
             super(stmt);
             const g = c.grids[stmt.inGrid];
             const alphabetSize = g.grid.alphabet.key.length;
@@ -1417,17 +1810,48 @@ var Compiler;
                 const d = colours[i] - colours[0];
                 colourToIndex[d] = i + 1;
             }
-            this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
-            this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
-            this.matchesArray = stmt.on.kind === 'top' ? undefined : IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
-            this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
+            this.colourArray = IR.makeConstArray(c.ir, 'colours', colours, alphabetSize);
+            this.c2iArray = IR.makeConstArray(c.ir, 'c2i', colourToIndex, colours.length + 1);
+            const matchesCount = c.ir.varDecl('convchainCount', IR.INT_TYPE);
+            this.matchesCount = matchesCount.name;
+            const constDecls = [
+                this.colourArray.decl,
+                this.c2iArray.decl,
+                (this.matchesArray?.decl ?? IR.NO_DECL)
+            ];
+            const varDecls = [
+                matchesCount,
+            ];
+            if (stmt.on.kind !== 'top') {
+                const matches = this.matchesArray = IR.makeMutableArray(c.ir, 'convchainMatches', g.n, IR.INT32_ARRAY_TYPE.domainSize);
+                constDecls.push(matches.decl);
+            }
+            else {
+                this.matchesArray = undefined;
+            }
             const logEpsilon = Math.log2(stmt.epsilon);
             this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
                 pattern: w.pattern,
                 weight: Math.log2(w.weight) - logEpsilon,
             })), true);
-            this.temperature = (stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant') || stmt.anneal !== undefined ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
-            this.anneal = stmt.anneal !== undefined && stmt.anneal.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'anneal') : undefined;
+            if ((stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant') || stmt.anneal !== undefined) {
+                const temperature = c.ir.varDecl('temperature', IR.FLOAT_TYPE);
+                this.temperature = temperature.name;
+                varDecls.push(temperature);
+            }
+            else {
+                this.temperature = undefined;
+            }
+            if (stmt.anneal !== undefined && stmt.anneal.kind !== 'expr.constant') {
+                const anneal = c.ir.varDecl('anneal', IR.FLOAT_TYPE);
+                this.anneal = anneal.name;
+                varDecls.push(anneal);
+            }
+            else {
+                this.anneal = undefined;
+            }
+            this.rootDecl = IR.multiDecl(constDecls);
+            this.parentDecl = IR.multiDecl(varDecls);
             for (const op of [
                 'float_plus', 'float_minus', 'float_mult', 'float_log2',
                 'float_eq', 'float_ne', 'float_lt', 'float_le', 'float_gt', 'float_ge',
@@ -1439,23 +1863,18 @@ var Compiler;
             const { matchesArray } = this;
             return matchesArray !== undefined ? matchesArray.get(index) : index;
         }
-        declare() {
-            return IR.block([
-                IR.declVars([
-                    ...this.colourArray.decl,
-                    ...this.c2iArray.decl,
-                    ...this.matchesArray?.decl ?? [],
-                ]),
-                IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
-                this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
-                this.anneal !== undefined ? IR.declVar(this.anneal, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
-            ]);
+        declareRoot(ctx) {
+            return this.rootDecl;
         }
-        compileReset(c) {
+        declareParent(ctx) {
+            return this.parentDecl;
+        }
+        compileReset(ctx) {
             return IR.assign(this.matchesCount, '=', IR.MINUS_ONE);
         }
-        compile(c, ifChanged, then) {
+        compile(ctx, ifTrue, ifFalse) {
             const { stmt } = this;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const alphabetKey = g.grid.alphabet.key;
             const on = stmt.on.masks[0];
@@ -1467,191 +1886,179 @@ var Compiler;
             const initSampler = initIsDefinitelyIneffective ? new IR.EmptySampler() : g.makeSampler([
                 new Pattern(1, 1, alphabetKey, [-2], [ISet.difference(on, outputMask)], true),
             ]);
-            const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
-            const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
+            const temperatureInit = stmt.temperature !== undefined ? ctx.expr(stmt.temperature) : IR.FLOAT_ONE;
+            const annealInit = stmt.anneal !== undefined ? ctx.expr(stmt.anneal) : IR.FLOAT_ZERO;
             const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal } = this;
             // TODO: can this use integer arithmetic?
             const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
-                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))), score);
-            const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
-            const getRandomDifferentColour = colourArray.get(OP.modConstant(OP.add(c2iArray.get(OP.minusConstant(OLD_S, c2iOffset)), PRNG.nextInt(IR.int(output.length - 1))), output.length));
-            const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
+                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, c.prng.nextDouble()))), score);
+            const getRandomColour = colourArray.get(c.prng.nextInt(IR.int(output.length)));
+            const getRandomDifferentColour = (oldS) => colourArray.get(OP.modConstant(OP.add(c2iArray.get(OP.minusConstant(oldS, c2iOffset)), c.prng.nextInt(IR.int(output.length - 1))), output.length));
+            const update1x1 = (at) => g.update(at.x, at.y, IR.ONE, IR.ONE);
             if (c.config.animate) {
-                ifChanged = IR.block([g.yield_(), ifChanged]);
+                ifTrue = IR.seq([g.yield_(), ifTrue]);
             }
-            const declareFlag = IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true);
-            const setFlag = IR.assign(ANY, '=', IR.TRUE);
-            const branchOnFlag = IR.if_(ANY, ifChanged, then);
+            const flag = c.ir.flag();
+            const branchOnFlag = IR.if_(flag.check, ifTrue, ifFalse);
             const shouldInit = OP.lt(matchesCount, IR.ZERO);
-            const doInit = IR.block([
-                matchesArray !== undefined ? sampler.copyInto(matchesArray.name) : IR.PASS,
+            const doInit = IR.seq([
+                matchesArray !== undefined ? sampler.copyInto(matchesArray) : IR.PASS,
                 IR.assign(matchesCount, '=', sampler.count),
-                temperature !== undefined ? IR.block([
+                temperature !== undefined ? IR.seq([
                     IR.assign(temperature, '=', temperatureInit),
                     temperatureInit.kind !== 'expr.literal.float' ? IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`'temperature' must be non-negative`)) : IR.PASS,
                 ]) : IR.PASS,
-                anneal !== undefined ? IR.block([
+                anneal !== undefined ? IR.seq([
                     IR.assign(anneal, '=', annealInit),
                     IR.if_(IR.binaryOp('float_lt', anneal, IR.FLOAT_ZERO), IR.throw_(`'anneal' must be non-negative`)),
                 ]) : IR.PASS,
-                initIsDefinitelyIneffective ? IR.PASS : IR.if_(initSampler === sampler ? OP.gt(matchesCount, IR.ZERO) : initSampler.isNotEmpty, IR.block([
+                initIsDefinitelyIneffective ? IR.PASS : IR.if_(initSampler === sampler ? OP.gt(matchesCount, IR.ZERO) : initSampler.isNotEmpty, IR.seq([
                     initSampler === sampler
-                        ? IR.forRange(I, IR.ZERO, matchesCount, [g.write(this.getFromMatchesArray(I), getRandomColour)])
-                        : initSampler.forEach([g.write(AT, getRandomColour)]),
+                        ? c.ir.forRange('i', IR.ZERO, matchesCount, i => g.write(this.getFromMatchesArray(i), getRandomColour))
+                        : initSampler.forEach(at => g.write(at.index, getRandomColour)),
                     g.update(IR.ZERO, IR.ZERO, g.width, g.height),
-                    setFlag,
+                    flag.set,
                 ])),
             ]);
-            const doMain = IR.block([
-                IR.forRange(I, IR.ZERO, matchesCount, [
-                    g.declareAtIndex(this.getFromMatchesArray(PRNG.nextInt(matchesCount))),
-                    IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
+            const doMain = IR.seq([
+                c.ir.forRange('i', IR.ZERO, matchesCount, () => g.declareAtIndex(this.getFromMatchesArray(c.prng.nextInt(matchesCount)), at => c.ir.withConst('oldS', IR.BYTE_TYPE, g.data.get(at.index), oldS => IR.seq([
                     IR.assign(score, '=', IR.FLOAT_ZERO),
-                    g.write(AT, getRandomDifferentColour),
-                    update1x1,
-                    IR.if_(OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability), IR.assign(ANY, '=', IR.TRUE), IR.block([
-                        g.write(AT, OLD_S),
-                        update1x1,
+                    g.write(at.index, getRandomDifferentColour(oldS)),
+                    update1x1(at),
+                    IR.if_(OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability), flag.set, IR.seq([
+                        g.write(at.index, oldS),
+                        update1x1(at),
                     ])),
-                ]),
+                ])))),
                 temperature !== undefined && annealInit !== IR.FLOAT_ZERO ? IR.assign(temperature, '=', IR.ternary(IR.binaryOp('float_gt', temperature, anneal ?? annealInit), IR.binaryOp('float_minus', temperature, anneal ?? annealInit), IR.FLOAT_ZERO)) : IR.PASS,
             ]);
-            return initIsDefinitelyEffective ? IR.block([
-                declareFlag,
-                IR.if_(shouldInit, doInit, doMain),
-                branchOnFlag,
-            ])
-                : initIsDefinitelyIneffective ? IR.block([
-                    IR.if_(shouldInit, doInit),
-                    declareFlag,
+            const r = initIsDefinitelyIneffective ? IR.seq([
+                IR.if_(shouldInit, doInit),
+                IR.withDecl(flag.decl, IR.seq([
                     doMain,
                     branchOnFlag,
+                ])),
+            ])
+                : IR.withDecl(flag.decl, initIsDefinitelyEffective ? IR.seq([
+                    IR.if_(shouldInit, doInit, doMain),
+                    branchOnFlag,
                 ])
-                    : IR.block([
-                        declareFlag,
+                    : IR.seq([
                         IR.if_(shouldInit, doInit),
-                        IR.if_(OP.not(ANY), doMain),
+                        IR.if_(OP.not(flag.check), doMain),
                         branchOnFlag,
-                    ]);
+                    ]));
+            return [r, ctx];
         }
     }
     Compiler.Stmt_ConvChain = Stmt_ConvChain;
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT, AT_X, AT_Y, AT_CONV, P, ANY, }, } = IR;
     class Stmt_Convolution extends Compiler.StmtCompiler {
-        compile(c, ifChanged, then) {
+        compile(ctx, ifTrue, ifFalse) {
             const { stmt } = this;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const buffer = g.makeConvBuffer(stmt.kernel);
-            const cases = emptyArray(g.grid.alphabet.key.length, IR.PASS);
-            for (const rule of stmt.rewrites) {
-                const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
-                const caseHandler = IR.block([
-                    rule.to.kind === 'expr.constant' ? IR.PASS : IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)),
-                    IR.if_(Compiler.writeCondition(c, g, rule.to, P, rule.condition), Compiler.doWrite(c, g, rule.from, rule.to, false, ANY, false, false)),
-                ]);
-                ISet.forEach(mask, i => {
-                    if (cases[i] !== IR.PASS) {
-                        fail();
-                    }
-                    cases[i] = caseHandler;
-                });
+            const flag = c.ir.flag();
+            function buildCases(at, atConv) {
+                const convCtx = ctx.withConvPosition(at, atConv);
+                const cases = emptyArray(g.grid.alphabet.key.length, IR.PASS);
+                for (const rule of stmt.rewrites) {
+                    const mask = PatternTree.isLeafOrTop(rule.from) ? rule.from.masks[0] : fail();
+                    const caseHandler = convCtx.usePattern(rule.to, p => IR.if_(Compiler.writeCondition(convCtx, g, rule.from, p, rule.condition), IR.seq([
+                        Compiler.doWrite(convCtx, g, rule.from, p, undefined, false, false),
+                        flag.set,
+                    ])));
+                    ISet.forEach(mask, i => {
+                        if (cases[i] !== IR.PASS) {
+                            fail();
+                        }
+                        cases[i] = caseHandler;
+                    });
+                }
+                return cases;
             }
             // TODO: different strategy if rules don't cover the whole alphabet?
-            return IR.block([
-                IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                IR.forRange(AT_Y, IR.ZERO, g.height, [IR.forRange(AT_X, IR.ZERO, g.width, [
-                        g.declareAtXY(AT_X, AT_Y),
-                        IR.declVar(AT_CONV, IR.INT_TYPE, buffer.index(AT_X, AT_Y)),
-                        IR.switch_(g.data.get(AT), cases),
-                    ])]),
-                IR.if_(ANY, IR.block([
+            const r = IR.withDecl(flag.decl, IR.seq([
+                c.ir.forRange('y', IR.ZERO, g.height, y => c.ir.forRange('x', IR.ZERO, g.width, x => g.declareAtXY(x, y, at => c.ir.withConst('atConv', IR.INT_TYPE, buffer.index(x, y), atConv => IR.switch_(g.data.get(at.index), buildCases(at, atConv)))))),
+                IR.if_(flag.check, IR.seq([
                     // TODO: this is suboptimal, but need to defer update until all `sum` expressions are evaluated
                     g.update(IR.ZERO, IR.ZERO, g.width, g.height),
                     c.config.animate ? g.yield_() : IR.PASS,
-                    ifChanged,
-                ]), then),
-            ]);
+                    ifTrue,
+                ]), ifFalse),
+            ]));
+            return [r, ctx];
         }
     }
     Compiler.Stmt_Convolution = Stmt_Convolution;
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { P, ANY, }, OP, } = IR;
+    const { OP, } = IR;
     class Stmt_BasicOne extends Compiler.StmtCompiler {
-        compile(c, ifChanged, then) {
+        compile(ctx, ifTrue, ifFalse) {
             const { rewrites } = this.stmt;
+            const c = ctx.c;
             const g = c.grids[this.stmt.inGrid];
             const sampler = g.makeSampler(rewrites.map(rule => rule.from));
-            const writeConditions = rewrites.map(rule => Compiler.writeCondition(c, g, rule.to, P, rule.condition));
             // optimisation for common case: all rewrites are unconditional and definitely effective
-            const allUnconditionalAndEffective = writeConditions.every(c => c === IR.TRUE);
-            const cases = rewrites.map((rule, i) => IR.block([
-                rule.to.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(rule.to)) : IR.PASS,
-                IR.if_(writeConditions[i], Compiler.doWrite(c, g, rule.from, rule.to, false, allUnconditionalAndEffective ? undefined : ANY, true, c.config.animate)),
-            ]));
-            if (allUnconditionalAndEffective) {
-                return IR.if_(sampler.isNotEmpty, IR.block([
-                    sampler.sampleWithReplacement(cases),
-                    ifChanged,
-                ]), then);
-            }
-            else {
-                const matches = c.useTempArray(rewrites.length);
-                return IR.block([
-                    sampler.beginSamplingWithoutReplacement(),
-                    matches.declareCount(sampler.count),
-                    IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true),
-                    IR.while_(OP.and(matches.isNotEmpty, OP.not(ANY)), sampler.sampleWithoutReplacement(cases, matches.count)),
-                    IR.if_(ANY, ifChanged, then),
-                ]);
-            }
+            const allUnconditionalAndEffective = rewrites.every(rule => rule.to.kind === 'expr.constant'
+                && PatternTree.isDisjoint(rule.from, rule.to.constant.value) && ctx.isTautology(rule.condition));
+            const buildCases = (at, ifT, ifF) => {
+                const ruleCtx = ctx.withPosition(at);
+                return rewrites.map(rule => ruleCtx.usePattern(rule.to, p => IR.if_(Compiler.writeCondition(ruleCtx, g, rule.from, p, rule.condition), IR.seq([
+                    Compiler.doWrite(ruleCtx, g, rule.from, p, undefined, true, true),
+                    ifT,
+                ]), ifF)));
+            };
+            const r = allUnconditionalAndEffective
+                ? IR.if_(sampler.isNotEmpty, IR.seq([
+                    sampler.sampleWithReplacement(c.prng, at => buildCases(at, IR.PASS, IR.PASS)),
+                    ifTrue,
+                ]), ifFalse)
+                : sampler.sampleWithoutReplacement(c.prng, buildCases, ifTrue, ifFalse);
+            return [r, ctx];
         }
     }
     Compiler.Stmt_BasicOne = Stmt_BasicOne;
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 ///<reference path="../ir/stmt.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT_X, AT_Y, P, }, OP, } = IR;
+    const { OP, } = IR;
     class Stmt_Put extends Compiler.StmtCompiler {
-        compile(c, ifTrue, ifFalse) {
+        compile(ctx, ifTrue, ifFalse) {
             const { stmt } = this;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const { pattern } = this.stmt;
             // check whether pattern is effective
-            let isEffective;
-            if (pattern.kind === 'expr.constant') {
-                const { value } = pattern.constant;
-                const checks = value.map((dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(dx, dy)), IR.int(c)));
-                isEffective = checks.length > 0 ? checks.reduce(OP.or) : fail();
-            }
-            else {
-                // non-constant pattern will be checked in _writeCondition
-                isEffective = IR.TRUE;
-            }
-            return IR.block([
-                g.declareAtIndex(c.expr(stmt.at)),
-                // check bounds, given size of pattern
-                g.grid.periodic ? IR.PASS : IR.if_(OP.or(pattern.type.width > 1 ? OP.ge(OP.addConstant(AT_X, pattern.type.width - 1), g.width) : IR.FALSE, pattern.type.height > 1 ? OP.ge(OP.addConstant(AT_Y, pattern.type.height - 1), g.height) : IR.FALSE), IR.throw_('pattern would be out of bounds')),
-                pattern.kind !== 'expr.constant' ? IR.declVar(P, IR.PATTERN_TYPE, c.expr(pattern)) : IR.PASS,
-                IR.if_(OP.and(isEffective, Compiler.writeCondition(c, g, pattern, P, stmt.condition)), Compiler.doWrite(c, g, undefined, pattern, false, undefined, true, c.config.animate)),
-                ifFalse,
-            ]);
+            const isEffective = (at) => pattern.kind === 'expr.constant' ? OP.some(pattern.constant.value, (dx, dy, c) => OP.ne(g.data.get(g.relativeIndex(at, dx, dy)), IR.int(c)))
+                : IR.TRUE;
+            const r = g.declareAtIndex(ctx.expr(stmt.at), at => {
+                const ruleCtx = ctx.withPosition(at);
+                return IR.seq([
+                    // check bounds, given size of pattern
+                    g.grid.periodic ? IR.PASS : IR.if_(OP.or(pattern.type.width > 1 ? OP.ge(OP.addConstant(at.x, pattern.type.width - 1), g.width) : IR.FALSE, pattern.type.height > 1 ? OP.ge(OP.addConstant(at.y, pattern.type.height - 1), g.height) : IR.FALSE), IR.throw_('pattern would be out of bounds')),
+                    ruleCtx.usePattern(pattern, p => IR.if_(OP.and(isEffective(at), Compiler.writeCondition(ruleCtx, g, undefined, p.constant !== undefined ? undefined : p, stmt.condition)), Compiler.doWrite(ruleCtx, g, undefined, p, undefined, true, true))),
+                    ifFalse,
+                ]);
+            });
+            return [r, ctx];
         }
     }
     Compiler.Stmt_Put = Stmt_Put;
 })(Compiler || (Compiler = {}));
 ///<reference path="../ir/types.ts"/>
-///<reference path="./expr.ts"/>
+///<reference path="./ctx.ts"/>
 ///<reference path="./stmt.ts"/>
 ///<reference path="./stmt_all.ts"/>
 ///<reference path="./stmt_convchain.ts"/>
@@ -1672,7 +2079,7 @@ var Compiler;
         'loose_int_plus', 'loose_int_mult', 'loose_int_floordiv', 'loose_int_mod',
     ];
     // helpers
-    const { NAMES: { WIDTH, HEIGHT, PARAMS, RNG, ITERATIONS, }, OP, } = IR;
+    const { OP } = IR;
     /**
      * Compiles MJr source code to a high-level intermediate representation.
      */
@@ -1681,87 +2088,100 @@ var Compiler;
         config;
         diagnostics = new Diagnostics();
         opsUsed = new Set(ALWAYS_USED_OPS);
-        constants = new IR.Constants();
+        ir;
         grids;
-        mask = new IR.Mask();
-        declareMaxIterations;
+        prng;
+        entryPointName;
+        width;
+        height;
+        mainDecls;
+        mainParams;
         checkMaxIterations;
+        mask;
+        maskScale = 0;
+        tempArray;
         tempArrayScale = 0;
         constructor(asg, config) {
             this.asg = asg;
             this.config = config;
-            this.grids = asg.grids.map(g => new IR.Grid(g));
             for (const g of asg.grids) {
                 if (g.periodic) {
                     this.notSupported('periodic grid', g.pos);
                 }
             }
+            const ir = this.ir = new IR.Factory();
+            this.entryPointName = ir.func(config.entryPointName);
+            const width = ir.paramDecl('width', IR.INT_TYPE), height = ir.paramDecl('height', IR.INT_TYPE), rng = ir.paramDecl('rng', IR.PRNG_TYPE, true);
+            this.width = width.name;
+            this.height = height.name;
+            this.grids = asg.grids.map(g => new IR.Grid(ir, g, width.name, height.name));
+            this.prng = new IR.PRNG(rng.name);
+            this.mask = new IR.Mask(ir);
+            this.tempArray = new IR.TempArray(this.ir);
+            const mainDecls = [];
+            const mainParams = [width, height];
+            if (asg.params.size > 0) {
+                const p = ir.paramDecl('params', IR.nullableType({
+                    kind: 'dict',
+                    keys: Array.from(asg.params.keys()),
+                    values: Array.from(asg.params.values(), t => IR.nullableType(this.type(t))),
+                }));
+                mainParams.push(p);
+            }
+            mainParams.push(rng);
             const maxIterations = config.maxIterations;
             if (maxIterations !== 0) {
-                this.declareMaxIterations = IR.declVar(ITERATIONS, IR.INT_TYPE, IR.ZERO, true);
-                this.checkMaxIterations = IR.block([
-                    IR.assign(ITERATIONS, '+=', IR.ONE),
-                    IR.if_(OP.gt(ITERATIONS, IR.int(maxIterations)), IR.throw_(`Exceeded maximum of ${maxIterations} iterations`)),
+                const iterations = ir.varDecl('iterations', IR.INT_TYPE, IR.ZERO);
+                mainDecls.push(iterations);
+                this.checkMaxIterations = IR.seq([
+                    IR.assign(iterations.name, '+=', IR.ONE),
+                    IR.if_(OP.gt(iterations.name, IR.int(maxIterations)), IR.throw_(`Exceeded maximum of ${maxIterations} iterations`)),
                 ]);
             }
             else {
-                this.declareMaxIterations = IR.PASS;
                 this.checkMaxIterations = IR.PASS;
             }
+            this.mainDecls = mainDecls;
+            this.mainParams = mainParams;
         }
         notSupported(s, pos) {
             this.diagnostics.compilationError(`${s} is not currently supported`, pos);
         }
+        getStmtCompiler(stmt) {
+            const cls = Compiler.STMT_COMPILERS[stmt.kind];
+            return new cls(stmt, this);
+        }
         compile() {
             // YYYY-MM-DD HH:mm:ss GMT+offset
             const date = new Date().toLocaleString('en-SE', { timeZoneName: 'short' });
-            const { params, endGridID, root } = this.asg;
+            const { asg, config, grids } = this;
+            const ctx = Compiler.CompilerContext.root(this);
             // TODO: potentials
-            const mainParams = [WIDTH, HEIGHT];
-            const mainParamTypes = [IR.INT_TYPE, IR.INT_TYPE];
-            if (params.size > 0) {
-                mainParams.push(PARAMS);
-                mainParamTypes.push(IR.nullableType({
-                    kind: 'dict',
-                    keys: Array.from(params.keys()),
-                    values: Array.from(params.values(), t => IR.nullableType(this.type(t))),
-                }));
-            }
-            mainParams.push(RNG);
-            mainParamTypes.push(IR.nullableType(IR.PRNG_TYPE));
             // need to compile everything before preamble, so that `maxScale` and `this.opsUsed` are correct
-            const rootCompiler = this.getStmtCompiler(root), declRoot = rootCompiler.declare(), compiledRoot = rootCompiler.compile(this, IR.PASS, IR.PASS), endGridObj = this.grids[endGridID].useObj(), gridDecls = this.grids.flatMap(g => g.declare()), matchesDecl = this.declareTempArray(), maskDecl = this.mask.declare(), constDecls = this.constants.declare(), varDecls = Compiler.declareASGVariables(this, this.asg.variables), otherDecls = [];
-            // compute maximum grid dimensions, to ensure that arrays aren't over-allocated and loose int operations don't overflow
-            // 0x3FFFFFFE is the magic number for the largest allowed array length for a LFSR
-            // don't need to include mask.scale here; mask array length is at most 1/32 of any grid array length
-            const maxScale = Math.max(this.tempArrayScale, ...this.grids.map(g => g.getScale()));
+            const rootCompiler = this.getStmtCompiler(asg.root), declRoot = rootCompiler.declareRoot(ctx), declRootMut = rootCompiler.declareParent(ctx), compiledRoot = rootCompiler.compile(ctx, IR.PASS, IR.PASS)[0], gridDecls = grids.map(g => g.declare()), tmpArraysDecl = this.declareTempArrays();
+            // compute maximum grid dimensions, to ensure that loose int operations on array lengths/indices don't overflow
+            // 0x3FFFFFFE is the magic number for the largest allowed array length for an LFSR
+            const maxScale = Math.max(this.maskScale, this.tempArrayScale, ...grids.map(g => g.getScale()));
             const maxDim = IR.int(Math.sqrt(0x3FFFFFFE / maxScale) | 0);
-            const checkDims = IR.if_(OP.or(OP.le(WIDTH, IR.ZERO), OP.le(HEIGHT, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(WIDTH, maxDim), OP.gt(HEIGHT, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`)));
-            const { animate, emitChecks, entryPointName } = this.config;
-            return IR.declFunc(IR.nameExpr(entryPointName), animate ? IR.REWRITE_INFO_TYPE : undefined, mainParams, mainParamTypes, IR.GRID_TYPE, IR.block([
+            const checkDims = config.emitChecks ? IR.if_(OP.or(OP.le(this.width, IR.ZERO), OP.le(this.height, IR.ZERO)), IR.throw_('Grid dimensions must be positive'), IR.if_(OP.or(OP.gt(this.width, maxDim), OP.gt(this.height, maxDim)), IR.throw_(`Grid dimensions cannot exceed ${maxDim.value}`))) : IR.PASS;
+            return IR.exportDecl(IR.funcDecl(this.entryPointName, config.animate ? IR.REWRITE_INFO_TYPE : undefined, this.mainParams, IR.GRID_TYPE, IR.seq([
                 IR.comment(`compiled by mjrc-${Compiler.COMPILER_VERSION} on ${date}`),
-                emitChecks ? checkDims : IR.PASS,
-                IR.preamble(this.dictType(params), emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
+                checkDims,
+                IR.preamble(this.dictType(asg.params), config.emitChecks, Compiler.REQUIRED_RUNTIME_LIB_VERSION, Array.from(this.opsUsed)),
                 IR.BLANK_LINE,
-                ...gridDecls,
-                matchesDecl,
-                ...maskDecl,
-                constDecls,
-                ...varDecls,
-                ...otherDecls,
-                this.declareMaxIterations,
-                declRoot,
-                compiledRoot,
-                IR.return_(endGridObj),
-            ]));
-        }
-        lastStmtID = -1;
-        getStmtCompiler = (stmt) => {
-            const id = ++this.lastStmtID;
-            return new STMT_COMPILERS[stmt.kind](stmt, id, this);
-        };
-        expr(expr) {
-            return Compiler.compileExpr(this, expr);
+                IR.withDecls([
+                    ...this.mainDecls,
+                    ...gridDecls,
+                    ...tmpArraysDecl,
+                    ...this.internedConstants.values(),
+                    declRoot,
+                    declRootMut,
+                ], IR.seq([
+                    IR.BLANK_LINE,
+                    compiledRoot,
+                    IR.return_(grids[asg.endGridID].obj),
+                ])),
+            ])));
         }
         type(type) {
             return type.kind === 'dict' ? this.dictType(type.entryTypes)
@@ -1773,21 +2193,30 @@ var Compiler;
             // TODO: declare type aliases for dict types
             return { kind: 'dict', keys, values: keys.map(k => this.type(entryTypes.get(k))) };
         }
-        tempArray = new IR.TempArray(IR.NAMES.MATCHES, IR.NAMES.MATCH_COUNT);
+        internedConstants = new Map();
+        internConstant(expr, type) {
+            return getOrCompute(this.internedConstants, IR.key(expr), () => this.ir.constDecl('constant', type, expr)).name;
+        }
+        useMask(g) {
+            this.maskScale = Math.max(this.maskScale, g.grid.scaleX * g.grid.scaleY);
+            return this.mask;
+        }
         useTempArray(scale) {
             this.tempArrayScale = Math.max(this.tempArrayScale, scale);
             return this.tempArray;
         }
-        declareTempArray() {
-            if (this.tempArrayScale === 0) {
-                return IR.PASS;
+        declareTempArrays() {
+            const decls = [];
+            if (this.maskScale > 0) {
+                const maskScale = OP.multConstant(OP.mult(this.width, this.height), this.maskScale);
+                decls.push(this.mask.declare(maskScale));
             }
-            // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
-            const n = OP.multConstant(OP.mult(WIDTH, HEIGHT), this.tempArrayScale);
-            return IR.block([
-                IR.declVar(IR.NAMES.MATCHES, IR.INT32_ARRAY_TYPE, IR.newInt32Array(n)),
-                IR.declVar(IR.NAMES.MATCH_COUNT, IR.INT_TYPE, undefined, true),
-            ]);
+            if (this.tempArrayScale > 0) {
+                // TODO: in principle, we can get a better estimate for the maximum number of matches if we know some patterns cannot overlap
+                const tempArrayScale = OP.multConstant(OP.mult(this.width, this.height), this.tempArrayScale);
+                decls.push(this.tempArray.declare(tempArrayScale));
+            }
+            return decls;
         }
     }
     const TYPES_TO_IR = {
@@ -1800,7 +2229,7 @@ var Compiler;
         position: IR.INT_TYPE,
         str: IR.STR_TYPE,
     };
-    const STMT_COMPILERS = {
+    Compiler.STMT_COMPILERS = {
         // control-flow
         'stmt.block.markov': Compiler.Stmt_Markov,
         'stmt.block.sequence': Compiler.Stmt_Sequence,
@@ -1829,8 +2258,12 @@ var Compiler;
         const compiler = new CompilerImpl(asg, config !== undefined ? { ...Compiler.DEFAULT_CONFIG, ...config } : Compiler.DEFAULT_CONFIG);
         const result = compiler.compile();
         compiler.diagnostics.throwIfAnyErrors();
+        if (result.info.hasFreeVars()) {
+            fail(`compilation result had free variables`, result);
+        }
         const cls = CodeGen[targetLanguage];
         const gen = new cls(compiler.config);
+        gen.beginGenerating();
         gen.writeStmt(result);
         gen.diagnostics.throwIfAnyErrors();
         return gen.render();
@@ -1848,77 +2281,59 @@ var Compiler;
         animate: false,
     };
 })(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
-var Compiler;
-(function (Compiler) {
-    const { NAMES } = IR;
-    function declareASGVariables(c, variables) {
-        // this also filters out compile-time constants, since the resolver folds them instead of referencing them
-        return variables
-            .filter(v => v.references > 0)
-            .map(v => IR.declVar(NAMES.variable(v), c.type(v.type), v.initialiser && c.expr(v.initialiser), v.initialiser === undefined));
-    }
-    Compiler.declareASGVariables = declareASGVariables;
-})(Compiler || (Compiler = {}));
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 var Compiler;
 (function (Compiler) {
-    const { NAMES: { AT_X, AT_Y, P, }, OP, } = IR;
-    function doWrite(c, outGrid, from, to, useMask, flagVar, doUpdate, doYield) {
+    const { OP, } = IR;
+    function doWrite(ctx, outGrid, from, to, mask, doUpdate, doYield) {
         const out = [];
         let mX, mY, eW, eH;
-        if (to.kind === 'expr.constant') {
+        if (to.constant !== undefined) {
             // constant output pattern
-            const { value } = to.constant;
-            let minX = value.width, maxX = 0, minY = value.height, maxY = 0;
+            const value = to.constant;
             value.forEach((dx, dy, colour) => {
+                // TODO: `[ABC] or [ADE] -> [A..]` isn't maybe effective in the first position
                 const maybeEffective = from === undefined || from.kind !== 'leaf' || from.pattern[dx + from.width * dy] !== colour;
-                if (useMask || maybeEffective) {
-                    out.push(outGrid.write(outGrid.relativeIndex(dx, dy), IR.int(colour), useMask ? c.mask : undefined));
-                }
-                if (maybeEffective) {
-                    minX = Math.min(minX, dx);
-                    maxX = Math.max(maxX, dx + 1);
-                    minY = Math.min(minY, dy);
-                    maxY = Math.max(maxY, dy + 1);
+                if (mask !== undefined || maybeEffective) {
+                    out.push(outGrid.write(outGrid.relativeIndex(ctx.at, dx, dy), IR.int(colour), mask));
                 }
             });
-            if (minX > maxX || minY > maxY) {
-                fail();
-            }
-            mX = IR.int(minX);
-            mY = IR.int(minY);
-            eW = IR.int(maxX - minX);
-            eH = IR.int(maxY - minY);
+            mX = IR.int(value.minX);
+            mY = IR.int(value.minY);
+            eW = IR.int(value.effectiveWidth);
+            eH = IR.int(value.effectiveHeight);
         }
         else {
             // output pattern determined at runtime
-            // this requires that `p` is already declared
-            out.push(IR.libMethodCallStmt('Pattern', 'put', P, [outGrid.useObj(), useMask ? c.mask.name : IR.NULL, AT_X, AT_Y]));
-            mX = IR.attr(P, 'minX');
-            mY = IR.attr(P, 'minY');
-            eW = IR.attr(P, 'effectiveWidth');
-            eH = IR.attr(P, 'effectiveHeight');
+            out.push(IR.libMethodCallStmt('Pattern', 'put', to.expr, [outGrid.obj, mask !== undefined ? mask.arr.array : IR.NULL, ctx.at.x, ctx.at.y]));
+            mX = IR.attr(to.expr, 'minX');
+            mY = IR.attr(to.expr, 'minY');
+            eW = IR.attr(to.expr, 'effectiveWidth');
+            eH = IR.attr(to.expr, 'effectiveHeight');
         }
         if (doUpdate) {
-            const x = OP.add(AT_X, mX), y = OP.add(AT_Y, mY);
+            const x = OP.add(ctx.at.x, mX), y = OP.add(ctx.at.y, mY);
             out.push(outGrid.update(x, y, eW, eH));
-            if (doYield) {
+            if (doYield && ctx.c.config.animate) {
                 out.push(outGrid.yieldRewriteInfo(x, y, eW, eH));
             }
         }
-        if (flagVar !== undefined) {
-            out.push(IR.assign(flagVar, '=', IR.TRUE));
-        }
-        return IR.block(out);
+        return IR.seq(out);
     }
     Compiler.doWrite = doWrite;
-    function writeCondition(c, g, patternExpr, patternVar, conditionExpr) {
-        const hasEffect = patternExpr === undefined || patternExpr.kind === 'expr.constant'
-            ? IR.TRUE
-            : IR.libMethodCall('Pattern', 'hasEffect', patternVar ?? fail(), [g.useObj(), AT_X, AT_Y]);
-        return conditionExpr === undefined ? hasEffect : OP.and(hasEffect, c.expr(conditionExpr));
+    function patternHasEffect(ctx, g, from, to) {
+        return to.constant === undefined
+            ? IR.libMethodCall('Pattern', 'hasEffect', to.expr, [g.obj, ctx.at.x, ctx.at.y])
+            : from !== undefined && PatternTree.isDisjoint(from, to.constant)
+                ? IR.TRUE
+                : OP.some(to.constant, (dx, dy, c) => from === undefined || !PatternTree.matches(from, p => !p.canBe(dx, dy, c))
+                    ? OP.ne(g.data.get(g.relativeIndex(ctx.at, dx, dy)), IR.int(c))
+                    : IR.TRUE);
+    }
+    Compiler.patternHasEffect = patternHasEffect;
+    function writeCondition(ctx, g, from, to, conditionExpr) {
+        return OP.and(to !== undefined ? patternHasEffect(ctx, g, from, to) : IR.TRUE, conditionExpr !== undefined ? ctx.expr(conditionExpr) : IR.TRUE);
     }
     Compiler.writeCondition = writeCondition;
 })(Compiler || (Compiler = {}));
@@ -1943,6 +2358,27 @@ var CodeGen;
         return unaryOp(p, op, p, '');
     }
     CodeGen.prefixOp = prefixOp;
+    function statements(stmt) {
+        return stmt.kind === 'stmt.sequence' ? stmt.children : [stmt];
+    }
+    CodeGen.statements = statements;
+    function _getImmediatelyDeclaredNames(node) {
+        switch (node.kind) {
+            case 'decl.func':
+                return [node.name, ...node.params.map(p => p.name)];
+            case 'decl.var.const':
+            case 'decl.var.loop':
+            case 'decl.var.mut':
+            case 'decl.var.param':
+                return [node.name];
+            case 'stmt.for.range':
+                return [node.index.name];
+            case 'expr.letin':
+                return [node.decl.name];
+            default:
+                return [];
+        }
+    }
     class Base {
         config;
         diagnostics = new Diagnostics();
@@ -1952,8 +2388,19 @@ var CodeGen;
         _toAssign = new Map();
         LPAREN = '(';
         RPAREN = ')';
+        LBLOCK = '{';
+        RBLOCK = '}';
+        _reserved = new Set();
+        _namesInUse = [];
+        _namesMap = new Map();
         constructor(config) {
             this.config = config;
+        }
+        beginGenerating() {
+            const { _reserved } = this;
+            for (const word of this.RESERVED_WORDS.split(/\s+/)) {
+                _reserved.add(word);
+            }
         }
         beginLine() {
             const { _out } = this;
@@ -1973,27 +2420,116 @@ var CodeGen;
             const i = --this._indentationLevel;
             this._indent = ' '.repeat(this.config.indentSpaces * i);
         }
-        writeStmt(stmt) {
-            if (stmt.kind === 'stmt.comment' && !this.config.emitComments) {
-                return;
+        getName(expr) {
+            return this._namesMap.get(expr.id) ?? fail(`use of name (${expr.namePart}) outside of its declared scope`, expr);
+        }
+        getLibName(name) {
+            while (this._reserved.has(name)) {
+                name += '_';
             }
+            return name;
+        }
+        declareNames(node) {
+            const { _reserved, _namesInUse, _namesMap } = this;
+            const nameExprs = _getImmediatelyDeclaredNames(node);
+            for (const expr of nameExprs) {
+                //if(_namesMap.has(expr.id)) { fail(`redeclared name`, expr); }
+                let name = expr.namePart, suffix = 1;
+                while (_reserved.has(name) || _namesInUse.includes(name)) {
+                    ++suffix;
+                    name = `${expr.namePart}${suffix}`;
+                }
+                _namesInUse.push(name);
+                _namesMap.set(expr.id, name);
+            }
+        }
+        withScope(f) {
+            const { _namesInUse } = this;
+            const n = _namesInUse.length;
+            f();
+            _namesInUse.length = n;
+        }
+        writeBlockScope(stmt) {
+            this.withScope(() => this.writeIndentedBlock(stmt));
+        }
+        writeIndentedBlock(stmt) {
+            this.write(this.LBLOCK);
+            this.indent();
+            this.writeStmt(stmt);
+            this.dedent();
+            this.beginLine();
+            this.write(this.RBLOCK);
+        }
+        writeStmt(stmt) {
+            while (stmt.kind === 'stmt.decl') {
+                this.beginLine();
+                this.writeDecl(stmt.decl);
+                stmt = stmt.child;
+            }
+            switch (stmt.kind) {
+                case 'stmt.blankline': {
+                    this.beginLine();
+                    return;
+                }
+                case 'stmt.comment': {
+                    if (!this.config.emitComments) {
+                        return;
+                    }
+                    break;
+                }
+                case 'stmt.sequence': {
+                    for (const child of stmt.children) {
+                        this.writeStmt(child);
+                    }
+                    return;
+                }
+            }
+            this.declareNames(stmt);
             const f = this.STMT_WRITE_FUNCS[stmt.kind];
             f(this, stmt);
         }
+        writeDecl(decl) {
+            switch (decl.kind) {
+                case 'decl.var.loop':
+                case 'decl.init': {
+                    fail(`'${decl.kind}' was not replaced`);
+                }
+                case 'decl.none': {
+                    return;
+                }
+                case 'decl.multi': {
+                    for (const d of decl.children) {
+                        this.writeDecl(d);
+                    }
+                    return;
+                }
+            }
+            this.declareNames(decl);
+            const f = this.DECL_WRITE_FUNCS[decl.kind];
+            f(this, decl);
+        }
         writeExpr(expr, minPrecedence = 0) {
             switch (expr.kind) {
+                case 'expr.unused.deferred': {
+                    fail('deferred expression was not substituted', expr.purpose);
+                }
+                case 'expr.unused.error': {
+                    fail('unused expression was not eliminated', expr.error);
+                }
                 case 'expr.letin': {
-                    if (this.writeAssignExpr !== undefined && IR.exprIsContextIndependent(expr.decl.initialiser)) {
-                        this._toAssign.set(expr.decl.name.name, expr.decl.initialiser);
+                    // moving initialiser forwards is only sound if it commutes
+                    if (this.writeAssignExpr !== undefined && expr.decl.initialiser.info.commutesWith(expr.child)) {
+                        this.declareNames(expr.decl);
+                        this._toAssign.set(expr.decl.name.id, expr.decl.initialiser);
                         this.writeExpr(expr.child, minPrecedence);
                         return;
                     }
                     break;
                 }
                 case 'expr.name': {
-                    const rhs = this._toAssign.get(expr.name);
+                    const rhs = this._toAssign.get(expr.id);
                     if (this.writeAssignExpr !== undefined && rhs !== undefined) {
-                        this._toAssign.delete(expr.name);
+                        this._toAssign.delete(expr.id);
                         if (minPrecedence > 0) {
                             this.write(this.LPAREN);
                         }
@@ -2040,6 +2576,7 @@ var CodeGen;
                     return;
                 }
             }
+            this.declareNames(expr);
             const [p, f] = this.EXPR_WRITE_FUNCS[expr.kind];
             if (p < minPrecedence) {
                 this.write(this.LPAREN);
@@ -2048,10 +2585,6 @@ var CodeGen;
             if (p < minPrecedence) {
                 this.write(this.RPAREN);
             }
-            return;
-        }
-        writeIndentedBlock(stmt) {
-            this.writeStmt(stmt.kind !== 'stmt.block' ? { kind: 'stmt.block', children: [stmt], flags: stmt.flags } : stmt);
         }
         writeList(writer, n, rowLength = IR.DEFAULT_ROW_LENGTH, compact = false, sep = ',') {
             const multiline = rowLength < n;
@@ -2132,10 +2665,13 @@ var CodeGen;
 var CodeGen;
 (function (CodeGen) {
     const RUNTIME_LIB_NAME = 'MJr';
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar#keywords
+    const JAVASCRIPT_KEYWORDS = `abstract arguments as async await boolean break byte case catch char class const continue debugger default delete do double else enum eval export extends false final finally float for from function get goto if implements import in instanceof int interface let long native new null of package private protected public return set short static super switch synchronized this throw throws transient true try typeof undefined var void volatile while with yield`;
     const _literal = [16 /* Precedence.LITERAL */, (out, expr) => {
             out.write(JSON.stringify(expr.value));
         }];
     class JavaScript extends CodeGen.Base {
+        RESERVED_WORDS = `${RUNTIME_LIB_NAME} ${JAVASCRIPT_KEYWORDS} console`;
         STMT_WRITE_FUNCS = {
             'stmt.assign': (out, stmt) => {
                 const { left, op, right } = stmt;
@@ -2151,19 +2687,6 @@ var CodeGen;
                 }
                 out.write(';');
             },
-            'stmt.block': (out, stmt) => {
-                out.write('{');
-                out.indent();
-                for (const c of stmt.children) {
-                    out.writeStmt(c);
-                }
-                out.dedent();
-                out.beginLine();
-                out.write('}');
-            },
-            'stmt.blankline': (out, stmt) => {
-                out.beginLine();
-            },
             'stmt.break': (out, stmt) => {
                 out.beginLine();
                 out.write('break;');
@@ -2176,36 +2699,18 @@ var CodeGen;
                 out.beginLine();
                 out.write('continue;');
             },
-            'stmt.decl.func': (out, stmt) => {
-                const { params, paramTypes } = stmt;
-                out.beginLine();
-                out.write('function');
-                if (stmt.yields !== undefined) {
-                    out.write('*');
-                }
-                out.write(' ');
-                out.writeExpr(stmt.name);
-                out.write('(');
-                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
-                out.write(')');
-                out.writeReturnType(stmt.returnType, stmt.yields);
-                out.write(' ');
-                out.writeIndentedBlock(stmt.body);
-            },
-            'stmt.decl.vars': (out, stmt) => {
-                const { decls, mutable } = stmt;
-                out.beginLine();
-                out.write(mutable ? 'let ' : 'const ');
-                out.writeList(i => out.writeVarDecl(decls[i]), decls.length, 1, true);
-                out.write(';');
-            },
             'stmt.expr': (out, stmt) => {
                 out.beginLine();
                 out.writeExpr(stmt.expr);
                 out.write(';');
             },
+            'stmt.export': (out, stmt) => {
+                // TODO: JS module config option
+                out.writeDecl(stmt.decl);
+            },
             'stmt.for.range': (out, stmt) => {
-                const { index: { name: i }, low, high, reverse, body } = stmt;
+                const { index, low, high, reverse, body } = stmt;
+                const i = out.getName(index.name);
                 out.beginLine();
                 out.write(`for(let ${i} = `);
                 if (reverse) {
@@ -2220,7 +2725,7 @@ var CodeGen;
                     out.writeExpr(high, 9 /* Precedence.CMP */);
                     out.write(`; ++${i}) `);
                 }
-                out.writeIndentedBlock(body);
+                out.writeBlockScope(body);
             },
             'stmt.if': (out, stmt) => {
                 let cur = stmt;
@@ -2230,14 +2735,14 @@ var CodeGen;
                     out.writeExpr(cur.condition);
                     out.write(') ');
                     // intented block has braces, avoiding parsing hazard of `if(...) if(...) ... else ...`
-                    out.writeIndentedBlock(cur.then);
+                    out.writeBlockScope(cur.then);
                     cur = cur.otherwise;
                     if (cur === undefined) {
                         break;
                     }
                     out.write(' else ');
                     if (cur.kind !== 'stmt.if') {
-                        out.writeIndentedBlock(cur);
+                        out.writeBlockScope(cur);
                         break;
                     }
                 }
@@ -2298,16 +2803,46 @@ var CodeGen;
                 out.write('while(');
                 out.writeExpr(stmt.condition);
                 out.write(') ');
-                out.writeIndentedBlock(then);
+                out.writeBlockScope(then);
             },
             'stmt.yield': (out, stmt) => {
                 out.beginLine();
-                this.write('yield');
+                out.write('yield');
                 if (stmt.expr !== undefined) {
-                    this.write(' ');
-                    this.writeExpr(stmt.expr);
+                    out.write(' ');
+                    out.writeExpr(stmt.expr);
                 }
-                this.write(';');
+                out.write(';');
+            },
+        };
+        DECL_WRITE_FUNCS = {
+            'decl.func': (out, decl) => {
+                const { params } = decl;
+                out.write('function');
+                if (decl.yields !== undefined) {
+                    out.write('*');
+                }
+                out.write(` ${this.getName(decl.name)}(`);
+                out.withScope(() => {
+                    out.writeList(i => out.writeVarDecl(params[i]), params.length);
+                    out.write(')');
+                    out.writeReturnType(decl.returnType, decl.yields);
+                    out.write(' ');
+                    out.writeIndentedBlock(decl.body);
+                });
+            },
+            'decl.var.const': (out, decl) => {
+                out.write('const ');
+                out.writeVarDecl(decl);
+                out.write(';');
+            },
+            'decl.var.mut': (out, decl) => {
+                out.write('let ');
+                out.writeVarDecl(decl);
+                out.write(';');
+            },
+            'decl.var.param': (out, decl) => {
+                out.writeVarDecl(decl);
             },
         };
         EXPR_WRITE_FUNCS = {
@@ -2338,16 +2873,21 @@ var CodeGen;
                     }, keys.length, 1);
                     out.write('}');
                 }],
-            'expr.letin': [18 /* Precedence.MAX */, (out, expr) => {
-                    out.write('(');
+            'expr.letin': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
+                    // TODO: eliminate 'expr.letin' before codegen
+                    out.write('(function(');
                     let e = expr;
-                    do {
-                        this.writeAssignExpr(e.decl.name, e.decl.initialiser);
-                        out.write(', ');
+                    while (true) {
+                        out.writeAssignExpr(e.decl.name, e.decl.initialiser);
                         e = e.child;
-                    } while (e.kind === 'expr.letin');
-                    this.writeExpr(e);
-                    out.write(')');
+                        if (e.kind !== 'expr.letin') {
+                            break;
+                        }
+                        out.write(', ');
+                    }
+                    out.write(') { return ');
+                    out.writeExpr(e);
+                    out.write('; })()');
                 }],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
@@ -2357,7 +2897,7 @@ var CodeGen;
                     out.write('undefined');
                 }],
             'expr.name': [18 /* Precedence.MAX */, (out, expr) => {
-                    out.write(expr.name);
+                    out.write(this.getName(expr));
                 }],
             'expr.op.call.lib.constructor': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
                     out.write(`new ${RUNTIME_LIB_NAME}.${expr.className}`);
@@ -2373,18 +2913,17 @@ var CodeGen;
                 }],
             'expr.op.call.lib.method': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
                     out.writeExpr(expr.obj);
-                    out.write(`.${expr.name}(`);
+                    out.write(`.${this.getLibName(expr.name)}(`);
                     out.writeExprList(expr.args);
                     out.write(')');
                 }],
             'expr.op.call.local': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    out.writeExpr(expr.name);
-                    out.write('(');
+                    out.write(`${out.getName(expr.name)}(`);
                     out.writeExprList(expr.args);
                     out.write(')');
                 }],
             'expr.param': [3 /* Precedence.NULL_COALESCE */, (out, expr) => {
-                    out.write(`params?.${expr.name} ?? `);
+                    out.write(`params?['${expr.name}'] ?? `);
                     out.writeExpr(expr.otherwise, 3 /* Precedence.NULL_COALESCE */);
                 }],
             'expr.op.ternary': [2 /* Precedence.TERNARY */, (out, expr) => {
@@ -2490,6 +3029,7 @@ var CodeGen;
             };
         })();
         writeAssignExpr(left, right) {
+            // TODO: this omits `let`, making a global variable; need to hoist declaration
             this.writeExpr(left);
             this.write(' = ');
             this.writeExpr(right, 2 /* Precedence.ASSIGN */);
@@ -2504,17 +3044,14 @@ var CodeGen;
                 for (const value of c.values) {
                     this.write(`case ${value}: `);
                 }
-                this.writeIndentedBlock(IR.block([c.then, IR.BREAK]));
+                this.writeBlockScope(IR.seq([c.then, IR.BREAK]));
             }
             this.dedent();
             this.beginLine();
             this.write('}');
         }
-        writeParamDecl(name, type) {
-            this.write(name);
-        }
         writeVarDecl(decl) {
-            this.writeExpr(decl.name);
+            this.write(this.getName(decl.name));
             if (decl.initialiser !== undefined) {
                 this.write(' = ');
                 this.writeExpr(decl.initialiser);
@@ -2524,8 +3061,7 @@ var CodeGen;
     }
     CodeGen.JavaScript = JavaScript;
     class TypeScript extends JavaScript {
-        writeParamDecl(name, type) {
-            this.write(name);
+        writeParamAnnotation(type) {
             if (type.kind === 'nullable') {
                 this.write('?');
                 type = type.componentType;
@@ -2534,9 +3070,12 @@ var CodeGen;
             this.writeType(type);
         }
         writeVarDecl(decl) {
-            this.writeExpr(decl.name);
-            if (decl.initialiser === undefined) {
-                this.write('!: ');
+            this.write(this.getName(decl.name));
+            if (decl.kind === 'decl.var.param') {
+                this.writeParamAnnotation(decl.type);
+            }
+            else if (decl.initialiser === undefined) {
+                this.write(': ');
                 this.writeType(decl.type);
             }
             else {
@@ -2563,7 +3102,10 @@ var CodeGen;
                 case 'dict': {
                     const { keys, values } = type;
                     this.write('{');
-                    this.writeList(i => this.writeParamDecl(keys[i], values[i]), keys.length);
+                    this.writeList(i => {
+                        this.write(keys[i]);
+                        this.writeParamAnnotation(values[i]);
+                    }, keys.length);
                     this.write('}');
                     return;
                 }
@@ -2605,11 +3147,14 @@ var CodeGen;
 (function (CodeGen) {
     const RUNTIME_LIB_NAME = 'MJr';
     // https://docs.python.org/3/reference/lexical_analysis.html#keywords
-    const PYTHON_KEYWORDS = 'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' ');
+    const PYTHON_KEYWORDS = `_ False None True and as assert async await break case class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try while with yield`;
     const _literal = [18 /* Precedence.MAX */, (out, expr) => {
             out.write(JSON.stringify(expr.value));
         }];
     class Python extends CodeGen.Base {
+        RESERVED_WORDS = `${RUNTIME_LIB_NAME} ${PYTHON_KEYWORDS} Error Fraction array float int32 int_ctz math print range str`;
+        LBLOCK = ":";
+        RBLOCK = "";
         constructor(config) {
             super(config);
             if (config.indentSpaces === 0) {
@@ -2624,17 +3169,6 @@ var CodeGen;
                 out.write(` ${op} `);
                 out.writeExpr(right);
             },
-            'stmt.block': (out, stmt) => {
-                out.write(':');
-                out.indent();
-                for (const c of stmt.children) {
-                    out.writeStmt(c);
-                }
-                out.dedent();
-            },
-            'stmt.blankline': (out, stmt) => {
-                out.beginLine();
-            },
             'stmt.break': (out, stmt) => {
                 out.beginLine();
                 out.write('break');
@@ -2647,21 +3181,8 @@ var CodeGen;
                 out.beginLine();
                 out.write('continue');
             },
-            'stmt.decl.func': (out, stmt) => {
-                const { params, paramTypes } = stmt;
-                out.beginLine();
-                out.write('def ');
-                out.writeExpr(stmt.name);
-                out.write('(');
-                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
-                out.write(')');
-                out.writeReturnType(stmt.returnType);
-                out.writeIndentedBlock(stmt.body);
-            },
-            'stmt.decl.vars': (out, stmt) => {
-                for (const decl of stmt.decls) {
-                    out.writeVarDecl(decl);
-                }
+            'stmt.export': (out, stmt) => {
+                out.writeDecl(stmt.decl);
             },
             'stmt.expr': (out, stmt) => {
                 out.beginLine();
@@ -2670,7 +3191,7 @@ var CodeGen;
             'stmt.for.range': (out, stmt) => {
                 const { low, high } = stmt;
                 out.beginLine();
-                out.write(`for ${_name(stmt.index.name)} in range(`);
+                out.write(`for ${this.getName(stmt.index.name)} in range(`);
                 if (stmt.reverse) {
                     out.writeExpr(IR.OP.minus(high, IR.ONE));
                     out.write(`, `);
@@ -2785,6 +3306,22 @@ var CodeGen;
                 }
             },
         };
+        DECL_WRITE_FUNCS = {
+            'decl.func': (out, decl) => {
+                const { params } = decl;
+                out.beginLine();
+                out.write(`def ${this.getName(decl.name)}(`);
+                out.withScope(() => {
+                    out.writeList(i => out.writeVarDecl(params[i]), params.length);
+                    out.write(')');
+                    out.writeReturnType(decl.returnType);
+                    out.writeIndentedBlock(decl.body);
+                });
+            },
+            'decl.var.const': (out, decl) => this.writeVarDecl(decl),
+            'decl.var.mut': (out, decl) => this.writeVarDecl(decl),
+            'decl.var.param': (out, decl) => this.writeVarDecl(decl),
+        };
         EXPR_WRITE_FUNCS = {
             'expr.array.const': [18 /* Precedence.MAX */, (out, expr) => {
                     const { from, domainSize, rowLength } = expr;
@@ -2817,11 +3354,11 @@ var CodeGen;
                     out.write('(');
                     let e = expr;
                     do {
-                        this.writeAssignExpr(e.decl.name, e.decl.initialiser);
+                        out.writeAssignExpr(e.decl.name, e.decl.initialiser);
                         out.write(', ');
                         e = e.child;
                     } while (e.kind === 'expr.letin');
-                    this.writeExpr(e);
+                    out.writeExpr(e);
                     out.write(')[-1]');
                 }],
             'expr.literal.bool': [18 /* Precedence.MAX */, (out, expr) => {
@@ -2840,35 +3377,32 @@ var CodeGen;
                     out.write('None');
                 }],
             'expr.name': [18 /* Precedence.MAX */, (out, expr) => {
-                    out.write(_name(expr.name));
+                    out.write(out.getName(expr));
                 }],
-            'expr.op.call.lib.constructor': [17 /* Precedence.ATTR_ACCESS_CALL */, (js, expr) => {
-                    js.write(`${RUNTIME_LIB_NAME}.${_name(expr.className)}`);
-                    js.write(`(`);
-                    js.writeExprList(expr.args);
-                    js.write(')');
+            'expr.op.call.lib.constructor': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
+                    out.write(`${RUNTIME_LIB_NAME}.${out.getLibName(expr.className)}(`);
+                    out.writeExprList(expr.args);
+                    out.write(')');
                 }],
-            'expr.op.call.lib.function': [17 /* Precedence.ATTR_ACCESS_CALL */, (js, expr) => {
-                    js.write(`${RUNTIME_LIB_NAME}.${_name(expr.name)}`);
-                    js.write(`(`);
-                    js.writeExprList(expr.args);
-                    js.write(')');
+            'expr.op.call.lib.function': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
+                    out.write(`${RUNTIME_LIB_NAME}.${out.getLibName(expr.name)}(`);
+                    out.writeExprList(expr.args);
+                    out.write(')');
                 }],
-            'expr.op.call.lib.method': [17 /* Precedence.ATTR_ACCESS_CALL */, (js, expr) => {
-                    js.writeExpr(expr.obj);
-                    js.write(`.${_name(expr.name)}(`);
-                    js.writeExprList(expr.args);
-                    js.write(')');
+            'expr.op.call.lib.method': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
+                    out.writeExpr(expr.obj);
+                    out.write(`.${out.getLibName(expr.name)}(`);
+                    out.writeExprList(expr.args);
+                    out.write(')');
                 }],
             'expr.op.call.local': [17 /* Precedence.ATTR_ACCESS_CALL */, (out, expr) => {
-                    out.writeExpr(expr.name);
-                    out.write('(');
+                    out.write(`${out.getName(expr.name)}(`);
                     out.writeExprList(expr.args);
                     out.write(')');
                 }],
             'expr.param': [3 /* Precedence.TERNARY */, (out, expr) => {
                     // TODO: take params as **kwargs
-                    out.write(`params['${_name(expr.name)}'] if params is not None and '${_name(expr.name)}' in params else `);
+                    out.write(`params['${expr.name}'] if params is not None and '${expr.name}' in params else `);
                     out.writeExpr(expr.otherwise, 3 /* Precedence.TERNARY */);
                 }],
             'expr.op.ternary': [3 /* Precedence.TERNARY */, (out, expr) => {
@@ -2982,35 +3516,21 @@ var CodeGen;
             this.write(' := ');
             this.writeExpr(right, 2 /* Precedence.ASSIGN */);
         }
-        writeParamDecl(name, type) {
-            this.write(name);
-            if (type.kind === 'nullable') {
+        writeVarDecl(decl) {
+            this.writeExpr(decl.name);
+            if (decl.kind !== 'decl.var.param') {
+                this.write(' = ');
+                this.writeExpr(decl.initialiser ?? IR.NULL);
+            }
+            else if (decl.isOptional) {
                 this.write('=None');
             }
-        }
-        writeVarDecl(decl) {
-            if (decl.initialiser === undefined) {
-                return;
-            }
-            this.beginLine();
-            this.writeExpr(decl.name);
-            this.write(' = ');
-            this.writeExpr(decl.initialiser);
         }
         writeReturnType(type) { }
     }
     CodeGen.Python = Python;
     class PythonWithTypes extends Python {
-        writeParamDecl(name, type) {
-            this.write(name);
-            this.write(': ');
-            this.writeType(type);
-            if (type.kind === 'nullable') {
-                this.write(' = None');
-            }
-        }
         writeVarDecl(decl) {
-            this.beginLine();
             this.writeExpr(decl.name);
             this.write(': ');
             this.writeType(decl.type);
@@ -3029,7 +3549,10 @@ var CodeGen;
                     const { keys, values } = type;
                     // TODO: need `stmt.typedecl` or otherwise; declare namedtuple types
                     this.write('{');
-                    this.writeList(i => this.writeParamDecl(keys[i], values[i]), keys.length);
+                    this.writeList(i => {
+                        this.write(`${keys[i]}: `);
+                        this.writeType(values[i]);
+                    }, keys.length);
                     this.write('}');
                     return;
                 }
@@ -3054,9 +3577,6 @@ var CodeGen;
         }
     }
     CodeGen.PythonWithTypes = PythonWithTypes;
-    function _name(ident) {
-        return PYTHON_KEYWORDS.includes(ident) ? `${ident}_` : ident;
-    }
     function _typecode(bits) {
         return bits <= 8 ? 'B'
             : bits <= 16 ? 'I'
@@ -3077,6 +3597,24 @@ var CodeGen;
         void: 'None',
     };
 })(CodeGen || (CodeGen = {}));
+/**
+ * Type declarations for the abstract semantic graph (ASG).
+ */
+var ASG;
+(function (ASG) {
+    function exprIsRuntimeConstant(expr) {
+        return (expr.flags & 1 /* ExprFlags.RUNTIME_CONSTANT */) !== 0;
+    }
+    ASG.exprIsRuntimeConstant = exprIsRuntimeConstant;
+    function exprIsGridIndependent(expr) {
+        return (expr.flags & 16 /* ExprFlags.GRID_INDEPENDENT */) !== 0;
+    }
+    ASG.exprIsGridIndependent = exprIsGridIndependent;
+    function exprIsSameEverywhere(expr) {
+        return (expr.flags & 12 /* ExprFlags.SAME_EVERYWHERE */) === 12 /* ExprFlags.SAME_EVERYWHERE */;
+    }
+    ASG.exprIsSameEverywhere = exprIsSameEverywhere;
+})(ASG || (ASG = {}));
 var MJr;
 (function (MJr) {
     // MJr runtime version 0 is unstable!
@@ -5339,10 +5877,10 @@ var Resolver;
             if (decl.isParam) {
                 rhs = { kind: 'expr.param', type, flags, otherwise: rhs, name, pos };
             }
-            const isMutable = (flags & 1 /* ASG.ExprFlags.RUNTIME_CONSTANT */) === 0;
+            const isMutable = rhs.kind !== 'expr.constant';
             const variable = ctx.makeVariable(name, type, flags, isMutable ? undefined : rhs, decl.isParam, decl.name.pos);
             return [
-                // constants will be folded, or assigned in preamble; not assigned in program body
+                // constants will be folded, so don't emit assignment statements for them
                 isMutable ? { kind: 'stmt.assign', variable, rhs, pos } : undefined,
                 ctx.withVariable(variable, f),
             ];
@@ -5918,7 +6456,9 @@ var Resolver;
             const { name, rhs, pos } = stmt.decl;
             const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ASG.ExprFlags.CONSTANT */, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
             const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children));
-            stmts.unshift({ kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos }, { kind: 'stmt.use', grid, pos: stmt.pos });
+            stmts.unshift(
+            //{kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos},
+            { kind: 'stmt.use', grid, pos: stmt.pos });
             return { kind: 'stmts', stmts };
         },
     };
@@ -6419,54 +6959,57 @@ var Type;
 })(Type || (Type = {}));
 var IR;
 (function (IR) {
-    function makeConstArray(name, from, domainSize) {
+    function makeConstArray(ir, namePart, from, domainSize) {
         if (from.length === 0) {
-            return { decl: [], get: () => IR.NULL };
+            return { decl: IR.NO_DECL, get: () => IR.unusedExpr('array of length zero') };
         }
         // check if table is constant
         const start = from[0];
         if (from.every(x => x === start)) {
-            return { decl: [], get: () => IR.int(start) };
+            return { decl: IR.NO_DECL, get: () => IR.int(start) };
         }
         // check if table is an arithmetic progression
         // only consider domain sizes where loose int arithmetic is safe
         const step = from[1] - start;
         if (domainSize < 2 ** 31 && from.every((x, i) => x === start + i * step)) {
             return step >= 0
-                ? { decl: [], get: index => IR.OP.add(IR.int(start), IR.OP.multConstant(index, step)) }
-                : { decl: [], get: index => IR.OP.minus(IR.int(start), IR.OP.multConstant(index, -step)) };
+                ? { decl: IR.NO_DECL, get: index => IR.OP.add(IR.int(start), IR.OP.multConstant(index, step)) }
+                : { decl: IR.NO_DECL, get: index => IR.OP.minus(IR.int(start), IR.OP.multConstant(index, -step)) };
         }
+        const decl = ir.constArrayDecl(namePart, from, domainSize);
         return {
-            decl: [IR.constArrayDecl(name, from, domainSize)],
-            get: index => IR.access(name, index),
+            decl,
+            get: index => IR.access(decl.name, index),
         };
     }
     IR.makeConstArray = makeConstArray;
-    function makeConstArray2D(name, from, rowLength, domainSize) {
+    function makeConstArray2D(ir, namePart, from, rowLength, domainSize) {
         if (from.every((x, i) => x === from[i % rowLength])) {
             const row = from.slice(0, rowLength);
-            const table = makeConstArray(name, row, domainSize);
+            const table = makeConstArray(ir, namePart, row, domainSize);
             return { decl: table.decl, get: (j, i) => table.get(i) };
         }
         else if (from.every((x, i) => x === from[i - i % rowLength])) {
             const col = makeArray((from.length / rowLength) | 0, i => from[i * rowLength]);
-            return makeConstArray(name, col, domainSize);
+            return makeConstArray(ir, namePart, col, domainSize);
         }
+        const decl = ir.constArrayDecl(namePart, from, domainSize, rowLength);
         return {
-            decl: [IR.constArrayDecl(name, from, domainSize, rowLength)],
-            get: (j, i) => IR.access(name, IR.OP.multAddConstant(j, rowLength, i)),
+            decl,
+            get: (j, i) => IR.access(decl.name, IR.OP.multAddConstant(j, rowLength, i)),
         };
     }
     IR.makeConstArray2D = makeConstArray2D;
-    function makeMutableArray(name, length, domainSize) {
+    function makeMutableArray(ir, namePart, length, domainSize) {
+        const decl = ir.mutArrayDecl(namePart, length, domainSize);
         if (domainSize <= 1 || length === IR.ZERO) {
-            return { name, decl: [], get: () => IR.ZERO, set: () => IR.PASS };
+            return { array: decl.name, decl, get: () => IR.ZERO, set: () => IR.PASS };
         }
         const arr = {
-            name,
-            decl: [IR.newArrayDecl(name, length, domainSize)],
+            array: decl.name,
+            decl,
             get(index) {
-                return IR.access(name, index);
+                return IR.access(decl.name, index);
             },
             set(index, op, value) {
                 return IR.assign(this.get(index), op, value);
@@ -6475,70 +7018,69 @@ var IR;
         return arr;
     }
     IR.makeMutableArray = makeMutableArray;
-    function makeMutableArray2D(name, numRows, rowLength, domainSize) {
+    function makeMutableArray2D(ir, namePart, numRows, rowLength, domainSize) {
+        const decl = ir.mutArrayDecl(namePart, IR.OP.mult(numRows, rowLength), domainSize);
         if (domainSize <= 1 || rowLength === IR.ZERO || numRows === IR.ZERO) {
-            return { name, decl: [], get: () => IR.ZERO, set: () => IR.PASS };
+            return { name: decl.name, decl, get: () => IR.ZERO, set: () => IR.PASS };
         }
         const get = IR.isInt(rowLength)
-            ? (j, i) => IR.access(name, IR.OP.multAddConstant(j, rowLength.value, i))
-            : (j, i) => IR.access(name, IR.OP.add(IR.OP.mult(j, rowLength), i));
+            ? (j, i) => IR.access(decl.name, IR.OP.multAddConstant(j, rowLength.value, i))
+            : (j, i) => IR.access(decl.name, IR.OP.add(IR.OP.mult(j, rowLength), i));
         return {
-            name,
-            decl: [IR.newArrayDecl(name, IR.OP.mult(numRows, rowLength), domainSize)],
+            name: decl.name,
+            decl,
             get,
             set: (j, i, op, value) => IR.assign(get(j, i), op, value),
         };
     }
     IR.makeMutableArray2D = makeMutableArray2D;
 })(IR || (IR = {}));
-var IR;
-(function (IR) {
-    class Constants {
-        names = [];
-        types = [];
-        interned = IDMap.withKey(IR.key);
-        intern(expr, type) {
-            const { names, types, interned } = this;
-            const id = interned.getOrCreateID(expr);
-            if (id >= names.length) {
-                names.push(IR.NAMES.constant(id));
-                types.push(type);
-            }
-            return names[id];
-        }
-        declare() {
-            const { names, types, interned } = this;
-            return IR.declVars(interned.map((expr, i) => ({
-                name: names[i],
-                type: types[i],
-                initialiser: expr,
-            })));
-        }
-    }
-    IR.Constants = Constants;
-})(IR || (IR = {}));
-///<reference path="./names.ts"/>
+///<reference path="./factory.ts"/>
 var IR;
 (function (IR) {
     function _key(p) {
-        return `${ISet.key(p.chars)}:${p.includeBoundary}`;
+        return `${ISet.key(p.chars)}:${p.includeBoundary ? 1 : 0}`;
     }
-    const { AT_CONV, AT_X, AT_Y, } = IR.NAMES;
     class ConvBuffer {
+        ir;
         g;
         kernel;
         buffer;
         width;
         height;
         n;
-        values;
+        patternIndices;
         repsWithBoundary;
-        constructor(id, g, patterns, kernel) {
+        constDecls;
+        constructor(ir, g, patterns, kernel) {
+            this.ir = ir;
             this.g = g;
             this.kernel = kernel;
-            this.width = kernel.width === 1 ? g.width : IR.NAMES.convBufferVar(g, id, 'width');
-            this.height = kernel.height === 1 ? g.height : IR.NAMES.convBufferVar(g, id, 'height');
-            const n = this.n = kernel.width === 1 && kernel.height === 1 ? g.n : IR.NAMES.convBufferVar(g, id, 'n');
+            const constDecls = this.constDecls = [];
+            if (kernel.width === 1) {
+                this.width = g.width;
+            }
+            else {
+                const width = ir.constDecl('convBufferWidth', IR.INT_TYPE, IR.OP.addConstant(g.width, kernel.width - 1));
+                constDecls.push(width);
+                this.width = width.name;
+            }
+            if (kernel.height === 1) {
+                this.height = g.height;
+            }
+            else {
+                const height = ir.constDecl('convBufferHeight', IR.INT_TYPE, IR.OP.addConstant(g.height, kernel.height - 1));
+                constDecls.push(height);
+                this.height = height.name;
+            }
+            if (kernel.width === 1 && kernel.height === 1) {
+                this.n = g.n;
+            }
+            else {
+                const n = ir.constDecl('convBufferN', IR.INT_TYPE, IR.OP.mult(this.width, this.height));
+                constDecls.push(n);
+                this.n = n.name;
+            }
             // partition the alphabet, so that each alphabet symbol contributes to at most one gBuffer
             const alphabetKey = g.grid.alphabet.key;
             const alphabetPartition = new Partition(alphabetKey.length);
@@ -6577,43 +7119,31 @@ var IR;
             if (anyExtraBoundary) {
                 ISet.add(repsWithBoundary, numReps);
             }
-            const buffer = this.buffer = IR.makeMutableArray2D(IR.NAMES.convBufferVar(g, id, 'buffer'), IR.int(numReps + (anyExtraBoundary ? 1 : 0)), n, kernel.width * kernel.height);
-            const boundaryExpr = anyExtraBoundary ? buffer.get(IR.int(numReps), AT_CONV) : IR.ZERO;
-            const values = this.values = new Map();
+            this.buffer = IR.makeMutableArray2D(ir, 'convBuffer', IR.int(numReps + (anyExtraBoundary ? 1 : 0)), this.n, kernel.width * kernel.height);
+            const patternIndices = this.patternIndices = new Map();
             patterns.forEach((p, i) => {
                 const reps = mappedReps[i];
-                const exprs = ISet.map(reps, j => buffer.get(IR.int(j), AT_CONV));
+                const indices = ISet.toArray(reps);
                 // sanity check
-                if (exprs.length === 0) {
+                if (indices.length === 0) {
                     fail();
                 }
                 if (p.includeBoundary && ISet.isDisjoint(reps, repsWithBoundary)) {
-                    exprs.push(boundaryExpr);
+                    indices.push(numReps);
                 }
-                values.set(_key(p), exprs.reduce(IR.OP.add));
+                patternIndices.set(_key(p), indices);
             });
         }
         declare() {
-            const { g, kernel, width, height, buffer } = this;
+            const { ir, g, kernel, buffer } = this;
             const { centreX, centreY } = kernel;
-            const decls = [];
-            if (width !== g.width) {
-                const w = IR.OP.addConstant(g.width, kernel.width - 1);
-                decls.push({ name: width, type: IR.INT_TYPE, initialiser: w });
-            }
-            if (height !== g.height) {
-                const h = IR.OP.addConstant(g.height, kernel.height - 1);
-                decls.push({ name: height, type: IR.INT_TYPE, initialiser: h });
-            }
-            decls.push({ name: this.n, type: IR.INT_TYPE, initialiser: IR.OP.mult(width, height) }, ...buffer.decl);
-            const out = [IR.declVars(decls)];
+            const atX = ir.loopVarDecl('x'), atY = ir.loopVarDecl('y');
             const boundaryValues = kernel.boundaryValues();
-            const xLoop = [];
-            const yLoop = [];
+            const xLoop = [], yLoop = [], noLoop = [];
             ISet.forEach(this.repsWithBoundary, j => {
                 for (let dy = -centreY; dy <= centreY; ++dy) {
                     const y = dy < 0 ? IR.int(-dy - 1)
-                        : dy === 0 ? AT_Y
+                        : dy === 0 ? atY.name
                             : IR.OP.minusConstant(g.height, dy);
                     for (let dx = -centreX; dx <= centreX; ++dx) {
                         const value = boundaryValues[(centreX + dx) + (centreY + dy) * kernel.width];
@@ -6621,20 +7151,25 @@ var IR;
                             continue;
                         }
                         const x = dx < 0 ? IR.int(-dx - 1)
-                            : dx === 0 ? AT_X
+                            : dx === 0 ? atX.name
                                 : IR.OP.minusConstant(g.width, dx);
                         const arr = dx === 0 ? xLoop
                             : dy === 0 ? yLoop
-                                : out;
+                                : noLoop;
                         arr.push(buffer.set(IR.int(j), this.index(x, y), '=', IR.int(value)));
                     }
                 }
             });
-            out.push(IR.forRange(AT_X, IR.int(centreX), IR.OP.minusConstant(g.width, centreX), xLoop), IR.forRange(AT_Y, IR.int(centreY), IR.OP.minusConstant(g.height, centreY), yLoop));
-            return IR.block(out);
+            return IR.initDecl(IR.multiDecl([...this.constDecls, buffer.decl]), IR.seq([
+                ...noLoop,
+                IR.forRange(atX, IR.int(centreX), IR.OP.minusConstant(g.width, centreX), IR.seq(xLoop)),
+                IR.forRange(atY, IR.int(centreY), IR.OP.minusConstant(g.height, centreY), IR.seq(yLoop)),
+            ]));
         }
-        get(p) {
-            return this.values.get(_key(p)) ?? fail();
+        get(p, at) {
+            return (this.patternIndices.get(_key(p)) ?? fail())
+                .map(j => this.buffer.get(IR.int(j), at))
+                .reduce(IR.OP.add);
         }
         indexRaw(x, y) {
             return IR.OP.add(x, IR.OP.mult(y, this.width));
@@ -6643,14 +7178,16 @@ var IR;
             const { centreX, centreY } = this.kernel;
             return this.indexRaw(IR.OP.addConstant(x, centreX), IR.OP.addConstant(y, centreY));
         }
-        update(i, xVar, yVar, op) {
+        update(i, at, op) {
+            // x, y must be simple constants since they are repeated
             const { buffer, kernel } = this;
             const out = [];
+            const iExpr = IR.int(i);
             kernel.forEach((dx, dy, value) => {
-                const index = this.indexRaw(IR.OP.addConstant(xVar, dx), IR.OP.addConstant(yVar, dy));
-                out.push(buffer.set(IR.int(i), index, op, IR.int(value)));
+                const index = this.indexRaw(IR.OP.addConstant(at.x, dx), IR.OP.addConstant(at.y, dy));
+                out.push(buffer.set(iExpr, index, op, IR.int(value)));
             });
-            return IR.block(out);
+            return IR.seq(out);
         }
     }
     IR.ConvBuffer = ConvBuffer;
@@ -6723,83 +7260,90 @@ var IR;
         return best.repsUsed;
     }
 })(IR || (IR = {}));
+///<reference path="info.ts"/>
 var IR;
 (function (IR) {
-    function _bit(i) {
-        return IR.int(1 << (i & 31));
+    function funcDecl(name, yields, params, returnType, body) {
+        let info = body.info.asFuncDecl(name);
+        for (const param of params) {
+            info = info.asVarDecl(param.name);
+        }
+        return { kind: 'decl.func', name, yields, params, returnType, body, info };
     }
-    class Flags {
-        numFlags;
-        vars;
-        constructor(numFlags) {
-            this.numFlags = numFlags;
-            const numVars = (numFlags + 31) >> 5;
-            this.vars = makeArray(numVars, IR.NAMES.flag);
-        }
-        _var(i) {
-            return this.vars[i >> 5];
-        }
-        declare() {
-            const initialiser = this.numFlags === 1 ? IR.FALSE : IR.ZERO;
-            return IR.declVars(this.vars.map(v => ({
-                name: v,
-                type: IR.INT_TYPE,
-                initialiser,
-            })), true);
-        }
-        set(i) {
-            const v = this._var(i);
-            return this.numFlags === 1
-                ? IR.assign(v, '=', IR.TRUE)
-                : IR.assign(v, '|=', _bit(i));
-        }
-        clear(i) {
-            const v = this._var(i);
-            return this.numFlags === 1
-                ? IR.assign(v, '=', IR.FALSE)
-                : IR.assign(v, '&=', IR.OP.bitwiseNot(_bit(i)));
-        }
-        check(i) {
-            const v = this._var(i);
-            return this.numFlags === 1
-                ? v
-                : IR.OP.ne(IR.OP.bitwiseAnd(this._var(i), _bit(i)), IR.ZERO);
-        }
+    IR.funcDecl = funcDecl;
+    function initDecl(child, stmt) {
+        const info = child.info.then(stmt.info);
+        return { kind: 'decl.init', child, stmt, info };
     }
-    IR.Flags = Flags;
+    IR.initDecl = initDecl;
+    function multiDecl(decls) {
+        const children = [];
+        let info = IR.Info.DO_NOTHING;
+        for (const decl of decls) {
+            if (decl.kind === 'decl.multi') {
+                children.push(...decl.children);
+            }
+            else if (decl.kind !== 'decl.none') {
+                children.push(decl);
+            }
+            info = info.then(decl.info);
+        }
+        return children.length === 0 ? IR.NO_DECL
+            : children.length === 1 ? children[0]
+                : { kind: 'decl.multi', children, info };
+    }
+    IR.multiDecl = multiDecl;
+    IR.NO_DECL = { kind: 'decl.none', info: IR.Info.DO_NOTHING };
 })(IR || (IR = {}));
-///<reference path="names.ts"/>
+///<reference path="factory.ts"/>
 var IR;
 (function (IR) {
-    const { WIDTH, HEIGHT, AT, AT_X, AT_Y, } = IR.NAMES;
     class Grid {
+        ir;
         grid;
         width;
         height;
         n;
         data;
-        obj = undefined;
-        buffer = undefined;
-        origin = undefined;
-        lfsrFeedbackTerm = undefined;
+        obj;
+        origin;
+        buffer;
+        lfsrFeedbackTerm;
         originX;
         originY;
         counters = new Map();
         samplers = new Map();
         convBuffers = new Map();
         matcher;
+        decls;
         scale = 1;
-        constructor(grid) {
+        constructor(ir, grid, baseWidth, baseHeight) {
+            this.ir = ir;
             this.grid = grid;
             const { scaleX, scaleY } = grid;
-            this.width = scaleX === 1 ? WIDTH : IR.NAMES.gridVar(this, 'width');
-            this.height = scaleY === 1 ? HEIGHT : IR.NAMES.gridVar(this, 'height');
-            this.n = IR.NAMES.gridVar(this, 'n');
-            this.data = IR.makeMutableArray(IR.NAMES.gridVar(this, 'data'), this.n, IR.GRID_DATA_ARRAY_TYPE.domainSize);
-            this.originX = scaleX % 2 === 0 ? IR.OP.multConstant(WIDTH, scaleX >> 1) : IR.OP.divConstant(this.width, 2);
-            this.originY = scaleY % 2 === 0 ? IR.OP.multConstant(HEIGHT, scaleY >> 1) : IR.OP.divConstant(this.height, 2);
+            const width = ir.constDecl(`grid${grid.id}_width`, IR.INT_TYPE, IR.OP.multConstant(baseWidth, scaleX)), height = ir.constDecl(`grid${grid.id}_height`, IR.INT_TYPE, IR.OP.multConstant(baseHeight, scaleY)), w = width.name, h = height.name, area = ir.constDecl(`grid${grid.id}_n`, IR.INT_TYPE, IR.OP.mult(w, h)), n = area.name, data = IR.makeMutableArray(ir, `grid${grid.id}_data`, n, IR.GRID_DATA_ARRAY_TYPE.domainSize), obj = ir.constDecl(`grid${grid.id}_obj`, IR.GRID_TYPE, IR.libConstructorCall('Grid', [w, h, data.array, IR.str(grid.alphabet.key)])), originX = scaleX % 2 === 0 ? IR.OP.multConstant(baseWidth, scaleX >> 1) : IR.OP.divConstant(w, 2), originY = scaleY % 2 === 0 ? IR.OP.multConstant(baseHeight, scaleY >> 1) : IR.OP.divConstant(h, 2), origin = ir.constDecl(`grid${grid.id}_origin`, IR.INT_TYPE, IR.OP.add(originX, IR.OP.mult(originY, w))), lfsrFeedbackTerm = ir.constDecl(`grid${grid.id}_lfsrFeedbackTerm`, IR.INT_TYPE, IR.libFunctionCall('lfsrFeedbackTerm', [n])), buffer = IR.makeMutableArray(ir, `grid${grid.id}_buffer`, n, IR.GRID_DATA_ARRAY_TYPE.domainSize);
+            this.width = width.name;
+            this.height = height.name;
+            this.n = n;
+            this.data = data;
+            this.obj = obj.name;
+            this.origin = origin.name;
+            this.originX = originX;
+            this.originY = originY;
+            this.lfsrFeedbackTerm = lfsrFeedbackTerm.name;
+            this.buffer = buffer;
             // TODO: multiple matchers per grid?
-            this.matcher = new IR.Matcher(this, 0);
+            this.matcher = new IR.Matcher(ir, this);
+            this.decls = [
+                width,
+                height,
+                area,
+                data.decl,
+                obj,
+                origin,
+                lfsrFeedbackTerm,
+                buffer.decl,
+            ];
         }
         getScale() {
             return this.grid.scaleX * this.grid.scaleY * this.scale;
@@ -6813,30 +7357,26 @@ var IR;
                 return sampler.count;
             }
             return getOrCompute(counters, key, () => {
-                const counter = IR.NAMES.counter(this, counters.size);
+                const counterDecl = this.ir.varDecl(`grid${this.grid.id}_counter`, IR.INT_TYPE, IR.ZERO);
                 for (const pattern of patterns) {
-                    matcher.addMatchHandler({ kind: 'counter', pattern, counter, weight: IR.ONE });
+                    matcher.addMatchHandler({ kind: 'counter', pattern, counter: counterDecl.name, weight: IR.ONE });
                 }
                 // need to set scale to avoid overflowing the counter
                 this.scale = Math.max(this.scale, patterns.length);
-                return {
-                    name: counter,
-                    type: IR.INT_TYPE,
-                    initialiser: IR.ZERO,
-                };
+                return counterDecl;
             }).name;
         }
         makeWeightedCounter(weights, useFloat) {
             const { counters, matcher } = this;
             const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n') + `\nuseFloat=${useFloat}`;
             return getOrCompute(counters, key, () => {
-                const counter = IR.NAMES.counter(this, counters.size);
+                const counterDecl = this.ir.varDecl(`grid${this.grid.id}_counter`, useFloat ? IR.FLOAT_TYPE : IR.INT_TYPE, useFloat ? IR.FLOAT_ZERO : IR.ZERO);
                 let totalWeight = 0;
                 for (const { pattern, weight } of weights) {
                     matcher.addMatchHandler({
                         kind: 'counter',
                         pattern,
-                        counter,
+                        counter: counterDecl.name,
                         weight: useFloat ? IR.float(weight) : IR.int(weight),
                     });
                     totalWeight += weight;
@@ -6845,11 +7385,7 @@ var IR;
                 if (!useFloat) {
                     this.scale = Math.max(this.scale, totalWeight);
                 }
-                return {
-                    name: counter,
-                    type: useFloat ? IR.FLOAT_TYPE : IR.INT_TYPE,
-                    initialiser: useFloat ? IR.FLOAT_ZERO : IR.ZERO,
-                };
+                return counterDecl;
             }).name;
         }
         makeSampler(patterns) {
@@ -6858,12 +7394,12 @@ var IR;
             return getOrCompute(samplers, key, () => {
                 if (patterns.length === 1 && patterns[0].kind === 'top') {
                     const { width, height } = patterns[0];
-                    return new IR.TrivialSampler(this, width, height);
+                    return new IR.TrivialSampler(this.ir, this, width, height);
                 }
-                else if (patterns.length === 1 && patterns[0].kind === 'bottom') {
+                else if (patterns.length === 0 || (patterns.length === 1 && patterns[0].kind === 'bottom')) {
                     return new IR.EmptySampler();
                 }
-                const sampler = new IR.Sampler(samplers.size, this, patterns.length);
+                const sampler = new IR.Sampler(this.ir, this, patterns.length);
                 for (let i = 0; i < patterns.length; ++i) {
                     const pattern = patterns[i];
                     matcher.addMatchHandler({ kind: 'sampler', pattern, sampler, i });
@@ -6878,55 +7414,22 @@ var IR;
             return getOrCompute(convBuffers, key, () => {
                 const patterns = this.grid.convPatterns.filter(p => p.kernel.equals(kernel));
                 this.scale = Math.max(this.scale, patterns.length);
-                return new IR.ConvBuffer(convBuffers.size, this, patterns, kernel);
+                return new IR.ConvBuffer(this.ir, this, patterns, kernel);
             });
         }
-        useOrigin() {
-            return this.origin ??= IR.NAMES.gridVar(this, 'origin');
-        }
-        useObj() {
-            return this.obj ??= IR.NAMES.gridVar(this, 'obj');
-        }
-        useBuffer() {
-            return this.buffer ??= IR.makeMutableArray(IR.NAMES.gridVar(this, 'buffer'), this.n, IR.GRID_DATA_ARRAY_TYPE.domainSize);
-        }
-        useLsfrFeedbackTerm() {
-            return this.lfsrFeedbackTerm ??= IR.NAMES.gridVar(this, 'lfsrFeedbackTerm');
-        }
         declare() {
-            const { width, height, n, data, obj, buffer, origin, lfsrFeedbackTerm, grid } = this;
-            const alphabetKey = grid.alphabet.key;
-            const consts = [];
-            const vars = [];
-            if (width !== WIDTH) {
-                consts.push({ name: width, type: IR.INT_TYPE, initialiser: IR.OP.multConstant(WIDTH, grid.scaleX) });
-            }
-            if (height !== HEIGHT) {
-                consts.push({ name: height, type: IR.INT_TYPE, initialiser: IR.OP.multConstant(HEIGHT, grid.scaleY) });
-            }
-            consts.push({ name: n, type: IR.INT_TYPE, initialiser: IR.OP.mult(width, height) }, ...data.decl);
-            if (obj !== undefined) {
-                const initialiser = IR.libConstructorCall('Grid', [width, height, data.name, IR.str(alphabetKey)]);
-                consts.push({ name: obj, type: IR.GRID_TYPE, initialiser });
-            }
-            if (buffer !== undefined) {
-                consts.push(...buffer.decl);
-            }
-            if (origin !== undefined) {
-                consts.push({ name: origin, type: IR.INT_TYPE, initialiser: IR.OP.add(this.originX, IR.OP.mult(this.originY, width)) });
-            }
-            if (lfsrFeedbackTerm !== undefined) {
-                consts.push({ name: lfsrFeedbackTerm, type: IR.INT_TYPE, initialiser: IR.libFunctionCall('lfsrFeedbackTerm', [n]) });
-            }
-            vars.push(...Array.from(this.counters.values()));
-            return [
-                IR.declVars(consts),
-                IR.declVars(vars, true),
-                ...Array.from(this.convBuffers.values(), buffer => buffer.declare()),
-                ...Array.from(this.samplers.values(), sampler => sampler.declare()),
-                IR.BLANK_LINE,
-                ...this.matcher.declareUpdateFunc(),
+            const decls = [
+                ...this.decls,
+                ...this.counters.values(),
             ];
+            for (const sampler of this.samplers.values()) {
+                decls.push(sampler.declare());
+            }
+            for (const buffer of this.convBuffers.values()) {
+                decls.push(buffer.declare());
+            }
+            decls.push(this.matcher.declare());
+            return IR.multiDecl(decls);
         }
         attr(attr) {
             switch (attr) {
@@ -6944,40 +7447,28 @@ var IR;
         }
         /**
          * Used internally for relative indices which are known to be in-bounds.
-         * The variables `AT`, `AT_X` and `AT_Y` must be declared in the IR,
-         * and `dx` and `dy` must be non-negative.
+         * The variables `dx` and `dy` must be non-negative.
          */
-        relativeIndex(dx, dy) {
+        relativeIndex(at, dx, dy) {
             if (this.grid.periodic) {
-                const x = IR.OP.mod(IR.OP.addConstant(AT_X, dx), this.width);
-                const y = IR.OP.mod(IR.OP.addConstant(AT_Y, dy), this.height);
+                const x = IR.OP.mod(IR.OP.addConstant(at.x, dx), this.width);
+                const y = IR.OP.mod(IR.OP.addConstant(at.y, dy), this.height);
                 return IR.OP.add(x, IR.OP.mult(y, this.width));
             }
             else {
-                return IR.OP.add(IR.OP.addConstant(AT, dx), IR.OP.multConstant(this.width, dy));
+                return IR.OP.add(IR.OP.addConstant(at.index, dx), IR.OP.multConstant(this.width, dy));
             }
         }
         checkedIndex(x, y) {
-            return IR.libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.useObj(), [x, y]);
+            return IR.libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.obj, [x, y]);
         }
-        declareAtIndex(index) {
-            const decls = [];
-            if (index !== AT) {
-                decls.push({ name: AT, type: IR.INT_TYPE, initialiser: index });
-            }
-            decls.push({ name: AT_X, type: IR.INT_TYPE, initialiser: IR.OP.mod(AT, this.width) }, { name: AT_Y, type: IR.INT_TYPE, initialiser: IR.OP.floordiv(AT, this.width) });
-            return IR.declVars(decls);
+        declareAtIndex(index, child) {
+            const ir = this.ir;
+            return ir.withConst('at', IR.INT_TYPE, index, index => ir.withConst('x', IR.INT_TYPE, IR.OP.mod(index, this.width), x => ir.withConst('y', IR.INT_TYPE, IR.OP.floordiv(index, this.width), y => child({ index, x, y }))));
         }
-        declareAtXY(x, y) {
-            const decls = [];
-            if (x !== AT_X) {
-                decls.push({ name: AT_X, type: IR.INT_TYPE, initialiser: x });
-            }
-            if (y !== AT_Y) {
-                decls.push({ name: AT_Y, type: IR.INT_TYPE, initialiser: y });
-            }
-            decls.push({ name: AT, type: IR.INT_TYPE, initialiser: this.index(AT_X, AT_Y) });
-            return IR.declVars(decls);
+        declareAtXY(x, y, child) {
+            const ir = this.ir;
+            return ir.withConst('x', IR.INT_TYPE, x, x => ir.withConst('y', IR.INT_TYPE, y, y => ir.withConst('at', IR.INT_TYPE, this.index(x, y), index => child({ index, x, y }))));
         }
         write(index, colour, mask) {
             return mask !== undefined ? mask.set(this, index, colour)
@@ -6990,108 +7481,97 @@ var IR;
             return this.yieldRewriteInfo(IR.ZERO, IR.ZERO, this.width, this.height);
         }
         yieldRewriteInfo(x, y, w, h) {
-            return IR.yield_(IR.libConstructorCall('RewriteInfo', [this.useObj(), x, y, w, h]));
+            return IR.yield_(IR.libConstructorCall('RewriteInfo', [this.obj, x, y, w, h]));
         }
     }
     IR.Grid = Grid;
 })(IR || (IR = {}));
-///<reference path="names.ts"/>
+///<reference path="factory.ts"/>
 var IR;
 (function (IR) {
-    const { MASK, MASK_CLEAR, MASK_HASNT, MASK_SET, WIDTH, HEIGHT, AT_X, AT_Y, G, I, N, P, S, } = IR.NAMES;
+    function _maskN(length) {
+        return IR.OP.divConstant(IR.OP.addConstant(length, 31), 32);
+    }
     class Mask {
-        scale = 0;
-        name = MASK;
-        maskN(length) {
-            return IR.OP.divConstant(IR.OP.addConstant(length, 31), 32);
+        ir;
+        arr;
+        clearFunc;
+        setFunc;
+        hasntFunc;
+        capacity;
+        constructor(ir) {
+            this.ir = ir;
+            const capacity = this.capacity = ir.deferredExpr('Mask.capacity');
+            this.arr = IR.makeMutableArray(ir, 'mask', capacity, IR.INT32_ARRAY_TYPE.domainSize);
+            this.clearFunc = ir.func('mask_clear');
+            this.setFunc = ir.func('mask_set');
+            this.hasntFunc = ir.func('mask_hasnt');
         }
-        use(g) {
-            this.scale = Math.max(this.scale, g.grid.scaleX * g.grid.scaleY);
-        }
-        declare() {
-            if (this.scale === 0) {
-                return [];
-            }
-            const { name } = this;
-            const arr = IR.makeMutableArray(name, this.maskN(IR.OP.multConstant(IR.OP.mult(WIDTH, HEIGHT), this.scale)), IR.INT32_ARRAY_TYPE.domainSize);
-            const index = IR.OP.divConstant(I, 32);
-            const bit = IR.OP.lshift(IR.ONE, IR.OP.modConstant(I, 32));
-            return [
-                IR.declVars(arr.decl),
-                IR.declFunc(MASK_CLEAR, undefined, [N], [IR.INT_TYPE], IR.VOID_TYPE, IR.block([
-                    IR.assign(N, '=', this.maskN(N)),
-                    IR.forRange(I, IR.ZERO, N, [arr.set(I, '=', IR.ZERO)]),
-                ])),
-                IR.declFunc(MASK_SET, undefined, [G, I, S], [IR.GRID_DATA_ARRAY_TYPE, IR.INT_TYPE, IR.BYTE_TYPE], IR.VOID_TYPE, IR.block([
-                    IR.assign(IR.access(G, I), '=', S),
+        declare(capacity) {
+            const { ir, arr } = this;
+            const n = ir.paramDecl('n', IR.INT_TYPE), grid = ir.paramDecl('g', IR.GRID_DATA_ARRAY_TYPE), bitIndex = ir.paramDecl('j', IR.INT_TYPE), setColour = ir.paramDecl('s', IR.BYTE_TYPE);
+            const index = IR.OP.divConstant(bitIndex.name, 32);
+            const bit = IR.OP.lshift(IR.ONE, IR.OP.modConstant(bitIndex.name, 32));
+            return IR.multiDecl([
+                IR.replaceInDecl(arr.decl, this.capacity, _maskN(capacity)),
+                IR.funcDecl(this.clearFunc, undefined, [n], IR.VOID_TYPE, ir.withConst('len', IR.INT_TYPE, _maskN(n.name), len => ir.forRange('i', IR.ZERO, len, i => arr.set(i, '=', IR.ZERO)))),
+                IR.funcDecl(this.setFunc, undefined, [grid, bitIndex, setColour], IR.VOID_TYPE, IR.seq([
+                    IR.assign(IR.access(grid.name, bitIndex.name), '=', setColour.name),
                     arr.set(index, '|=', bit),
                 ])),
-                IR.declFunc(MASK_HASNT, undefined, [I], [IR.INT_TYPE], IR.BOOL_TYPE, IR.return_(IR.OP.eq(IR.OP.bitwiseAnd(arr.get(index), bit), IR.ZERO))),
-                IR.BLANK_LINE,
-            ];
+                IR.funcDecl(this.hasntFunc, undefined, [bitIndex], IR.BOOL_TYPE, IR.return_(IR.OP.eq(IR.OP.bitwiseAnd(arr.get(index), bit), IR.ZERO))),
+            ]);
         }
         clear(g) {
-            return IR.localCallStmt(MASK_CLEAR, [g.n]);
+            return IR.localCallStmt(this.clearFunc, [g.n]);
         }
         set(g, index, colour) {
-            return IR.localCallStmt(MASK_SET, [g.data.name, index, colour]);
+            return IR.localCallStmt(this.setFunc, [g.data.array, index, colour]);
         }
         hasnt(index) {
-            return IR.localCall(MASK_HASNT, [index], true);
+            return IR.localCall(this.hasntFunc, [index], true);
         }
-        patternFits(g, patternExpr) {
-            return patternExpr.kind === 'expr.constant'
-                ? patternExpr.constant.value.map((dx, dy) => this.hasnt(g.relativeIndex(dx, dy))).reduce(IR.OP.and)
-                : IR.libMethodCall('Pattern', 'fitsMask', P, [g.useObj(), this.name, AT_X, AT_Y]);
+        patternFits(g, p, at) {
+            return p.constant !== undefined
+                ? IR.OP.all(p.constant, (dx, dy) => this.hasnt(g.relativeIndex(at, dx, dy)))
+                : IR.libMethodCall('Pattern', 'fitsMask', p.expr, [g.obj, this.arr.array, at.x, at.y]);
         }
     }
     IR.Mask = Mask;
 })(IR || (IR = {}));
-///<reference path="names.ts"/>
+///<reference path="factory.ts"/>
 var IR;
 (function (IR) {
-    const { START_X, START_Y, END_X, END_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT, AT, AT_X, AT_Y, S, OLD_S, T, OLD_T, U, I, } = IR.NAMES;
     class Matcher {
+        ir;
         g;
-        id;
         matchHandlers = [];
         updateFuncName;
-        constructor(g, id) {
+        constructor(ir, g) {
+            this.ir = ir;
             this.g = g;
-            this.id = id;
-            this.updateFuncName = IR.NAMES.matcherVar(g, id, 'update');
+            this.updateFuncName = ir.func('matcherUpdate');
         }
         addMatchHandler(handler) {
             this.matchHandlers.push(handler);
         }
-        makeMatchHandler(h, acceptID, f) {
+        makeMatchHandler(h, at, bitIndex, acceptID, f) {
             switch (h.kind) {
                 case 'sampler':
                     // `I - constant` allows code to be shared among consecutive match handlers
-                    return h.sampler.handleMatch(f, IR.OP.addConstant(I, h.i - acceptID));
+                    return h.sampler.handleMatch(f, IR.OP.addConstant(bitIndex, h.i - acceptID), at);
                 case 'counter':
                     return IR.assign(h.counter, f === 'add' ? '+=' : '-=', h.weight);
                 case 'convolution':
-                    return h.buffer.update(h.i, AT_X, AT_Y, f === 'add' ? '+=' : '-=');
+                    return h.buffer.update(h.i, at, f === 'add' ? '+=' : '-=');
             }
         }
         update(x, y, w, h) {
             return IR.localCallStmt(this.updateFuncName, [x, y, w, h]);
         }
-        declareUpdateFunc() {
-            const { g, id } = this;
-            const gridAlphabetSize = g.grid.alphabet.key.length;
-            const dfas = makePatternMatcherDFAs(gridAlphabetSize, this.matchHandlers.map(h => h.pattern));
-            const colsAlphabetSize = dfas.colDFA.alphabetSize, rowDFASize = dfas.rowDFA.size(), colDFASize = dfas.colDFA.size(), numRowPatterns = dfas.rowsAcceptMap.size(), numColPatterns = dfas.colsAcceptMap.size(), rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]), colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]);
-            const rowDFA = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'rowDFA'), dfas.rowDFA.toFlatArray(), gridAlphabetSize, rowDFASize);
-            const rowAcceptSetIDs = IR.makeConstArray(IR.NAMES.matcherVar(g, id, 'rowAcceptSetIDs'), dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size());
-            const rowAcceptSets = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'rowAcceptSets'), rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 31 ? 1 << numRowPatterns : IR.INT32_ARRAY_TYPE.domainSize);
-            const rowsToCols = IR.makeConstArray(IR.NAMES.matcherVar(g, id, 'rowsToCols'), dfas.rowsToCols, colsAlphabetSize);
-            const colDFA = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'colDFA'), dfas.colDFA.toFlatArray(), colsAlphabetSize, colDFASize);
-            const colAcceptSetIDs = IR.makeConstArray(IR.NAMES.matcherVar(g, id, 'colAcceptSetIDs'), dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size());
-            const colAcceptSets = IR.makeConstArray2D(IR.NAMES.matcherVar(g, id, 'colAcceptSets'), colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 31 ? 1 << numColPatterns : IR.INT32_ARRAY_TYPE.domainSize);
-            const rowStates = IR.makeMutableArray(IR.NAMES.matcherVar(g, id, 'rowStates'), g.n, rowDFASize);
-            const colStates = IR.makeMutableArray(IR.NAMES.matcherVar(g, id, 'colStates'), g.n, colDFASize);
+        declare() {
+            const { ir, g } = this;
+            const gridAlphabetSize = g.grid.alphabet.key.length, dfas = makePatternMatcherDFAs(gridAlphabetSize, this.matchHandlers.map(h => h.pattern)), colsAlphabetSize = dfas.colDFA.alphabetSize, rowDFASize = dfas.rowDFA.size(), colDFASize = dfas.colDFA.size(), numRowPatterns = dfas.rowsAcceptMap.size(), numColPatterns = dfas.colsAcceptMap.size(), rowAcceptSetMasks = dfas.rowsAcceptSetMap.flatMap(entry => [...dfas.rowsAcceptMap.getIDSet(entry)]), colAcceptSetMasks = dfas.colsAcceptSetMap.flatMap(entry => [...dfas.colsAcceptMap.getIDSet(entry)]), rowDFA = IR.makeConstArray2D(ir, 'rowDFA', dfas.rowDFA.toFlatArray(), gridAlphabetSize, rowDFASize), rowAcceptSetIDs = IR.makeConstArray(ir, 'rowAcceptSetIDs', dfas.rowsAcceptSetIDs, dfas.rowsAcceptSetMap.size()), rowAcceptSets = IR.makeConstArray2D(ir, 'rowAcceptSets', rowAcceptSetMasks, (numRowPatterns + 31) >> 5, numRowPatterns <= 31 ? 1 << numRowPatterns : IR.INT32_ARRAY_TYPE.domainSize), rowsToCols = IR.makeConstArray(ir, 'rowsToCols', dfas.rowsToCols, colsAlphabetSize), colDFA = IR.makeConstArray2D(ir, 'colDFA', dfas.colDFA.toFlatArray(), colsAlphabetSize, colDFASize), colAcceptSetIDs = IR.makeConstArray(ir, 'colAcceptSetIDs', dfas.colsAcceptSetIDs, dfas.colsAcceptSetMap.size()), colAcceptSets = IR.makeConstArray2D(ir, 'colAcceptSets', colAcceptSetMasks, (numColPatterns + 31) >> 5, numColPatterns <= 31 ? 1 << numColPatterns : IR.INT32_ARRAY_TYPE.domainSize), rowStates = IR.makeMutableArray(ir, 'rowStates', g.n, rowDFASize), colStates = IR.makeMutableArray(ir, 'colStates', g.n, colDFASize);
             const handlersByPattern = new Map();
             for (const handler of this.matchHandlers) {
                 const key = PatternTree.key(handler.pattern);
@@ -7101,102 +7581,83 @@ var IR;
                 const indexExpr = IR.int(index);
                 return IR.OP.bitwiseAnd(acceptSets.get(t1, indexExpr), IR.OP.bitwiseNot(acceptSets.get(t2, indexExpr)));
             };
-            const makeStateChangeHandlers = (t1, t2, acceptSets, acceptMap, f) => {
+            const startX = ir.paramDecl('startX', IR.INT_TYPE), startY = ir.paramDecl('startY', IR.INT_TYPE), effectiveWidth = ir.paramDecl('w', IR.INT_TYPE), effectiveHeight = ir.paramDecl('h', IR.INT_TYPE), minX = ir.varDecl('minX', IR.INT_TYPE, startX.name), minY = ir.varDecl('minY', IR.INT_TYPE, startY.name), maxX = ir.constDecl('maxX', IR.INT_TYPE, IR.OP.add(startX.name, effectiveWidth.name)), maxY = ir.constDecl('maxY', IR.INT_TYPE, IR.OP.add(startY.name, effectiveHeight.name));
+            const makeStateChangeHandlers = (at, t1, t2, mask, acceptSets, acceptMap, f) => {
                 const maskSize = (acceptMap.size() + 31) >> 5;
                 const out = [];
                 for (let index = 0; index < maskSize; ++index) {
+                    const bitIndex = ir.constDecl('i', IR.INT_TYPE, IR.OP.countTrailingZeros(mask));
                     const cases = [];
                     const minAcceptID = index << 5, maxAcceptID = Math.min(minAcceptID + 32, acceptMap.size());
                     for (let acceptID = minAcceptID; acceptID < maxAcceptID; ++acceptID) {
                         const key = PatternTree.key(acceptMap.getByID(acceptID));
                         const handlers = handlersByPattern.get(key) ?? fail();
-                        cases.push(IR.block(handlers.map(h => this.makeMatchHandler(h, acceptID & 31, f))));
+                        cases.push(IR.seq(handlers.map(h => this.makeMatchHandler(h, at, bitIndex.name, acceptID & 31, f))));
                     }
-                    out.push(IR.assign(U, '=', maskDiff(acceptSets, t1, t2, index)), 
+                    out.push(IR.assign(mask, '=', maskDiff(acceptSets, t1, t2, index)), 
                     // special cases for short switches, when there is no need for `countTrailingZeros`
-                    cases.length === 1 ? IR.if_(IR.OP.ne(U, IR.ZERO), IR.replace(cases[0], I, IR.ZERO))
-                        : cases.length === 2 ? IR.block(cases.map((c, i) => IR.if_(IR.OP.ne(IR.OP.bitwiseAnd(U, IR.int(1 << i)), IR.ZERO), IR.replace(c, I, IR.int(i)))))
-                            : IR.while_(IR.OP.ne(U, IR.ZERO), IR.block([
-                                IR.declVar(I, IR.INT_TYPE, IR.OP.countTrailingZeros(U)),
-                                IR.switch_(I, cases, true),
-                                IR.assign(U, '&=', IR.OP.minus(U, IR.ONE)),
+                    cases.length === 1 ? IR.if_(IR.OP.ne(mask, IR.ZERO), IR.replace(cases[0], bitIndex.name, IR.ZERO))
+                        : cases.length <= 4 ? IR.seq(cases.map((c, i) => IR.if_(IR.OP.ne(IR.OP.bitwiseAnd(mask, IR.int(1 << i)), IR.ZERO), IR.replace(c, bitIndex.name, IR.int(i)))))
+                            : IR.while_(IR.OP.ne(mask, IR.ZERO), IR.seq([
+                                IR.withDecls([bitIndex], IR.switch_(bitIndex.name, cases, true)),
+                                IR.assign(mask, '&=', IR.OP.minus(mask, IR.ONE)),
                             ])));
                 }
                 return out;
             };
-            const makeUpdateSamplers = (acceptSetIDs, acceptSets, acceptMap) => {
-                let t = acceptSetIDs.get(S), oldT = acceptSetIDs.get(OLD_S);
-                if (IR.isInt(t) && IR.isInt(oldT)) {
-                    return t.value === oldT.value ? [] : fail();
+            const makeUpdateSamplers = (acceptSetIDs, acceptSets, acceptMap, at, state, oldState) => {
+                function _update(oldT, t) {
+                    return ir.withVar('u', IR.INT_TYPE, undefined, mask => IR.seq([
+                        ...makeStateChangeHandlers(at, oldT, t, mask, acceptSets, acceptMap, 'del'),
+                        ...makeStateChangeHandlers(at, t, oldT, mask, acceptSets, acceptMap, 'add'),
+                    ]));
                 }
-                const out = [];
-                if (t !== S || oldT !== OLD_S) {
-                    out.push(IR.declVars([
-                        { name: T, type: IR.INT_TYPE, initialiser: t },
-                        { name: OLD_T, type: IR.INT_TYPE, initialiser: oldT },
-                    ]), IR.if_(IR.OP.eq(T, OLD_T), IR.CONTINUE));
-                    t = T;
-                    oldT = OLD_T;
+                const t = acceptSetIDs.get(state), oldT = acceptSetIDs.get(oldState);
+                if (t === state && oldT === oldState) {
+                    return _update(oldT, t);
                 }
-                out.push(IR.declVar(U, IR.INT_TYPE, undefined, true), ...makeStateChangeHandlers(oldT, t, acceptSets, acceptMap, 'del'), ...makeStateChangeHandlers(t, oldT, acceptSets, acceptMap, 'add'));
-                return out;
+                else {
+                    return ir.withConst('t', IR.INT_TYPE, t, t => ir.withConst('oldT', IR.INT_TYPE, oldT, oldT => IR.if_(IR.OP.ne(t, oldT), _update(oldT, t))));
+                }
             };
             const recomputeRowStates = [
                 IR.BLANK_LINE,
                 IR.comment('recompute row states'),
-                IR.forRange(AT_Y, START_Y, END_Y, [
-                    IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_X, g.width), rowStates.get(g.index(END_X, AT_Y)), IR.ZERO), true),
-                    IR.forRangeReverse(AT_X, IR.ZERO, END_X, [
-                        g.declareAtXY(AT_X, AT_Y),
-                        IR.declVar(OLD_S, IR.INT_TYPE, rowStates.get(AT)),
-                        IR.assign(S, '=', rowDFA.get(S, g.data.get(AT))),
-                        IR.if_(IR.OP.eq(S, OLD_S), IR.if_(IR.OP.lt(AT_X, START_X), IR.BREAK, IR.CONTINUE)),
-                        rowStates.set(AT, '=', S),
-                        numColPatterns === 0 ? IR.PASS : IR.if_(IR.OP.lt(AT_X, START_X), IR.assign(START_X, '=', AT_X)),
-                        // must occur last, since it uses `continue`
-                        ...makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap),
-                    ]),
-                ]),
+                ir.forRange('y', minY.name, maxY.name, y => ir.withVar('s', IR.INT_TYPE, IR.ternary(IR.OP.lt(maxX.name, g.width), rowStates.get(g.index(maxX.name, y)), IR.ZERO), rowState => ir.forRangeReverse('x', IR.ZERO, maxX.name, x => g.declareAtXY(x, y, at => ir.withConst('oldS', IR.INT_TYPE, rowStates.get(at.index), oldRowState => IR.seq([
+                    IR.assign(rowState, '=', rowDFA.get(rowState, g.data.get(at.index))),
+                    IR.if_(IR.OP.eq(rowState, oldRowState), IR.if_(IR.OP.lt(x, startX.name), IR.BREAK, IR.CONTINUE)),
+                    rowStates.set(at.index, '=', rowState),
+                    numColPatterns === 0 ? IR.PASS : IR.if_(IR.OP.lt(x, minX.name), IR.assign(minX.name, '=', x)),
+                    // must occur last, since it uses `continue`
+                    makeUpdateSamplers(rowAcceptSetIDs, rowAcceptSets, dfas.rowsAcceptMap, at, rowState, oldRowState),
+                ])))))),
             ];
             const recomputeColStates = numColPatterns === 0 ? [] : [
                 IR.BLANK_LINE,
                 IR.comment('recompute col states'),
-                IR.forRange(AT_X, START_X, END_X, [
-                    IR.declVar(S, IR.INT_TYPE, IR.ternary(IR.OP.lt(END_Y, g.height), colStates.get(g.index(AT_X, END_Y)), IR.ZERO), true),
-                    IR.forRangeReverse(AT_Y, IR.ZERO, END_Y, [
-                        g.declareAtXY(AT_X, AT_Y),
-                        IR.declVar(OLD_S, IR.INT_TYPE, colStates.get(AT)),
-                        IR.assign(S, '=', colDFA.get(S, rowsToCols.get(rowStates.get(AT)))),
-                        IR.if_(IR.OP.eq(S, OLD_S), IR.if_(IR.OP.lt(AT_Y, START_Y), IR.BREAK, IR.CONTINUE)),
-                        colStates.set(AT, '=', S),
-                        // must occur last, since it uses `continue`
-                        ...makeUpdateSamplers(colAcceptSetIDs, colAcceptSets, dfas.colsAcceptMap),
-                    ]),
-                ]),
+                ir.forRange('x', minX.name, maxX.name, x => ir.withVar('s', IR.INT_TYPE, IR.ternary(IR.OP.lt(maxY.name, g.height), colStates.get(g.index(x, maxY.name)), IR.ZERO), state => ir.forRangeReverse('y', IR.ZERO, maxY.name, y => g.declareAtXY(x, y, at => ir.withConst('oldS', IR.INT_TYPE, colStates.get(at.index), oldState => IR.seq([
+                    IR.assign(state, '=', colDFA.get(state, rowsToCols.get(rowStates.get(at.index)))),
+                    IR.if_(IR.OP.eq(state, oldState), IR.if_(IR.OP.lt(y, startY.name), IR.BREAK, IR.CONTINUE)),
+                    colStates.set(at.index, '=', state),
+                    // must occur last, since it uses `continue`
+                    makeUpdateSamplers(colAcceptSetIDs, colAcceptSets, dfas.colsAcceptMap, at, state, oldState),
+                ])))))),
             ];
-            return [
-                IR.declVars([
-                    rowDFA,
-                    rowAcceptSetIDs,
-                    rowAcceptSets,
-                    rowsToCols,
-                    colDFA,
-                    colAcceptSetIDs,
-                    colAcceptSets,
-                    rowStates,
-                    colStates
-                ].flatMap(arr => arr.decl)),
-                IR.declFunc(this.updateFuncName, undefined, [START_X, START_Y, EFFECTIVE_WIDTH, EFFECTIVE_HEIGHT], [IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE, IR.INT_TYPE], IR.VOID_TYPE, numRowPatterns === 0 && numColPatterns === 0 ? IR.PASS : IR.block([
-                    IR.declVars([
-                        { name: END_X, type: IR.INT_TYPE, initialiser: IR.OP.add(START_X, EFFECTIVE_WIDTH) },
-                        { name: END_Y, type: IR.INT_TYPE, initialiser: IR.OP.add(START_Y, EFFECTIVE_HEIGHT) },
-                    ]),
+            return IR.initDecl(IR.multiDecl([
+                rowDFA.decl,
+                rowAcceptSetIDs.decl,
+                rowAcceptSets.decl,
+                rowsToCols.decl,
+                colDFA.decl,
+                colAcceptSetIDs.decl,
+                colAcceptSets.decl,
+                rowStates.decl,
+                colStates.decl,
+                IR.funcDecl(this.updateFuncName, undefined, [startX, startY, effectiveWidth, effectiveHeight], IR.VOID_TYPE, numRowPatterns === 0 && numColPatterns === 0 ? IR.PASS : IR.withDecls([minX, minY, maxX, maxY], IR.seq([
                     ...recomputeRowStates,
                     ...recomputeColStates,
-                ])),
-                this.update(IR.ZERO, IR.ZERO, g.width, g.height),
-                IR.BLANK_LINE,
-            ];
+                ]))),
+            ]), this.update(IR.ZERO, IR.ZERO, g.width, g.height));
         }
     }
     IR.Matcher = Matcher;
@@ -7289,10 +7750,30 @@ var IR;
 })(IR || (IR = {}));
 var IR;
 (function (IR) {
-    function _replaceVarDecl(decl, from, to) {
-        const { name, type } = decl;
-        return { name, type, initialiser: decl.initialiser && replace(decl.initialiser, from, to) };
+    function replaceInDecl(decl, from, to) {
+        switch (decl.kind) {
+            case 'decl.none':
+            case 'decl.var.loop':
+            case 'decl.var.param':
+                return decl;
+            case 'decl.func':
+                return IR.funcDecl(decl.name, decl.yields, decl.params, decl.returnType, replace(decl.body, from, to));
+            case 'decl.init':
+                return IR.initDecl(replaceInDecl(decl.child, from, to), replace(decl.stmt, from, to));
+            case 'decl.multi':
+                return IR.multiDecl(decl.children.map(d => replaceInDecl(d, from, to)));
+            case 'decl.var.const': {
+                const initialiser = replace(decl.initialiser, from, to);
+                return { kind: 'decl.var.const', name: decl.name, type: decl.type, initialiser, info: initialiser.info };
+            }
+            case 'decl.var.mut': {
+                const initialiser = decl.initialiser !== undefined ? replace(decl.initialiser, from, to) : undefined;
+                const info = initialiser !== undefined ? initialiser.info : IR.Info.DO_NOTHING;
+                return { kind: 'decl.var.mut', name: decl.name, type: decl.type, initialiser, info };
+            }
+        }
     }
+    IR.replaceInDecl = replaceInDecl;
     function replace(node, from, to) {
         if (IR.equals(node, from)) {
             return to;
@@ -7306,21 +7787,23 @@ var IR;
             case 'stmt.preamble':
             case 'stmt.throw':
             case 'expr.array.const':
-            case 'expr.array.new':
             case 'expr.literal.bool':
             case 'expr.literal.float':
             case 'expr.literal.int':
             case 'expr.literal.null':
             case 'expr.literal.str':
             case 'expr.name':
-            case 'expr.param':
+            case 'expr.unused.deferred':
+            case 'expr.unused.error':
                 return node;
+            case 'expr.array.new':
+                return IR.newArray(replace(node.length, from, to), node.domainSize);
             case 'expr.attr':
                 return IR.attr(replace(node.left, from, to), node.attr);
             case 'expr.dict':
                 return IR.dict(node.type, node.values.map(v => replace(v, from, to)));
             case 'expr.letin':
-                return IR.letIn(_replaceVarDecl(node.decl, from, to), replace(node.child, from, to));
+                return IR.letIn(replaceInDecl(node.decl, from, to), replace(node.child, from, to));
             case 'expr.op.binary':
                 const left = replace(node.left, from, to), right = replace(node.right, from, to);
                 switch (node.op) {
@@ -7354,211 +7837,195 @@ var IR;
             case 'expr.op.call.lib.method':
                 return IR.libMethodCall(node.className, node.name, replace(node.obj, from, to), node.args.map(v => replace(v, from, to)));
             case 'expr.op.call.local':
-                return IR.localCall(node.name, node.args.map(v => replace(v, from, to)));
+                return IR.localCall(node.name, node.args.map(v => replace(v, from, to)), !node.info.hasSideEffects());
             case 'expr.op.ternary':
                 return IR.ternary(replace(node.condition, from, to), replace(node.then, from, to), replace(node.otherwise, from, to));
             case 'expr.op.unary':
-                const child = replace(node.child, from, to);
-                switch (node.op) {
-                    case 'int_not':
-                        return IR.OP.bitwiseNot(child);
-                    case 'int_ctz':
-                        return IR.OP.countTrailingZeros(child);
-                    case 'float_log2':
-                        return IR.OP.log2(child);
-                    default:
-                        return IR.unaryOp(node.op, child);
-                }
+                return IR.unaryOp(node.op, replace(node.child, from, to));
+            case 'expr.param':
+                return IR.param(node.name, replace(node.otherwise, from, to));
             case 'stmt.assign':
                 return IR.assign(replace(node.left, from, to), node.op, replace(node.right, from, to));
-            case 'stmt.block':
-                return IR.block(node.children.map(c => replace(c, from, to)));
-            case 'stmt.decl.func':
-                return IR.declFunc(node.name, node.yields, node.params, node.paramTypes, node.returnType, replace(node.body, from, to));
-            case 'stmt.decl.vars':
-                return IR.declVars(node.decls.map(d => _replaceVarDecl(d, from, to)), node.mutable);
+            case 'stmt.decl':
+                return IR.withDecl(replaceInDecl(node.decl, from, to), replace(node.child, from, to));
             case 'stmt.expr':
                 return IR.exprStmt(replace(node.expr, from, to));
+            case 'stmt.export':
+                return IR.exportDecl(replaceInDecl(node.decl, from, to));
             case 'stmt.for.range':
-                return IR.forRange(node.index, replace(node.low, from, to), replace(node.high, from, to), [replace(node.body, from, to)], node.reverse);
+                return IR.forRange(node.index, replace(node.low, from, to), replace(node.high, from, to), replace(node.body, from, to), node.reverse);
             case 'stmt.if':
                 return IR.if_(replace(node.condition, from, to), replace(node.then, from, to), node.otherwise && replace(node.otherwise, from, to));
             case 'stmt.log':
                 return IR.log(replace(node.expr, from, to));
             case 'stmt.return':
-                return IR.return_(node.expr && replace(node.expr, from, to));
+                return IR.return_(node.expr !== undefined ? replace(node.expr, from, to) : undefined);
+            case 'stmt.sequence':
+                return IR.seq(node.children.map(c => replace(c, from, to)));
             case 'stmt.switch':
                 return IR.switchCases(replace(node.expr, from, to), node.cases.map(c => ({ values: c.values, then: replace(c.then, from, to) })), node.exhaustive);
             case 'stmt.while':
                 return IR.while_(replace(node.condition, from, to), replace(node.then, from, to));
             case 'stmt.yield':
-                return IR.yield_(node.expr && replace(node.expr, from, to));
+                return IR.yield_(node.expr !== undefined ? replace(node.expr, from, to) : undefined);
         }
     }
     IR.replace = replace;
 })(IR || (IR = {}));
-///<reference path="names.ts"/>
 var IR;
 (function (IR) {
-    const { RNG, I, J, S, MATCH, AT, AT_X, AT_Y, } = IR.NAMES;
     class Sampler {
+        ir;
         g;
         numPatterns;
-        name;
+        decl;
         count;
         isNotEmpty;
         arr;
-        capacity;
-        declareMatchAt;
-        matchPatternIndex;
-        constructor(id, g, numPatterns) {
+        constructor(ir, g, numPatterns) {
+            this.ir = ir;
             this.g = g;
             this.numPatterns = numPatterns;
-            this.name = IR.NAMES.sampler(g, id);
-            this.count = IR.attr(this.name, 'count');
+            const capacity = IR.OP.multConstant(g.n, numPatterns);
+            this.decl = ir.constDecl(`sampler`, IR.SAMPLER_TYPE, IR.libConstructorCall('Sampler', [capacity]));
+            this.count = IR.attr(this.decl.name, 'count');
             this.isNotEmpty = IR.OP.gt(this.count, IR.ZERO);
-            this.arr = IR.attr(this.name, 'arr');
-            this.capacity = IR.OP.multConstant(g.n, numPatterns);
-            this.declareMatchAt = this.g.declareAtIndex(IR.OP.divConstant(MATCH, this.numPatterns));
-            this.matchPatternIndex = IR.OP.modConstant(MATCH, this.numPatterns);
+            this.arr = IR.attr(this.decl.name, 'arr');
         }
         declare() {
-            return IR.declVar(this.name, IR.SAMPLER_TYPE, IR.libConstructorCall('Sampler', [this.capacity]));
+            return this.decl;
         }
-        handleMatch(f, patternIndex) {
-            const match = IR.OP.multAddConstant(AT, this.numPatterns, patternIndex);
-            return IR.libMethodCallStmt('Sampler', f, this.name, [match]);
+        handleMatch(f, patternIndex, at) {
+            const match = IR.OP.multAddConstant(at.index, this.numPatterns, patternIndex);
+            return IR.libMethodCallStmt('Sampler', f, this.decl.name, [match]);
         }
-        sampleWithReplacement(cases) {
-            return IR.block([
-                IR.declVar(MATCH, IR.INT_TYPE, IR.access(this.arr, IR.PRNG.nextInt(this.count))),
-                this.declareMatchAt,
-                IR.switch_(this.matchPatternIndex, cases),
-            ]);
+        matchSwitch(match, cases) {
+            const k = this.numPatterns;
+            return this.g.declareAtIndex(IR.OP.divConstant(match, k), at => IR.switch_(IR.OP.modConstant(match, k), cases(at)));
         }
-        beginSamplingWithoutReplacement() {
-            return IR.PASS;
+        sampleWithReplacement(prng, cases) {
+            return this.ir.withConst('match', IR.INT_TYPE, IR.access(this.arr, prng.nextInt(this.count)), match => this.matchSwitch(match, cases));
         }
-        sampleWithoutReplacement(cases, count) {
-            return IR.block([
-                IR.declVar(MATCH, IR.INT_TYPE, IR.libMethodCall('Sampler', 'sample', this.name, [count, RNG])),
-                this.declareMatchAt,
-                IR.switch_(this.matchPatternIndex, cases),
-                IR.assign(count, '-=', IR.ONE),
-            ]);
+        sampleWithoutReplacement(prng, cases, ifTrue, ifFalse) {
+            const ir = this.ir;
+            const flag = ir.flag();
+            return ir.withVar('count', IR.INT_TYPE, this.count, count => IR.withDecl(flag.decl, IR.seq([
+                IR.while_(IR.OP.and(IR.OP.not(flag.check), IR.OP.gt(count, IR.ZERO)), ir.withConst('match', IR.INT_TYPE, IR.libMethodCall('Sampler', 'sample', this.decl.name, [count, prng.name]), match => IR.seq([
+                    this.matchSwitch(match, at => cases(at, flag.set, IR.PASS)),
+                    IR.assign(count, '-=', IR.ONE),
+                ]))),
+                IR.if_(flag.check, ifTrue, ifFalse),
+            ])));
         }
         copyInto(matchesArray) {
-            return IR.libMethodCallStmt('Sampler', 'copyInto', this.name, [matchesArray]);
+            return IR.libMethodCallStmt('Sampler', 'copyInto', this.decl.name, [matchesArray.array]);
         }
-        copyIntoOffset(matchesArray, offset, m, c) {
-            return IR.libMethodCallStmt('Sampler', 'copyIntoOffset', this.name, [matchesArray, offset, IR.int(m), IR.int(c)]);
+        copyIntoOffset(matches, offset, m, c) {
+            return IR.libMethodCallStmt('Sampler', 'copyIntoOffset', this.decl.name, [matches.array, offset, IR.int(m), IR.int(c)]);
         }
-        shuffleInto(matchesArray) {
-            return IR.block([
-                IR.libMethodCallStmt('Sampler', 'shuffleInto', this.name, [matchesArray.array, RNG]),
-                IR.assign(matchesArray.count, '+=', this.count),
-            ]);
+        shuffleInto(prng, matches) {
+            return IR.libMethodCallStmt('Sampler', 'shuffleInto', this.decl.name, [matches.array, prng.name]);
         }
-        shuffleIntoOffset(matchesArray, m, c) {
-            return IR.block([
-                IR.libMethodCallStmt('Sampler', 'shuffleIntoOffset', this.name, [matchesArray.array, matchesArray.count, IR.int(m), IR.int(c), RNG]),
-                IR.assign(matchesArray.count, '+=', this.count),
+        shuffleIntoOffset(prng, matches, m, c) {
+            return IR.seq([
+                IR.libMethodCallStmt('Sampler', 'shuffleIntoOffset', this.decl.name, [matches.array, matches.count, IR.int(m), IR.int(c), prng.name]),
+                IR.assign(matches.count, '+=', this.count),
             ]);
         }
         forEach(then) {
-            return this.numPatterns === 1
-                ? IR.forRange(I, IR.ZERO, this.count, [
-                    this.g.declareAtIndex(IR.access(this.arr, I)),
-                    ...then,
-                ])
-                : fail();
+            if (this.numPatterns !== 1) {
+                fail();
+            }
+            return this.ir.forRange('i', IR.ZERO, this.count, i => this.g.declareAtIndex(IR.access(this.arr, i), then));
         }
     }
     IR.Sampler = Sampler;
     class TrivialSampler {
+        ir;
         g;
         count;
         isNotEmpty = IR.TRUE;
         width;
         height;
         is1x1;
-        constructor(g, patternWidth, patternHeight) {
+        constructor(ir, g, patternWidth, patternHeight) {
+            this.ir = ir;
             this.g = g;
             this.width = IR.OP.minusConstant(g.width, patternWidth - 1);
             this.height = IR.OP.minusConstant(g.height, patternHeight - 1);
+            // TODO: optimisations also apply for 1-by-N patterns
             this.is1x1 = patternWidth === 1 && patternHeight === 1;
             this.count = this.is1x1 ? g.n : IR.OP.mult(this.width, this.height);
         }
         declare() {
-            return IR.PASS;
+            return IR.NO_DECL;
         }
-        handleMatch(f, patternIndex) {
+        handleMatch(f, patternIndex, at) {
             fail();
         }
-        sampleWithReplacement(cases) {
-            return IR.block([
-                this.is1x1 ? this.g.declareAtIndex(IR.PRNG.nextInt(this.count))
-                    : this.g.declareAtXY(IR.PRNG.nextInt(this.width), IR.PRNG.nextInt(this.height)),
-                cases.length === 1 ? cases[0] : fail(),
-            ]);
-        }
-        beginSamplingWithoutReplacement() {
-            return IR.declVar(S, IR.INT_TYPE, IR.OP.add(IR.PRNG.nextInt(this.count), IR.ONE), true);
-        }
-        sampleWithoutReplacement(cases, count) {
-            const declAt = this.is1x1
-                ? this.g.declareAtIndex(IR.OP.minus(S, IR.ONE))
-                : this.g.declareAtXY(IR.OP.mod(S, this.width), IR.OP.floordiv(IR.OP.minus(S, IR.ONE), this.width));
-            return IR.block([
-                IR.while_(IR.TRUE, IR.block([
-                    IR.assign(S, '=', IR.ternary(IR.OP.ne(IR.OP.bitwiseAnd(S, IR.ONE), IR.ZERO), IR.OP.bitwiseXor(IR.OP.rshift(S, IR.ONE), this.g.useLsfrFeedbackTerm()), IR.OP.rshift(S, IR.ONE))),
-                    IR.if_(IR.OP.le(S, this.count), IR.BREAK),
-                ])),
-                declAt,
-                cases.length === 1 ? cases[0] : fail(),
-                IR.assign(count, '-=', IR.ONE),
-            ]);
-        }
-        copyInto(matchesArray) {
-            return this.copyIntoOffset(matchesArray, IR.ZERO, 1, 0);
-        }
-        copyIntoOffset(matchesArray, offset, m, c) {
+        sampleWithReplacement(prng, cases) {
+            const then = (at) => {
+                const cs = cases(at);
+                if (cs.length !== 1) {
+                    fail();
+                }
+                return cs[0];
+            };
             return this.is1x1
-                ? IR.forRange(AT, IR.ZERO, this.count, [
-                    IR.assign(IR.access(matchesArray, IR.OP.add(AT, offset)), '=', IR.OP.multAddConstant(AT, m, IR.int(c))),
-                ])
-                : IR.block([
-                    IR.declVar(J, IR.INT_TYPE, offset, true),
-                    IR.forRange(AT_Y, IR.ZERO, this.height, [
-                        IR.forRange(AT_X, IR.ZERO, this.width, [
-                            IR.assign(IR.access(matchesArray, J), '=', IR.OP.multAddConstant(this.g.index(AT_X, AT_Y), m, IR.int(c))),
-                            IR.assign(J, '+=', IR.ONE),
-                        ]),
-                    ]),
-                ]);
+                ? this.g.declareAtIndex(prng.nextInt(this.count), then)
+                : this.g.declareAtXY(prng.nextInt(this.width), prng.nextInt(this.height), then);
         }
-        shuffleInto(matches) {
-            return this.shuffleIntoOffset(matches, 1, 0);
+        sampleWithoutReplacement(prng, cases, ifTrue, ifFalse) {
+            const ir = this.ir;
+            const flag = ir.flag();
+            return ir.withVar('match', IR.INT_TYPE, IR.OP.add(prng.nextInt(this.count), IR.ONE), match => {
+                const nextMatch = IR.while_(IR.TRUE, IR.seq([
+                    IR.assign(match, '=', IR.ternary(IR.OP.ne(IR.OP.bitwiseAnd(match, IR.ONE), IR.ZERO), IR.OP.bitwiseXor(IR.OP.rshift(match, IR.ONE), this.g.lfsrFeedbackTerm), IR.OP.rshift(match, IR.ONE))),
+                    IR.if_(IR.OP.le(match, this.count), IR.BREAK),
+                ]));
+                const then = (at) => {
+                    const cs = cases(at, IR.seq([flag.set, IR.BREAK]), IR.PASS);
+                    if (cs.length !== 1) {
+                        fail();
+                    }
+                    return cs[0];
+                };
+                const declAt = this.is1x1
+                    ? this.g.declareAtIndex(IR.OP.minus(match, IR.ONE), then)
+                    : this.g.declareAtXY(IR.OP.mod(match, this.width), IR.OP.floordiv(IR.OP.minus(match, IR.ONE), this.width), then);
+                return ir.withVar('count', IR.INT_TYPE, this.count, count => IR.withDecl(flag.decl, IR.seq([
+                    IR.while_(IR.OP.and(IR.OP.not(flag.check), IR.OP.gt(count, IR.ZERO)), IR.seq([
+                        declAt,
+                        IR.assign(count, '-=', IR.ONE),
+                        nextMatch,
+                    ])),
+                    IR.if_(flag.check, ifTrue, ifFalse),
+                ])));
+            });
         }
-        shuffleIntoOffset(matches, m, c) {
+        copyInto(matches) {
+            return this.copyIntoOffset(matches, IR.ZERO, 1, 0);
+        }
+        copyIntoOffset(matches, offset, m, c) {
+            const { ir } = this;
             return this.is1x1
-                ? IR.forRange(AT, IR.ZERO, this.count, matches.insertShuffled(IR.OP.multAddConstant(AT, m, IR.int(c))))
-                : IR.forRange(AT_Y, IR.ZERO, this.height, [
-                    IR.forRange(AT_X, IR.ZERO, this.width, matches.insertShuffled(IR.OP.multAddConstant(this.g.index(AT_X, AT_Y), m, IR.int(c)))),
-                ]);
+                ? this.forEach(at => matches.set(IR.OP.add(at.index, offset), '=', IR.OP.multAddConstant(at.index, m, IR.int(c))))
+                : ir.withVar('j', IR.INT_TYPE, offset, j => this.forEach(at => IR.seq([
+                    matches.set(j, '=', IR.OP.multAddConstant(at.index, m, IR.int(c))),
+                    IR.assign(j, '+=', IR.ONE),
+                ])));
+        }
+        shuffleInto(prng, matches) {
+            return this.shuffleIntoOffset(prng, matches, 1, 0);
+        }
+        shuffleIntoOffset(prng, matches, m, c) {
+            return this.forEach(at => matches.insertShuffled(prng, IR.OP.multAddConstant(at.index, m, IR.int(c))));
         }
         forEach(then) {
+            const { ir, g } = this;
             return this.is1x1
-                ? IR.forRange(AT, IR.ZERO, this.count, [
-                    this.g.declareAtIndex(AT),
-                    ...then,
-                ])
-                : IR.forRange(AT_Y, IR.ZERO, this.height, [
-                    IR.forRange(AT_X, IR.ZERO, this.width, [
-                        this.g.declareAtXY(AT_X, AT_Y),
-                        ...then,
-                    ])
-                ]);
+                ? ir.forRange('i', IR.ZERO, this.count, i => g.declareAtIndex(i, then))
+                : ir.forRange('y', IR.ZERO, this.height, y => ir.forRange('x', IR.ZERO, this.width, x => g.declareAtXY(x, y, then)));
         }
     }
     IR.TrivialSampler = TrivialSampler;
@@ -7566,30 +8033,27 @@ var IR;
         count = IR.ZERO;
         isNotEmpty = IR.FALSE;
         declare() {
-            return IR.PASS;
+            return IR.NO_DECL;
         }
-        handleMatch(f, patternIndex) {
+        handleMatch() {
             fail();
         }
-        sampleWithReplacement(cases) {
-            return IR.throw_(`empty sampler`);
+        sampleWithReplacement() {
+            return IR.exprStmt(IR.unusedExpr(`empty sampler`));
         }
-        beginSamplingWithoutReplacement() {
+        sampleWithoutReplacement(prng, cases, ifTrue, ifFalse) {
+            return IR.exprStmt(IR.unusedExpr(`empty sampler`));
+        }
+        copyInto(matches) {
             return IR.PASS;
         }
-        sampleWithoutReplacement(cases, count) {
-            return IR.throw_(`empty sampler`);
-        }
-        copyInto(matchesArray) {
+        copyIntoOffset(matches, offset, m, c) {
             return IR.PASS;
         }
-        copyIntoOffset(matchesArray, offset, m, c) {
-            return IR.PASS;
+        shuffleInto(prng, matches) {
+            return matches.declareCount(IR.ZERO);
         }
-        shuffleInto(matches) {
-            return IR.PASS;
-        }
-        shuffleIntoOffset(matches, m, c) {
+        shuffleIntoOffset(prng, matches, m, c) {
             return IR.PASS;
         }
         forEach(then) {
@@ -7598,22 +8062,33 @@ var IR;
     }
     IR.EmptySampler = EmptySampler;
 })(IR || (IR = {}));
-///<reference path="names.ts"/>
+///<reference path="factory.ts"/>
 var IR;
 (function (IR) {
-    const { J, } = IR.NAMES;
     class TempArray {
+        ir;
+        capacity;
+        decl;
+        countDecl;
         array;
         count;
-        getAtCount;
         isNotEmpty;
         incrementCount;
-        constructor(array, count) {
-            this.array = array;
-            this.count = count;
-            this.getAtCount = this.get(count);
+        constructor(ir) {
+            this.ir = ir;
+            const capacity = this.capacity = ir.deferredExpr('TempArray.capacity');
+            const decl = this.decl = ir.mutArrayDecl('matches', capacity, IR.INT32_ARRAY_TYPE.domainSize);
+            const countDecl = this.countDecl = ir.varDecl('count', IR.INT_TYPE);
+            this.array = decl.name;
+            const count = this.count = countDecl.name;
             this.isNotEmpty = IR.OP.gt(count, IR.ZERO);
             this.incrementCount = IR.assign(count, '+=', IR.ONE);
+        }
+        declare(capacity) {
+            return IR.multiDecl([
+                IR.replaceInDecl(this.decl, this.capacity, capacity),
+                this.countDecl, // TODO
+            ]);
         }
         declareCount(initial) {
             return IR.assign(this.count, '=', initial);
@@ -7621,19 +8096,21 @@ var IR;
         get(index) {
             return IR.access(this.array, index);
         }
-        push(match) {
-            return [
-                IR.assign(this.getAtCount, '=', match),
-                this.incrementCount,
-            ];
+        set(index, op, value) {
+            return IR.assign(this.get(index), op, value);
         }
-        insertShuffled(match) {
-            return [
-                IR.declVar(J, IR.INT_TYPE, IR.PRNG.nextInt(IR.OP.add(this.count, IR.ONE))),
-                IR.assign(this.getAtCount, '=', this.get(J)),
-                IR.assign(this.get(J), '=', match),
+        push(value) {
+            return IR.seq([
+                IR.assign(this.get(this.count), '=', value),
                 this.incrementCount,
-            ];
+            ]);
+        }
+        insertShuffled(prng, value) {
+            return this.ir.withConst('j', IR.INT_TYPE, prng.nextInt(IR.OP.add(this.count, IR.ONE)), j => IR.seq([
+                IR.assign(this.get(this.count), '=', this.get(j)),
+                IR.assign(this.get(j), '=', value),
+                this.incrementCount,
+            ]));
         }
     }
     IR.TempArray = TempArray;
@@ -8781,6 +9258,11 @@ var PatternTree;
         return p.kind === 'leaf' || p.kind === 'top';
     }
     PatternTree.isLeafOrTop = isLeafOrTop;
+    function isDisjoint(p, q) {
+        // double negation here due to and/or patterns
+        return !matches(p, p => !p.isDisjoint(q));
+    }
+    PatternTree.isDisjoint = isDisjoint;
     function rotate(p) {
         switch (p.kind) {
             case 'leaf':
@@ -8980,6 +9462,9 @@ class Pattern extends MJr.Pattern {
         this.hasUnions = hasUnions;
         this.kind = pattern.every(p => p === 255 /* PatternValue.WILDCARD */) ? 'top' : 'leaf';
     }
+    canBe(dx, dy, c) {
+        return ISet.has(this.masks[dx + dy * this.width], c);
+    }
     /**
      * Calls the given function for each non-wildcard, non-union symbol in this
      * pattern.
@@ -9006,5 +9491,8 @@ class Pattern extends MJr.Pattern {
     }
     some(f) {
         return !this.every((dx, dy, c) => !f(dx, dy, c));
+    }
+    isDisjoint(other) {
+        return this.masks.some((mask, i) => ISet.isDisjoint(mask, other.masks[i]));
     }
 }

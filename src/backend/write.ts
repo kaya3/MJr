@@ -1,77 +1,75 @@
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 
 namespace Compiler {
     const {
-        NAMES: {
-            AT_X, AT_Y,
-            P,
-        },
         OP,
     } = IR;
     
-    export function doWrite(c: Compiler, outGrid: IR.Grid, from: PatternTree | undefined, to: ASG.Prop<'pattern.out'>, useMask: boolean, flagVar: IR.NameExpr | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
+    export function doWrite(ctx: RuleContext, outGrid: IR.Grid, from: PatternTree | undefined, to: IR.PatternResult, mask: IR.Mask | undefined, doUpdate: boolean, doYield: boolean): IR.Stmt {
         const out: IR.Stmt[] = [];
         let mX: IR.Expr, mY: IR.Expr, eW: IR.Expr, eH: IR.Expr;
         
-        if(to.kind === 'expr.constant') {
+        if(to.constant !== undefined) {
             // constant output pattern
-            const {value} = to.constant;
+            const value = to.constant;
             
-            let minX = value.width, maxX = 0, minY = value.height, maxY = 0;
             value.forEach((dx, dy, colour) => {
+                // TODO: `[ABC] or [ADE] -> [A..]` isn't maybe effective in the first position
                 const maybeEffective = from === undefined || from.kind !== 'leaf' || from.pattern[dx + from.width * dy] !== colour;
-                if(useMask || maybeEffective) {
+                if(mask !== undefined || maybeEffective) {
                     out.push(outGrid.write(
-                        outGrid.relativeIndex(dx, dy),
+                        outGrid.relativeIndex(ctx.at, dx, dy),
                         IR.int(colour),
-                        useMask ? c.mask : undefined,
+                        mask,
                     ));
-                }
-                if(maybeEffective) {
-                    minX = Math.min(minX, dx);
-                    maxX = Math.max(maxX, dx + 1);
-                    minY = Math.min(minY, dy);
-                    maxY = Math.max(maxY, dy + 1);
                 }
             });
             
-            if(minX > maxX || minY > maxY) { fail(); }
-            
-            mX = IR.int(minX);
-            mY = IR.int(minY);
-            eW = IR.int(maxX - minX);
-            eH = IR.int(maxY - minY);
+            mX = IR.int(value.minX);
+            mY = IR.int(value.minY);
+            eW = IR.int(value.effectiveWidth);
+            eH = IR.int(value.effectiveHeight);
         } else {
             // output pattern determined at runtime
-            // this requires that `p` is already declared
             out.push(IR.libMethodCallStmt(
-                'Pattern', 'put', P,
-                [outGrid.useObj(), useMask ? c.mask.name : IR.NULL, AT_X, AT_Y],
+                'Pattern', 'put', to.expr,
+                [outGrid.obj, mask !== undefined ? mask.arr.array : IR.NULL, ctx.at.x, ctx.at.y],
             ));
             
-            mX = IR.attr(P, 'minX');
-            mY = IR.attr(P, 'minY');
-            eW = IR.attr(P, 'effectiveWidth');
-            eH = IR.attr(P, 'effectiveHeight');
+            mX = IR.attr(to.expr, 'minX');
+            mY = IR.attr(to.expr, 'minY');
+            eW = IR.attr(to.expr, 'effectiveWidth');
+            eH = IR.attr(to.expr, 'effectiveHeight');
         }
         
         if(doUpdate) {
-            const x = OP.add(AT_X, mX), y = OP.add(AT_Y, mY);
+            const x = OP.add(ctx.at.x, mX),
+                y = OP.add(ctx.at.y, mY);
             out.push(outGrid.update(x, y, eW, eH));
-            if(doYield) { out.push(outGrid.yieldRewriteInfo(x, y, eW, eH)); }
+            if(doYield && ctx.c.config.animate) {
+                out.push(outGrid.yieldRewriteInfo(x, y, eW, eH));
+            }
         }
-        if(flagVar !== undefined) {
-            out.push(IR.assign(flagVar, '=', IR.TRUE));
-        }
-        return IR.block(out);
+        return IR.seq(out);
     }
     
-    export function writeCondition(c: Compiler, g: IR.Grid, patternExpr: ASG.Prop<'pattern.out'> | undefined, patternVar: IR.NameExpr | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
-        const hasEffect
-            = patternExpr === undefined || patternExpr.kind === 'expr.constant'
+    export function patternHasEffect(ctx: RuleContext, g: IR.Grid, from: PatternTree | undefined, to: IR.PatternResult): IR.Expr {
+        return to.constant === undefined
+            ? IR.libMethodCall('Pattern', 'hasEffect', to.expr, [g.obj, ctx.at.x, ctx.at.y])
+            : from !== undefined && PatternTree.isDisjoint(from, to.constant)
             ? IR.TRUE
-            : IR.libMethodCall('Pattern', 'hasEffect', patternVar ?? fail(), [g.useObj(), AT_X, AT_Y]);
-        return conditionExpr === undefined ? hasEffect : OP.and(hasEffect, c.expr(conditionExpr));
+            : OP.some(to.constant, (dx, dy, c) =>
+                from === undefined || !PatternTree.matches(from, p => !p.canBe(dx, dy, c))
+                    ? OP.ne(g.data.get(g.relativeIndex(ctx.at, dx, dy)), IR.int(c))
+                    : IR.TRUE
+            );
+    }
+    
+    export function writeCondition(ctx: RuleContext, g: IR.Grid, from: PatternTree | undefined, to: IR.PatternResult | undefined, conditionExpr: ASG.Prop<'bool?'>): IR.Expr {
+        return OP.and(
+            to !== undefined ? patternHasEffect(ctx, g, from, to) : IR.TRUE,
+            conditionExpr !== undefined ? ctx.expr(conditionExpr) : IR.TRUE,
+        );
     }
 }

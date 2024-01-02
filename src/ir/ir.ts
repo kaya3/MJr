@@ -1,3 +1,11 @@
+/**
+ * Abstract syntax tree for a high-level intermediate representation (IR) which
+ * is output by the compiler. The IR is converted into output source code by a
+ * class in the `CodeGen` namespace.
+ * 
+ * The IR should be convertible to most imperative languages, so long as they
+ * allow local function declarations to access constants from the outer scope.
+ */
 namespace IR {
     // all type declarations here must be JSON serialisable, since `JSON.stringify` is used to detect repeated IR code and simplify it
     const JSON_KEY = Symbol();
@@ -10,45 +18,68 @@ namespace IR {
         return key(a) === key(b);
     }
     
-    export type Stmt = AssignStmt | BlankLineStmt | BlockStmt | BreakStmt | CommentStmt | ContinueStmt | DeclFuncStmt | DeclVarsStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
+    export type Decl = StmtLevelDecl | VarDecl
+    export type ExportableDecl = ConstDecl | FuncDecl
+    export type StmtLevelDecl = ExportableDecl | MutVarDecl | InitDecl | NoDecl | MultiDecl
+    export type VarDecl = ConstDecl | LoopVarDecl | MutVarDecl | ParamDecl
+    
+    type _Node<K extends string, T> = Readonly<{kind: K, info: Info} & T> & {[JSON_KEY]?: string}
+    
+    type _DeclNode<K extends string, T> = _Node<`decl.${K}`, T>
+    type _VarDeclNode<K extends string, N extends NameExpr, T> = _DeclNode<`var.${K}`, {name: N, type: IRType} & T>
+    export interface ConstDecl extends _VarDeclNode<'const', ConstNameExpr, {initialiser: Expr}> {}
+    export interface LoopVarDecl extends _VarDeclNode<'loop', ConstNameExpr, {initialiser?: never}> {}
+    export interface MutVarDecl extends _VarDeclNode<'mut', MutNameExpr, {initialiser: Expr | undefined}> {}
+    export interface ParamDecl extends _VarDeclNode<'param', ConstNameExpr, {initialiser: Expr | undefined, isOptional: boolean}> {}
+    
+    export interface NoDecl extends _DeclNode<'none', {}> {}
+    export interface MultiDecl extends _DeclNode<'multi', {children: readonly StmtLevelDecl[]}> {}
+    export interface InitDecl extends _DeclNode<'init', {child: StmtLevelDecl, stmt: Stmt}> {}
+    export interface FuncDecl extends _DeclNode<'func', {name: ConstNameExpr, yields: IRType | undefined, params: readonly ParamDecl[], returnType: IRType, body: Stmt}> {}
+    
+    export type Stmt = AssignStmt | BlankLineStmt | BreakStmt | CommentStmt | ContinueStmt | DeclInStmt | ExportStmt | ExprStmt | ForRangeStmt | IfStmt | LogStmt | PassStmt | PreambleStmt | ReturnStmt | SequenceStmt | SwitchStmt | ThrowStmt | WhileStmt | YieldStmt
     
     export interface Case extends Readonly<{values: readonly number[], then: Stmt}> {}
-    export interface VarDecl extends Readonly<{name: NameExpr, type: IRType, initialiser?: Expr}> {}
-    export interface VarDeclWithInitialiser extends VarDecl {readonly initialiser: Expr}
     
-    type _StmtNode<K extends string, T> = Readonly<{kind: `stmt.${K}`} & T> & {flags: NodeFlags, [JSON_KEY]?: string}
-    export interface AssignStmt extends _StmtNode<'assign', {op: AssignOp, left: NameExpr | AttrExpr | ArrayAccessExpr, right: Expr}> {}
-    export interface BlankLineStmt extends _StmtNode<'blankline', {}> {}
-    export interface BlockStmt extends _StmtNode<'block', {children: readonly Stmt[]}> {}
-    export interface BreakStmt extends _StmtNode<'break', {}> {}
+    type _StmtNode<K extends string, T = {}> = _Node<`stmt.${K}`, T>
+    export interface AssignStmt extends _StmtNode<'assign', {op: AssignOp, left: MutNameExpr | AttrExpr | ArrayAccessExpr, right: Expr}> {}
+    export interface BlankLineStmt extends _StmtNode<'blankline'> {}
+    export interface BreakStmt extends _StmtNode<'break'> {}
     export interface CommentStmt extends _StmtNode<'comment', {comment: string}> {}
-    export interface ContinueStmt extends _StmtNode<'continue', {}> {}
-    export interface DeclFuncStmt extends _StmtNode<'decl.func', {name: NameExpr, yields: IRType | undefined, params: readonly NameExpr[], paramTypes: readonly IRType[], returnType: IRType, body: Stmt}> {}
-    export interface DeclVarsStmt extends _StmtNode<'decl.vars', {decls: readonly VarDecl[], mutable: boolean}> {}
+    export interface ContinueStmt extends _StmtNode<'continue'> {}
+    export interface DeclInStmt extends _StmtNode<'decl', {decl: StmtLevelDecl, child: Stmt}> {}
+    export interface ExportStmt extends _StmtNode<'export', {decl: ExportableDecl}> {}
     export interface ExprStmt extends _StmtNode<'expr', {expr: Expr}> {}
-    export interface ForRangeStmt extends _StmtNode<'for.range', {index: NameExpr, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
+    export interface ForRangeStmt extends _StmtNode<'for.range', {index: LoopVarDecl, low: Expr, high: Expr, reverse: boolean, body: Stmt}> {}
     export interface IfStmt extends _StmtNode<'if', {condition: Expr, then: Stmt, otherwise: Stmt | undefined}> {}
     export interface LogStmt extends _StmtNode<'log', {expr: Expr}> {}
-    export interface PassStmt extends _StmtNode<'pass', {}> {}
+    export interface PassStmt extends _StmtNode<'pass'> {}
     export interface PreambleStmt extends _StmtNode<'preamble', {paramTypes: DictType, emitChecks: boolean, libVersion: number, opsUsed: readonly Op[]}> {}
     export interface ReturnStmt extends _StmtNode<'return', {expr: Expr | undefined}> {}
+    export interface SequenceStmt extends _StmtNode<'sequence', {children: readonly Stmt[]}> {}
     export interface SwitchStmt extends _StmtNode<'switch', {expr: Expr, cases: readonly Case[], exhaustive: boolean}> {}
     export interface ThrowStmt extends _StmtNode<'throw', {message: string}> {}
     export interface WhileStmt extends _StmtNode<'while', {condition: Expr, then: Stmt}> {}
     export interface YieldStmt extends _StmtNode<'yield', {expr: Expr | undefined}> {}
     
-    export type Expr = AttrExpr | LetInExpr | LiteralExpr | NameExpr | ObjectExpr | OpExpr | ParamExpr
+    export type Expr = AttrExpr | DeferredExpr | LetInExpr | LiteralExpr | NameExpr | ObjectExpr | OpExpr | ParamExpr | UnusedExpr
+    export type ConstExpr = LiteralExpr | ConstNameExpr | UnusedExpr
     
     export type AssignOp = '=' | '+=' | '-=' | '&=' | '|='
     export type BinaryOp = Op.BinaryOp | 'array_access' | 'int_and' | 'int_or' | 'int_xor' | 'int_lshift' | 'int_rshift' | 'loose_int_plus' | 'loose_int_minus' | 'loose_int_mult' | 'loose_int_floordiv' | 'loose_int_mod'
     export type UnaryOp = Op.UnaryOp | 'int_not' | 'int_ctz' | 'float_log2'
     export type Op = BinaryOp | UnaryOp
     
-    type _ExprNode<K extends string, T> = Readonly<{kind: `expr.${K}`} & T> & {flags: NodeFlags, [JSON_KEY]?: string}
+    type _ExprNode<K extends string, T> = _Node<`expr.${K}`, T>
     export interface AttrExpr extends _ExprNode<'attr', {left: Expr, attr: string}> {}
-    export interface LetInExpr extends _ExprNode<'letin', {decl: VarDeclWithInitialiser, child: Expr}> {}
-    export interface NameExpr extends _ExprNode<'name', {name: string}> {}
+    export interface DeferredExpr extends _ExprNode<'unused.deferred', {id: number, purpose: string}> {}
+    export interface LetInExpr extends _ExprNode<'letin', {decl: ConstDecl, child: Expr}> {}
+    export interface NameExpr extends _ExprNode<'name', {id: number, namePart: string, isMutable: boolean}> {}
     export interface ParamExpr extends _ExprNode<'param', {name: string, otherwise: Expr}> {}
+    export interface UnusedExpr extends _ExprNode<'unused.error', {error: string}> {}
+    
+    export type ConstNameExpr = NameExpr & {readonly isMutable: false}
+    export type MutNameExpr = NameExpr & {readonly isMutable: true}
     
     export type LiteralExpr = BoolLiteralExpr | FloatLiteralExpr | IntLiteralExpr | NullLiteralExpr | StrLiteralExpr
     export interface BoolLiteralExpr extends _ExprNode<'literal.bool', {value: boolean}> {}
@@ -65,7 +96,7 @@ namespace IR {
     export type OpExpr = ArrayAccessExpr | BinaryOpExpr | CallLibExpr | CallLocalExpr | TernaryExpr | UnaryOpExpr
     export interface ArrayAccessExpr extends _ExprNode<'op.binary', {op: 'array_access', left: Expr, right: Expr}> {}
     export interface BinaryOpExpr extends _ExprNode<'op.binary', {op: BinaryOp, left: Expr, right: Expr}> {}
-    export interface CallLocalExpr extends _ExprNode<'op.call.local', {name: NameExpr, args: readonly Expr[]}> {}
+    export interface CallLocalExpr extends _ExprNode<'op.call.local', {name: ConstNameExpr, args: readonly Expr[]}> {}
     export interface TernaryExpr extends _ExprNode<'op.ternary', {condition: Expr, then: Expr, otherwise: Expr}> {}
     export interface UnaryOpExpr extends _ExprNode<'op.unary', {op: UnaryOp, child: Expr}> {}
     
@@ -85,78 +116,8 @@ namespace IR {
     
     export type LocalFunction = 'mask_clear' | 'mask_set' | 'mask_hasnt'
     
-    export const enum NodeFlags {
-        NO_STATE_CHANGES = 1,
-        NO_BREAKS = 2,
-        NO_RETURNS = 4,
-        NO_THROWS = 8,
-        NO_OUTPUT = 16,
-        LOCALLY_DETERMINISTIC = 32,
-        CONTEXT_INDEPENDENT = 64,
-        
-        DO_NOTHING = 63,
-        NO_CONTROL_FLOW_EFFECTS = NO_BREAKS | NO_THROWS | NO_RETURNS,
-        NO_SIDE_EFFECTS = NO_STATE_CHANGES | NO_CONTROL_FLOW_EFFECTS | NO_OUTPUT,
-        
-        CONSTANT = NO_SIDE_EFFECTS | LOCALLY_DETERMINISTIC | CONTEXT_INDEPENDENT,
-        NEW_MUT_OBJECT = NO_SIDE_EFFECTS | CONTEXT_INDEPENDENT,
-        PURE_FUNCTION = NO_SIDE_EFFECTS | LOCALLY_DETERMINISTIC | CONTEXT_INDEPENDENT,
-        RAND_CALL = NO_SIDE_EFFECTS | CONTEXT_INDEPENDENT,
-        STATE_GET = NO_SIDE_EFFECTS,
-        STATE_UPDATE = NO_CONTROL_FLOW_EFFECTS | NO_OUTPUT,
-    }
-    
-    export const LOCAL_FUNCTION_FLAGS: IRecord<LocalFunction, NodeFlags> = {
-        mask_clear: NodeFlags.STATE_UPDATE,
-        mask_set: NodeFlags.STATE_UPDATE,
-        mask_hasnt: NodeFlags.STATE_GET,
-    };
-    
-    export const LIB_FUNCTION_FLAGS: IRecord<LibFunction, NodeFlags> = {
-        lfsrFeedbackTerm: NodeFlags.PURE_FUNCTION,
-        nextIntChecked: NodeFlags.RAND_CALL & ~NodeFlags.NO_THROWS,
-    };
-    
-    export const LIB_METHOD_FLAGS: {readonly [K in LibInterface]: IRecord<LibMethod<K>, NodeFlags>} = {
-        Grid: {
-            index: NodeFlags.PURE_FUNCTION,
-            toString: NodeFlags.STATE_GET,
-            wrapIndex: NodeFlags.PURE_FUNCTION,
-        },
-        PRNG: {
-            nextDouble: NodeFlags.RAND_CALL,
-            nextInt: NodeFlags.RAND_CALL,
-        },
-        Pattern: {
-            fitsMask: NodeFlags.STATE_GET,
-            hasEffect: NodeFlags.STATE_GET,
-            put: NodeFlags.STATE_UPDATE,
-        },
-        RewriteInfo: {},
-        Sampler: {
-            add: NodeFlags.STATE_UPDATE,
-            copyInto: NodeFlags.STATE_UPDATE,
-            copyIntoOffset: NodeFlags.STATE_UPDATE,
-            del: NodeFlags.STATE_UPDATE,
-            has: NodeFlags.STATE_GET,
-            sample: NodeFlags.STATE_GET,
-            shuffleInto: NodeFlags.STATE_UPDATE,
-            shuffleIntoOffset: NodeFlags.STATE_UPDATE,
-        },
-    };
-    
-    export function exprHasSideEffects(expr: Expr): boolean {
-        return (expr.flags & NodeFlags.NO_SIDE_EFFECTS) !== NodeFlags.NO_SIDE_EFFECTS;
-    }
-    
-    export function exprIsContextIndependent(expr: Expr): boolean {
-        return (expr.flags & NodeFlags.CONTEXT_INDEPENDENT) !== 0;
-    }
-    
-    export function _reduceFlags(flags: NodeFlags, nodes: readonly (Stmt | Expr)[]): NodeFlags {
-        for(const node of nodes) {
-            flags &= node.flags;
-        }
-        return flags;
-    }
+    export interface PatternResult extends Readonly<{
+        expr: IR.ConstExpr,
+        constant: Pattern | undefined,
+    }> {}
 }

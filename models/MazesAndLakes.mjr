@@ -3,7 +3,7 @@
 use let g = grid [BWREI]
 
 let LAKE_SEEDS = 4
-let LAKE_SIZE = g.width * g.height // 4
+let LAKE_SIZE = g.area // 4
 let LAND_SEEDS = 32
 let ANIMATE_WATER = true
 

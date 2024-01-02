@@ -3,7 +3,10 @@
 namespace CodeGen {
     const RUNTIME_LIB_NAME = 'MJr';
     
-    // operator precedences from https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_Precedence#table
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar#keywords
+    const JAVASCRIPT_KEYWORDS = `abstract arguments as async await boolean break byte case catch char class const continue debugger default delete do double else enum eval export extends false final finally float for from function get goto if implements import in instanceof int interface let long native new null of package private protected public return set short static super switch synchronized this throw throws transient true try typeof undefined var void volatile while with yield`;
+    
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_Precedence#table
     const enum Precedence {
         MAX = 18,
         ATTR_ACCESS_CALL = 17,
@@ -32,6 +35,8 @@ namespace CodeGen {
     }] as const;
     
     export class JavaScript extends Base {
+        readonly RESERVED_WORDS: string = `${RUNTIME_LIB_NAME} ${JAVASCRIPT_KEYWORDS} console`;
+        
         readonly STMT_WRITE_FUNCS: StmtWriteFuncs<this> = {
             'stmt.assign': (out, stmt) => {
                 const {left, op, right} = stmt;
@@ -46,17 +51,6 @@ namespace CodeGen {
                 }
                 out.write(';');
             },
-            'stmt.block': (out, stmt) => {
-                out.write('{');
-                out.indent();
-                for(const c of stmt.children) { out.writeStmt(c); }
-                out.dedent();
-                out.beginLine();
-                out.write('}');
-            },
-            'stmt.blankline': (out, stmt) => {
-                out.beginLine();
-            },
             'stmt.break': (out, stmt) => {
                 out.beginLine();
                 out.write('break;');
@@ -69,34 +63,18 @@ namespace CodeGen {
                 out.beginLine();
                 out.write('continue;');
             },
-            'stmt.decl.func': (out, stmt) => {
-                const {params, paramTypes} = stmt;
-                out.beginLine();
-                out.write('function');
-                if(stmt.yields !== undefined) { out.write('*'); }
-                out.write(' ');
-                out.writeExpr(stmt.name);
-                out.write('(');
-                out.writeList(i => out.writeParamDecl(params[i].name, paramTypes[i]), params.length);
-                out.write(')');
-                out.writeReturnType(stmt.returnType, stmt.yields);
-                out.write(' ');
-                out.writeIndentedBlock(stmt.body);
-            },
-            'stmt.decl.vars': (out, stmt) => {
-                const {decls, mutable} = stmt;
-                out.beginLine();
-                out.write(mutable ? 'let ' : 'const ');
-                out.writeList(i => out.writeVarDecl(decls[i]), decls.length, 1, true);
-                out.write(';');
-            },
             'stmt.expr': (out, stmt) => {
                 out.beginLine();
                 out.writeExpr(stmt.expr);
                 out.write(';');
             },
+            'stmt.export': (out, stmt) => {
+                // TODO: JS module config option
+                out.writeDecl(stmt.decl);
+            },
             'stmt.for.range': (out, stmt) => {
-                const {index: {name: i}, low, high, reverse, body} = stmt;
+                const {index, low, high, reverse, body} = stmt;
+                const i = out.getName(index.name);
                 out.beginLine();
                 out.write(`for(let ${i} = `);
                 if(reverse) {
@@ -110,7 +88,7 @@ namespace CodeGen {
                     out.writeExpr(high, Precedence.CMP);
                     out.write(`; ++${i}) `);
                 }
-                out.writeIndentedBlock(body);
+                out.writeBlockScope(body);
             },
             'stmt.if': (out, stmt) => {
                 let cur: IR.Stmt | undefined = stmt;
@@ -120,14 +98,14 @@ namespace CodeGen {
                     out.writeExpr(cur.condition);
                     out.write(') ');
                     // intented block has braces, avoiding parsing hazard of `if(...) if(...) ... else ...`
-                    out.writeIndentedBlock(cur.then);
+                    out.writeBlockScope(cur.then);
                     
                     cur = cur.otherwise;
                     if(cur === undefined) { break; }
                     
                     out.write(' else ');
                     if(cur.kind !== 'stmt.if') {
-                        out.writeIndentedBlock(cur);
+                        out.writeBlockScope(cur);
                         break;
                     }
                 }
@@ -191,16 +169,45 @@ namespace CodeGen {
                 out.write('while(');
                 out.writeExpr(stmt.condition);
                 out.write(') ');
-                out.writeIndentedBlock(then);
+                out.writeBlockScope(then);
             },
             'stmt.yield': (out, stmt) => {
                 out.beginLine();
-                this.write('yield');
+                out.write('yield');
                 if(stmt.expr !== undefined) {
-                    this.write(' ');
-                    this.writeExpr(stmt.expr);
+                    out.write(' ');
+                    out.writeExpr(stmt.expr);
                 }
-                this.write(';');
+                out.write(';');
+            },
+        };
+        
+        readonly DECL_WRITE_FUNCS: DeclWriteFuncs<this> = {
+            'decl.func': (out, decl) => {
+                const {params} = decl;
+                out.write('function');
+                if(decl.yields !== undefined) { out.write('*'); }
+                out.write(` ${this.getName(decl.name)}(`);
+                out.withScope(() => {
+                    out.writeList(i => out.writeVarDecl(params[i]), params.length);
+                    out.write(')');
+                    out.writeReturnType(decl.returnType, decl.yields);
+                    out.write(' ');
+                    out.writeIndentedBlock(decl.body);
+                });
+            },
+            'decl.var.const': (out, decl) => {
+                out.write('const ');
+                out.writeVarDecl(decl);
+                out.write(';');
+            },
+            'decl.var.mut': (out, decl) => {
+                out.write('let ');
+                out.writeVarDecl(decl);
+                out.write(';');
+            },
+            'decl.var.param': (out, decl) => {
+                out.writeVarDecl(decl);
             },
         };
         
@@ -232,16 +239,19 @@ namespace CodeGen {
                 }, keys.length, 1);
                 out.write('}');
             }],
-            'expr.letin': [Precedence.MAX, (out, expr) => {
-                out.write('(');
+            'expr.letin': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
+                // TODO: eliminate 'expr.letin' before codegen
+                out.write('(function(');
                 let e: IR.Expr = expr;
-                do {
-                    this.writeAssignExpr(e.decl.name, e.decl.initialiser);
-                    out.write(', ');
+                while(true) {
+                    out.writeAssignExpr(e.decl.name, e.decl.initialiser);
                     e = e.child;
-                } while(e.kind === 'expr.letin');
-                this.writeExpr(e);
-                out.write(')');
+                    if(e.kind !== 'expr.letin') { break; }
+                    out.write(', ');
+                }
+                out.write(') { return ');
+                out.writeExpr(e);
+                out.write('; })()');
             }],
             'expr.literal.bool': _literal,
             'expr.literal.float': _literal,
@@ -251,7 +261,7 @@ namespace CodeGen {
                 out.write('undefined');
             }],
             'expr.name': [Precedence.MAX, (out, expr) => {
-                out.write(expr.name);
+                out.write(this.getName(expr));
             }],
             'expr.op.call.lib.constructor': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 out.write(`new ${RUNTIME_LIB_NAME}.${expr.className}`);
@@ -267,18 +277,17 @@ namespace CodeGen {
             }],
             'expr.op.call.lib.method': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
                 out.writeExpr(expr.obj);
-                out.write(`.${expr.name}(`);
+                out.write(`.${this.getLibName(expr.name)}(`);
                 out.writeExprList(expr.args);
                 out.write(')');
             }],
             'expr.op.call.local': [Precedence.ATTR_ACCESS_CALL, (out, expr) => {
-                out.writeExpr(expr.name);
-                out.write('(');
+                out.write(`${out.getName(expr.name)}(`);
                 out.writeExprList(expr.args);
                 out.write(')');
             }],
             'expr.param': [Precedence.NULL_COALESCE, (out, expr) => {
-                out.write(`params?.${expr.name} ?? `);
+                out.write(`params?['${expr.name}'] ?? `);
                 out.writeExpr(expr.otherwise, Precedence.NULL_COALESCE);
             }],
             'expr.op.ternary': [Precedence.TERNARY, (out, expr) => {
@@ -408,6 +417,7 @@ namespace CodeGen {
         })();
         
         public writeAssignExpr(left: IR.NameExpr, right: IR.Expr): void {
+            // TODO: this omits `let`, making a global variable; need to hoist declaration
             this.writeExpr(left);
             this.write(' = ');
             this.writeExpr(right, Precedence.ASSIGN);
@@ -423,18 +433,15 @@ namespace CodeGen {
                 for(const value of c.values) {
                     this.write(`case ${value}: `);
                 }
-                this.writeIndentedBlock(IR.block([c.then, IR.BREAK]));
+                this.writeBlockScope(IR.seq([c.then, IR.BREAK]));
             }
             this.dedent();
             this.beginLine();
             this.write('}');
         }
         
-        writeParamDecl(name: string, type: IR.IRType): void {
-            this.write(name);
-        }
         writeVarDecl(decl: IR.VarDecl): void {
-            this.writeExpr(decl.name);
+            this.write(this.getName(decl.name));
             if(decl.initialiser !== undefined) {
                 this.write(' = ');
                 this.writeExpr(decl.initialiser);
@@ -444,8 +451,7 @@ namespace CodeGen {
     }
     
     export class TypeScript extends JavaScript {
-        writeParamDecl(name: string, type: IR.IRType): void {
-            this.write(name);
+        private writeParamAnnotation(type: IR.IRType): void {
             if(type.kind === 'nullable') {
                 this.write('?');
                 type = type.componentType;
@@ -453,10 +459,13 @@ namespace CodeGen {
             this.write(': ');
             this.writeType(type);
         }
+        
         writeVarDecl(decl: IR.VarDecl): void {
-            this.writeExpr(decl.name);
-            if(decl.initialiser === undefined) {
-                this.write('!: ');
+            this.write(this.getName(decl.name));
+            if(decl.kind === 'decl.var.param') {
+                this.writeParamAnnotation(decl.type);
+            } else if(decl.initialiser === undefined) {
+                this.write(': ');
                 this.writeType(decl.type);
             } else {
                 // otherwise, type should be inferred from initialiser
@@ -464,6 +473,7 @@ namespace CodeGen {
                 this.writeExpr(decl.initialiser);
             }
         }
+        
         writeReturnType(type: IR.IRType, yields: IR.IRType | undefined): void {
             this.write(': ');
             if(yields === undefined) {
@@ -482,7 +492,10 @@ namespace CodeGen {
                 case 'dict': {
                     const {keys, values} = type;
                     this.write('{');
-                    this.writeList(i => this.writeParamDecl(keys[i], values[i]), keys.length);
+                    this.writeList(i => {
+                        this.write(keys[i]);
+                        this.writeParamAnnotation(values[i]);
+                    }, keys.length);
                     this.write('}');
                     return;
                 }

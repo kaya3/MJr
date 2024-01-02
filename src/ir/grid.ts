@@ -1,43 +1,70 @@
-///<reference path="names.ts"/>
+///<reference path="factory.ts"/>
 
 namespace IR {
-    const {
-        WIDTH, HEIGHT,
-        AT, AT_X, AT_Y,
-    } = NAMES;
+    export interface Location extends Readonly<{index: Expr, x: Expr, y: Expr}> {}
     
     export class Grid {
-        public readonly width: NameExpr;
-        public readonly height: NameExpr;
-        public readonly n: NameExpr;
+        public readonly width: ConstNameExpr;
+        public readonly height: ConstNameExpr;
+        public readonly n: ConstNameExpr;
         public readonly data: MutableArray;
-        private obj: NameExpr | undefined = undefined;
-        private buffer: MutableArray | undefined = undefined;
-        private origin: NameExpr | undefined = undefined;
-        private lfsrFeedbackTerm: NameExpr | undefined = undefined;
+        public readonly obj: ConstNameExpr;
+        public readonly origin: ConstNameExpr;
+        public readonly buffer: MutableArray;
+        public readonly lfsrFeedbackTerm: ConstNameExpr;
         public readonly originX: Expr;
         public readonly originY: Expr;
         
-        private readonly counters = new Map<string, VarDeclWithInitialiser>();
+        private readonly counters = new Map<string, MutVarDecl>();
         private readonly samplers = new Map<string, AbstractSampler>();
         private readonly convBuffers = new Map<string, ConvBuffer>();
         public readonly matcher: Matcher;
         
+        private readonly decls: readonly StmtLevelDecl[];
+        
         private scale: number = 1;
         
-        public constructor(public readonly grid: ASG.FormalGrid) {
+        public constructor(private readonly ir: Factory, public readonly grid: ASG.FormalGrid, baseWidth: ConstNameExpr, baseHeight: ConstNameExpr) {
             const {scaleX, scaleY} = grid;
             
-            this.width = scaleX === 1 ? WIDTH : NAMES.gridVar(this, 'width');
-            this.height = scaleY === 1 ? HEIGHT : NAMES.gridVar(this, 'height');
-            this.n = NAMES.gridVar(this, 'n');
-            this.data = makeMutableArray(NAMES.gridVar(this, 'data'), this.n, GRID_DATA_ARRAY_TYPE.domainSize);
+            const width = ir.constDecl(`grid${grid.id}_width`, INT_TYPE, OP.multConstant(baseWidth, scaleX)),
+                height = ir.constDecl(`grid${grid.id}_height`, INT_TYPE, OP.multConstant(baseHeight, scaleY)),
+                w = width.name,
+                h = height.name,
+                area = ir.constDecl(`grid${grid.id}_n`, INT_TYPE, OP.mult(w, h)),
+                n = area.name,
+                data = makeMutableArray(ir, `grid${grid.id}_data`, n, GRID_DATA_ARRAY_TYPE.domainSize),
+                obj = ir.constDecl(`grid${grid.id}_obj`, GRID_TYPE, libConstructorCall('Grid', [w, h, data.array, str(grid.alphabet.key)])),
+                originX = scaleX % 2 === 0 ? OP.multConstant(baseWidth, scaleX >> 1) : OP.divConstant(w, 2),
+                originY = scaleY % 2 === 0 ? OP.multConstant(baseHeight, scaleY >> 1) : OP.divConstant(h, 2),
+                origin = ir.constDecl(`grid${grid.id}_origin`, INT_TYPE, OP.add(originX, OP.mult(originY, w))),
+                lfsrFeedbackTerm = ir.constDecl(`grid${grid.id}_lfsrFeedbackTerm`, INT_TYPE, libFunctionCall('lfsrFeedbackTerm', [n])),
+                buffer = makeMutableArray(ir, `grid${grid.id}_buffer`, n, GRID_DATA_ARRAY_TYPE.domainSize);
             
-            this.originX = scaleX % 2 === 0 ? OP.multConstant(WIDTH, scaleX >> 1) : OP.divConstant(this.width, 2);
-            this.originY = scaleY % 2 === 0 ? OP.multConstant(HEIGHT, scaleY >> 1) : OP.divConstant(this.height, 2);
+            this.width = width.name;
+            this.height = height.name;
+            this.n = n;
+            this.data = data;
+            this.obj = obj.name;
+            this.origin = origin.name;
+            this.originX = originX;
+            this.originY = originY;
+            this.lfsrFeedbackTerm = lfsrFeedbackTerm.name;
+            this.buffer = buffer;
             
             // TODO: multiple matchers per grid?
-            this.matcher = new Matcher(this, 0);
+            this.matcher = new Matcher(ir, this);
+            
+            this.decls = [
+                width,
+                height,
+                area,
+                data.decl,
+                obj,
+                origin,
+                lfsrFeedbackTerm,
+                buffer.decl,
+            ];
         }
 
         public getScale(): number {
@@ -54,33 +81,33 @@ namespace IR {
             if(sampler !== undefined) { return sampler.count; }
             
             return getOrCompute(counters, key, () => {
-                const counter = NAMES.counter(this, counters.size);
+                const counterDecl = this.ir.varDecl(`grid${this.grid.id}_counter`, INT_TYPE, ZERO);
                 for(const pattern of patterns) {
-                    matcher.addMatchHandler({kind: 'counter', pattern, counter, weight: ONE});
+                    matcher.addMatchHandler({kind: 'counter', pattern, counter: counterDecl.name, weight: ONE});
                 }
                 // need to set scale to avoid overflowing the counter
                 this.scale = Math.max(this.scale, patterns.length);
-                return {
-                    name: counter,
-                    type: INT_TYPE,
-                    initialiser: ZERO,
-                };
+                return counterDecl;
             }).name;
         }
         
-        public makeWeightedCounter(weights: readonly ASG.WeightedPattern[], useFloat: boolean): NameExpr {
+        public makeWeightedCounter(weights: readonly ASG.WeightedPattern[], useFloat: boolean): MutNameExpr {
             const {counters, matcher} = this;
             
             const key = weights.map(w => `${PatternTree.key(w.pattern)} @ ${w.weight}`).join('\n') + `\nuseFloat=${useFloat}`;
             
             return getOrCompute(counters, key, () => {
-                const counter = NAMES.counter(this, counters.size);
+                const counterDecl = this.ir.varDecl(
+                    `grid${this.grid.id}_counter`,
+                    useFloat ? FLOAT_TYPE : INT_TYPE,
+                    useFloat ? FLOAT_ZERO : ZERO,
+                );
                 let totalWeight = 0;
                 for(const {pattern, weight} of weights) {
                     matcher.addMatchHandler({
                         kind: 'counter',
                         pattern,
-                        counter,
+                        counter: counterDecl.name,
                         weight: useFloat ? float(weight) : int(weight),
                     });
                     totalWeight += weight;
@@ -89,11 +116,7 @@ namespace IR {
                 if(!useFloat) {
                     this.scale = Math.max(this.scale, totalWeight);
                 }
-                return {
-                    name: counter,
-                    type: useFloat ? FLOAT_TYPE : INT_TYPE,
-                    initialiser: useFloat ? FLOAT_ZERO : ZERO,
-                };
+                return counterDecl;
             }).name;
         }
         
@@ -104,12 +127,12 @@ namespace IR {
             return getOrCompute(samplers, key, () => {
                 if(patterns.length === 1 && patterns[0].kind === 'top') {
                     const {width, height} = patterns[0];
-                    return new TrivialSampler(this, width, height);
-                } else if(patterns.length === 1 && patterns[0].kind === 'bottom') {
+                    return new TrivialSampler(this.ir, this, width, height);
+                } else if(patterns.length === 0 || (patterns.length === 1 && patterns[0].kind === 'bottom')) {
                     return new EmptySampler();
                 }
                 
-                const sampler = new Sampler(samplers.size, this, patterns.length);
+                const sampler = new Sampler(this.ir, this, patterns.length);
                 for(let i = 0; i < patterns.length; ++i) {
                     const pattern = patterns[i];
                     matcher.addMatchHandler({kind: 'sampler', pattern, sampler, i});
@@ -125,70 +148,23 @@ namespace IR {
             return getOrCompute(convBuffers, key, () => {
                 const patterns = this.grid.convPatterns.filter(p => p.kernel.equals(kernel));
                 this.scale = Math.max(this.scale, patterns.length);
-                return new ConvBuffer(convBuffers.size, this, patterns, kernel);
+                return new ConvBuffer(this.ir, this, patterns, kernel);
             });
         }
         
-        public useOrigin(): NameExpr {
-            return this.origin ??= NAMES.gridVar(this, 'origin');
-        }
-        
-        public useObj(): NameExpr {
-            return this.obj ??= NAMES.gridVar(this, 'obj');
-        }
-        
-        public useBuffer(): MutableArray {
-            return this.buffer ??= makeMutableArray(
-                NAMES.gridVar(this, 'buffer'),
-                this.n,
-                GRID_DATA_ARRAY_TYPE.domainSize,
-            );
-        }
-        
-        public useLsfrFeedbackTerm(): NameExpr {
-            return this.lfsrFeedbackTerm ??= NAMES.gridVar(this, 'lfsrFeedbackTerm');
-        }
-        
-        public declare(): Stmt[] {
-            const {width, height, n, data, obj, buffer, origin, lfsrFeedbackTerm, grid} = this;
-            const alphabetKey = grid.alphabet.key;
-            const consts: VarDeclWithInitialiser[] = [];
-            const vars: VarDeclWithInitialiser[] = [];
-            
-            if(width !== WIDTH) {
-                consts.push({name: width, type: INT_TYPE, initialiser: OP.multConstant(WIDTH, grid.scaleX)});
-            }
-            if(height !== HEIGHT) {
-                consts.push({name: height, type: INT_TYPE, initialiser: OP.multConstant(HEIGHT, grid.scaleY)});
-            }
-            consts.push(
-                {name: n, type: INT_TYPE, initialiser: OP.mult(width, height)},
-                ...data.decl,
-            );
-            if(obj !== undefined) {
-                const initialiser = libConstructorCall('Grid', [width, height, data.name, str(alphabetKey)]);
-                consts.push({name: obj, type: GRID_TYPE, initialiser});
-            }
-            if(buffer !== undefined) {
-                consts.push(...buffer.decl);
-            }
-            if(origin !== undefined) {
-                consts.push({name: origin, type: INT_TYPE, initialiser: OP.add(this.originX, OP.mult(this.originY, width))});
-            }
-            if(lfsrFeedbackTerm !== undefined) {
-                consts.push({name: lfsrFeedbackTerm, type: INT_TYPE, initialiser: libFunctionCall('lfsrFeedbackTerm', [n])});
-            }
-            
-            vars.push(...Array.from(this.counters.values()));
-            
-            return [
-                declVars(consts),
-                declVars(vars, true),
-                ...Array.from(this.convBuffers.values(), buffer => buffer.declare()),
-                ...Array.from(this.samplers.values(), sampler => sampler.declare()),
-                BLANK_LINE,
-                ...this.matcher.declareUpdateFunc(),
+        public declare(): StmtLevelDecl {
+            const decls: StmtLevelDecl[] = [
+                ...this.decls,
+                ...this.counters.values(),
             ];
+            for(const sampler of this.samplers.values()) {
+                decls.push(sampler.declare());
+            }
+            for(const buffer of this.convBuffers.values()) {
+                decls.push(buffer.declare());
+            }
+            decls.push(this.matcher.declare());
+            return multiDecl(decls);
         }
         
         public attr(attr: Type.GridAttribute): Expr {
@@ -209,39 +185,42 @@ namespace IR {
         
         /**
          * Used internally for relative indices which are known to be in-bounds.
-         * The variables `AT`, `AT_X` and `AT_Y` must be declared in the IR,
-         * and `dx` and `dy` must be non-negative.
+         * The variables `dx` and `dy` must be non-negative.
          */
-        public relativeIndex(dx: number, dy: number): Expr {
+        public relativeIndex(at: Location, dx: number, dy: number): Expr {
             if(this.grid.periodic) {
-                const x = OP.mod(OP.addConstant(AT_X, dx), this.width);
-                const y = OP.mod(OP.addConstant(AT_Y, dy), this.height);
+                const x = OP.mod(OP.addConstant(at.x, dx), this.width);
+                const y = OP.mod(OP.addConstant(at.y, dy), this.height);
                 return OP.add(x, OP.mult(y, this.width));
             } else {
-                return OP.add(OP.addConstant(AT, dx), OP.multConstant(this.width, dy));
+                return OP.add(OP.addConstant(at.index, dx), OP.multConstant(this.width, dy));
             }
         }
         
         public checkedIndex(x: Expr, y: Expr): Expr {
-            return libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.useObj(), [x, y]);
+            return libMethodCall('Grid', this.grid.periodic ? 'wrapIndex' : 'index', this.obj, [x, y]);
         }
         
-        public declareAtIndex(index: Expr): Stmt {
-            const decls: VarDeclWithInitialiser[] = [];
-            if(index !== AT) { decls.push({name: AT, type: INT_TYPE, initialiser: index}); }
-            decls.push(
-                {name: AT_X, type: INT_TYPE, initialiser: OP.mod(AT, this.width)},
-                {name: AT_Y, type: INT_TYPE, initialiser: OP.floordiv(AT, this.width)},
+        public declareAtIndex(index: Expr, child: (at: Location) => Stmt): Stmt {
+            const ir = this.ir;
+            return ir.withConst('at', INT_TYPE, index, index =>
+                ir.withConst('x', INT_TYPE, OP.mod(index, this.width), x =>
+                    ir.withConst('y', INT_TYPE, OP.floordiv(index, this.width), y =>
+                        child({index, x, y})
+                    ),
+                ),
             );
-            return declVars(decls);
         }
         
-        public declareAtXY(x: Expr, y: Expr): Stmt {
-            const decls: VarDeclWithInitialiser[] = [];
-            if(x !== AT_X) { decls.push({name: AT_X, type: INT_TYPE, initialiser: x}); }
-            if(y !== AT_Y) { decls.push({name: AT_Y, type: INT_TYPE, initialiser: y}); }
-            decls.push({name: AT, type: INT_TYPE, initialiser: this.index(AT_X, AT_Y)});
-            return declVars(decls);
+        public declareAtXY(x: Expr, y: Expr, child: (at: Location) => Stmt): Stmt {
+            const ir = this.ir;
+            return ir.withConst('x', INT_TYPE, x, x =>
+                ir.withConst('y', INT_TYPE, y, y =>
+                    ir.withConst('at', INT_TYPE, this.index(x, y), index =>
+                        child({index, x, y})
+                    ),
+                ),
+            );
         }
         
         public write(index: Expr, colour: Expr, mask?: Mask): Stmt {
@@ -258,7 +237,7 @@ namespace IR {
         }
         
         public yieldRewriteInfo(x: Expr, y: Expr, w: Expr, h: Expr): YieldStmt {
-            return yield_(libConstructorCall('RewriteInfo', [this.useObj(), x, y, w, h]));
+            return yield_(libConstructorCall('RewriteInfo', [this.obj, x, y, w, h]));
         }
     }
 }

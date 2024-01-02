@@ -1,31 +1,26 @@
-///<reference path="../ir/names.ts"/>
+///<reference path="../ir/factory.ts"/>
 ///<reference path="../ir/expr.ts"/>
 
 namespace Compiler {
     const {
-        NAMES: {
-            AT, AT_X, AT_Y,
-            I,
-            OLD_S,
-            ANY,
-        },
         OP,
-        PRNG,
     } = IR;
     
     export class Stmt_ConvChain extends StmtCompiler<ASG.ConvChainStmt> {
         private readonly colourArray: IR.ConstArray;
         private readonly c2iArray: IR.ConstArray;
         private readonly c2iOffset: number;
+        private readonly matchesCount: IR.MutNameExpr;
         private readonly matchesArray: IR.MutableArray | undefined;
-        private readonly matchesCount: IR.NameExpr;
-        private readonly score: IR.NameExpr;
-        private readonly temperature: IR.NameExpr | undefined;
-        private readonly anneal: IR.NameExpr | undefined;
+        private readonly score: IR.MutNameExpr;
+        private readonly temperature: IR.MutNameExpr | undefined;
+        private readonly anneal: IR.MutNameExpr | undefined;
+        
+        private readonly rootDecl: IR.StmtLevelDecl;
+        private readonly parentDecl: IR.StmtLevelDecl;
         
         constructor(
             stmt: ASG.ConvChainStmt,
-            stmtID: number,
             c: Compiler,
         ) {
             super(stmt);
@@ -41,11 +36,27 @@ namespace Compiler {
                 colourToIndex[d] = i + 1;
             }
             
-            this.colourArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'colours'), colours, alphabetSize);
-            this.c2iArray = IR.makeConstArray(IR.NAMES.otherVar(stmtID, 'c2i'), colourToIndex, colours.length + 1);
+            this.colourArray = IR.makeConstArray(c.ir, 'colours', colours, alphabetSize);
+            this.c2iArray = IR.makeConstArray(c.ir, 'c2i', colourToIndex, colours.length + 1);
             
-            this.matchesArray = stmt.on.kind === 'top' ? undefined : IR.makeMutableArray(IR.NAMES.otherVar(stmtID, 'matches'), g.n, IR.INT32_ARRAY_TYPE.domainSize);
-            this.matchesCount = IR.NAMES.otherVar(stmtID, 'count');
+            const matchesCount = c.ir.varDecl('convchainCount', IR.INT_TYPE);
+            this.matchesCount = matchesCount.name;
+            
+            const constDecls = [
+                this.colourArray.decl,
+                this.c2iArray.decl,
+                (this.matchesArray?.decl ?? IR.NO_DECL)
+            ];
+            const varDecls = [
+                matchesCount,
+            ];
+            
+            if(stmt.on.kind !== 'top') {
+                const matches = this.matchesArray = IR.makeMutableArray(c.ir, 'convchainMatches', g.n, IR.INT32_ARRAY_TYPE.domainSize);
+                constDecls.push(matches.decl);
+            } else {
+                this.matchesArray = undefined;
+            }
             
             const logEpsilon = Math.log2(stmt.epsilon);
             this.score = g.makeWeightedCounter(stmt.weights.map(w => ({
@@ -53,8 +64,24 @@ namespace Compiler {
                 weight: Math.log2(w.weight) - logEpsilon,
             })), true);
             
-            this.temperature = (stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant') || stmt.anneal !== undefined ? IR.NAMES.otherVar(stmtID, 'temperature') : undefined;
-            this.anneal = stmt.anneal !== undefined && stmt.anneal.kind !== 'expr.constant' ? IR.NAMES.otherVar(stmtID, 'anneal') : undefined;
+            if((stmt.temperature !== undefined && stmt.temperature.kind !== 'expr.constant') || stmt.anneal !== undefined) {
+                const temperature = c.ir.varDecl('temperature', IR.FLOAT_TYPE);
+                this.temperature = temperature.name;
+                varDecls.push(temperature);
+            } else {
+                this.temperature = undefined;
+            }
+            
+            if(stmt.anneal !== undefined && stmt.anneal.kind !== 'expr.constant') {
+                const anneal = c.ir.varDecl('anneal', IR.FLOAT_TYPE);
+                this.anneal = anneal.name;
+                varDecls.push(anneal);
+            } else {
+                this.anneal = undefined;
+            }
+            
+            this.rootDecl = IR.multiDecl(constDecls);
+            this.parentDecl = IR.multiDecl(varDecls);
             
             for(const op of [
                 'float_plus', 'float_minus', 'float_mult', 'float_log2',
@@ -69,25 +96,20 @@ namespace Compiler {
             return matchesArray !== undefined ? matchesArray.get(index) : index;
         }
         
-        declare(): IR.Stmt {
-            return IR.block([
-                IR.declVars([
-                    ...this.colourArray.decl,
-                    ...this.c2iArray.decl,
-                    ...this.matchesArray?.decl ?? [],
-                ]),
-                IR.declVar(this.matchesCount, IR.INT_TYPE, IR.MINUS_ONE, true),
-                this.temperature !== undefined ? IR.declVar(this.temperature, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
-                this.anneal !== undefined ? IR.declVar(this.anneal, IR.FLOAT_TYPE, undefined, true) : IR.PASS,
-            ]);
+        declareRoot(ctx: CompilerContext): IR.StmtLevelDecl {
+            return this.rootDecl;
+        }
+        declareParent(ctx: CompilerContext): IR.StmtLevelDecl {
+            return this.parentDecl;
         }
         
-        compileReset(c: Compiler): IR.Stmt {
+        compileReset(ctx: CompilerContext): IR.Stmt {
             return IR.assign(this.matchesCount, '=', IR.MINUS_ONE);
         }
         
-        compile(c: Compiler, ifChanged: IR.Stmt, then: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const {stmt} = this;
+            const c = ctx.c;
             const g = c.grids[stmt.inGrid];
             const alphabetKey = g.grid.alphabet.key;
             
@@ -101,8 +123,8 @@ namespace Compiler {
             const initSampler = initIsDefinitelyIneffective ? new IR.EmptySampler() : g.makeSampler([
                 new Pattern(1, 1, alphabetKey, [-2], [ISet.difference(on, outputMask)], true),
             ]);
-            const temperatureInit = stmt.temperature !== undefined ? c.expr(stmt.temperature) : IR.FLOAT_ONE;
-            const annealInit = stmt.anneal !== undefined ? c.expr(stmt.anneal) : IR.FLOAT_ZERO;
+            const temperatureInit = stmt.temperature !== undefined ? ctx.expr(stmt.temperature) : IR.FLOAT_ONE;
+            const annealInit = stmt.anneal !== undefined ? ctx.expr(stmt.anneal) : IR.FLOAT_ZERO;
             
             const {colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal} = this;
             // TODO: can this use integer arithmetic?
@@ -112,69 +134,70 @@ namespace Compiler {
                     IR.binaryOp(
                         'float_mult',
                         temperature ?? temperatureInit,
-                        OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, PRNG.NEXT_DOUBLE))
+                        OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, c.prng.nextDouble()))
                     ),
                     score,
                 );
-            const getRandomColour = colourArray.get(PRNG.nextInt(IR.int(output.length)));
-            const getRandomDifferentColour = colourArray.get(
+            const getRandomColour = colourArray.get(c.prng.nextInt(IR.int(output.length)));
+            const getRandomDifferentColour = (oldS: IR.ConstExpr) => colourArray.get(
                 OP.modConstant(
                     OP.add(
-                        c2iArray.get(OP.minusConstant(OLD_S, c2iOffset)),
-                        PRNG.nextInt(IR.int(output.length - 1))
+                        c2iArray.get(OP.minusConstant(oldS, c2iOffset)),
+                        c.prng.nextInt(IR.int(output.length - 1))
                     ),
                     output.length,
                 )
             );
-            const update1x1 = g.update(AT_X, AT_Y, IR.ONE, IR.ONE);
+            const update1x1 = (at: IR.Location) => g.update(at.x, at.y, IR.ONE, IR.ONE);
             
             if(c.config.animate) {
-                ifChanged = IR.block([g.yield_(), ifChanged]);
+                ifTrue = IR.seq([g.yield_(), ifTrue]);
             }
             
-            const declareFlag = IR.declVar(ANY, IR.BOOL_TYPE, IR.FALSE, true);
-            const setFlag = IR.assign(ANY, '=', IR.TRUE);
-            const branchOnFlag = IR.if_(ANY, ifChanged, then);
+            const flag = c.ir.flag();
+            const branchOnFlag = IR.if_(flag.check, ifTrue, ifFalse);
             
             const shouldInit = OP.lt(matchesCount, IR.ZERO);
-            const doInit = IR.block([
-                matchesArray !== undefined ? sampler.copyInto(matchesArray.name) : IR.PASS,
+            const doInit = IR.seq([
+                matchesArray !== undefined ? sampler.copyInto(matchesArray) : IR.PASS,
                 IR.assign(matchesCount, '=', sampler.count),
-                temperature !== undefined ? IR.block([
+                temperature !== undefined ? IR.seq([
                     IR.assign(temperature, '=', temperatureInit),
                     temperatureInit.kind !== 'expr.literal.float' ? IR.if_(IR.binaryOp('float_lt', temperature, IR.FLOAT_ZERO), IR.throw_(`'temperature' must be non-negative`)) : IR.PASS,
                 ]): IR.PASS,
-                anneal !== undefined ? IR.block([
+                anneal !== undefined ? IR.seq([
                     IR.assign(anneal, '=', annealInit),
                     IR.if_(IR.binaryOp('float_lt', anneal, IR.FLOAT_ZERO), IR.throw_(`'anneal' must be non-negative`)),
                 ]): IR.PASS,
                 initIsDefinitelyIneffective ? IR.PASS : IR.if_(
                     initSampler === sampler ? OP.gt(matchesCount, IR.ZERO) : initSampler.isNotEmpty,
-                    IR.block([
+                    IR.seq([
                         initSampler === sampler
-                            ? IR.forRange(I, IR.ZERO, matchesCount, [g.write(this.getFromMatchesArray(I), getRandomColour)])
-                            : initSampler.forEach([g.write(AT, getRandomColour)]),
+                            ? c.ir.forRange('i', IR.ZERO, matchesCount, i => g.write(this.getFromMatchesArray(i), getRandomColour))
+                            : initSampler.forEach(at => g.write(at.index, getRandomColour)),
                         g.update(IR.ZERO, IR.ZERO, g.width, g.height),
-                        setFlag,
+                        flag.set,
                     ]),
                 ),
             ]);
-            const doMain = IR.block([
-                IR.forRange(I, IR.ZERO, matchesCount, [
-                    g.declareAtIndex(this.getFromMatchesArray(PRNG.nextInt(matchesCount))),
-                    IR.declVar(OLD_S, IR.BYTE_TYPE, g.data.get(AT)),
-                    IR.assign(score, '=', IR.FLOAT_ZERO),
-                    g.write(AT, getRandomDifferentColour),
-                    update1x1,
-                    IR.if_(
-                        OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability),
-                        IR.assign(ANY, '=', IR.TRUE),
-                        IR.block([
-                            g.write(AT, OLD_S),
-                            update1x1,
-                        ]),
+            const doMain = IR.seq([
+                c.ir.forRange('i', IR.ZERO, matchesCount, () =>
+                    g.declareAtIndex(this.getFromMatchesArray(c.prng.nextInt(matchesCount)), at =>
+                        c.ir.withConst('oldS', IR.BYTE_TYPE, g.data.get(at.index), oldS => IR.seq([
+                            IR.assign(score, '=', IR.FLOAT_ZERO),
+                            g.write(at.index, getRandomDifferentColour(oldS)),
+                            update1x1(at),
+                            IR.if_(
+                                OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability),
+                                flag.set,
+                                IR.seq([
+                                    g.write(at.index, oldS),
+                                    update1x1(at),
+                                ]),
+                            ),
+                        ])),
                     ),
-                ]),
+                ),
                 temperature !== undefined && annealInit !== IR.FLOAT_ZERO ? IR.assign(temperature, '=', IR.ternary(
                     IR.binaryOp('float_gt', temperature, anneal ?? annealInit),
                     IR.binaryOp('float_minus', temperature, anneal ?? annealInit),
@@ -182,23 +205,26 @@ namespace Compiler {
                 )) : IR.PASS,
             ]);
             
-            return initIsDefinitelyEffective ? IR.block([
-                    declareFlag,
-                    IR.if_(shouldInit, doInit, doMain),
-                    branchOnFlag,
-                ])
-                : initIsDefinitelyIneffective ? IR.block([
+            const r = initIsDefinitelyIneffective ? IR.seq([
                     IR.if_(shouldInit, doInit),
-                    declareFlag,
-                    doMain,
-                    branchOnFlag,
+                    IR.withDecl(flag.decl, IR.seq([
+                        doMain,
+                        branchOnFlag,
+                    ])),
                 ])
-                : IR.block([
-                    declareFlag,
-                    IR.if_(shouldInit, doInit),
-                    IR.if_(OP.not(ANY), doMain),
-                    branchOnFlag,
-                ]);
+                : IR.withDecl(flag.decl,
+                    initIsDefinitelyEffective ? IR.seq([
+                        IR.if_(shouldInit, doInit, doMain),
+                        branchOnFlag,
+                    ])
+                    : IR.seq([
+                        IR.if_(shouldInit, doInit),
+                        IR.if_(OP.not(flag.check), doMain),
+                        branchOnFlag,
+                    ])
+                );
+            
+            return [r, ctx];
         }
     }
 }

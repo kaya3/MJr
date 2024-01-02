@@ -23,10 +23,10 @@ namespace IR {
     export const STR_TYPE: IRType = {kind: 'str'};
     export const VOID_TYPE: IRType = {kind: 'void'};
     
-    export const GRID_DATA_ARRAY_TYPE = mutableArrayType(128);
-    export const INT32_ARRAY_TYPE = mutableArrayType(2 ** 32);
+    export const GRID_DATA_ARRAY_TYPE = mutArrayType(128);
+    export const INT32_ARRAY_TYPE = mutArrayType(2 ** 32);
     
-    export function mutableArrayType(domainSize: number): MutableArrayType {
+    export function mutArrayType(domainSize: number): MutableArrayType {
         return {kind: 'array.mutable', domainSize};
     }
     
@@ -35,6 +35,6 @@ namespace IR {
     }
     
     export function nullableType(componentType: IRType): IRType {
-        return {kind: 'nullable', componentType};
+        return componentType.kind === 'nullable' ? componentType : {kind: 'nullable', componentType};
     }
 }

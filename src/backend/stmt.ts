@@ -1,193 +1,275 @@
 namespace Compiler {
+    export type StmtCompileResult = [IR.Stmt, CompilerContext]
+    
     export abstract class StmtCompiler<T extends ASG.Statement = ASG.Statement> {
         constructor(
             protected readonly stmt: T,
         ) {}
         
-        declare(): IR.Stmt {
-            return IR.PASS;
+        declareRoot(ctx: CompilerContext): IR.StmtLevelDecl {
+            return IR.NO_DECL;
         }
-        compileReset(c: Compiler): IR.Stmt {
+        declareParent(ctx: CompilerContext): IR.StmtLevelDecl {
+            return IR.NO_DECL;
+        }
+        compileReset(ctx: CompilerContext): IR.Stmt {
             return IR.PASS;
         }
         
-        abstract compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt;
+        abstract compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult;
     }
     
     export class Stmt_NotSupported extends StmtCompiler {
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const {kind, pos} = this.stmt;
-            c.notSupported(`'${kind}'`, pos);
-            return ifFalse;
+            ctx.c.notSupported(`'${kind}'`, pos);
+            return [ifFalse, ctx];
         }
     }
     
     export class Stmt_Assign extends StmtCompiler<ASG.AssignStmt> {
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt) {
-            const {variable, rhs} = this.stmt;
-            return IR.block([
-                IR.assign(IR.NAMES.variable(variable), '=', c.expr(rhs)),
-                ifFalse,
-            ]);
+        public readonly decl: IR.MutVarDecl;
+        readonly initLate: boolean;
+        
+        constructor(stmt: ASG.AssignStmt, c: Compiler) {
+            super(stmt);
+            this.initLate = !ASG.exprIsGridIndependent(stmt.rhs);
+            this.decl = c.ir.varDecl(stmt.variable.name, c.type(stmt.variable.type));
+        }
+        
+        private _init(ctx: CompilerContext): IR.Stmt {
+            return IR.assign(this.decl.name, '=', ctx.expr(this.stmt.rhs));
+        }
+        
+        declareParent(ctx: CompilerContext): IR.StmtLevelDecl {
+            return this.initLate ? this.decl : IR.initDecl(this.decl, this._init(ctx));
+        }
+        
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
+            return [
+                this.initLate ? IR.seq([this._init(ctx), ifFalse]) : ifFalse,
+                ctx.withVariable(this.stmt.variable.id, this.decl.name),
+            ];
         }
     }
     
     export class Stmt_Log extends StmtCompiler<ASG.LogStmt> {
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt) {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const {expr} = this.stmt;
-            return IR.block([
-                IR.log(c.expr(expr)),
-                ifFalse,
-            ]);
+            return [
+                IR.seq([IR.log(ctx.expr(expr)), ifFalse]),
+                ctx,
+            ];
         }
     }
     
     export class Stmt_Use extends StmtCompiler<ASG.UseStmt> {
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt) {
-            const {grid} = this.stmt;
-            return IR.block([
-                c.config.animate ? c.grids[grid].yield_() : IR.PASS,
-                ifFalse,
-            ]);
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
+            const c = ctx.c, grid = this.stmt.grid;
+            return [
+                IR.seq([c.config.animate ? c.grids[grid].yield_() : IR.PASS, ifFalse]),
+                ctx,
+            ];
         }
     }
     
     export abstract class Stmt_Block<T extends ASG.BlockStmt> extends StmtCompiler<T> {
         protected readonly children: readonly StmtCompiler[];
         
-        constructor(stmt: T, protected stmtID: number, c: Compiler) {
+        constructor(stmt: T, c: Compiler) {
             super(stmt);
-            this.children = stmt.children.map(c.getStmtCompiler);
+            this.children = stmt.children.map(child => c.getStmtCompiler(child));
         }
         
-        declare(): IR.Stmt {
-            return IR.block(this.children.map(child => child.declare()));
+        declareRoot(ctx: CompilerContext): IR.StmtLevelDecl {
+            return IR.multiDecl(this.children.map(child => child.declareRoot(ctx)));
+        }
+        
+        protected declareChildren(ctx: CompilerContext): IR.StmtLevelDecl {
+            return IR.multiDecl(this.children.map(child => child.declareParent(ctx)));
+        }
+        
+        protected resetChildren(ctx: CompilerContext): IR.Stmt {
+            return IR.seq(this.children.map(child => child.compileReset(ctx)));
         }
     }
     
     export abstract class Stmt_Modified<T extends ASG.ModifiedStmt> extends StmtCompiler<T> {
         protected readonly child: StmtCompiler;
         
-        constructor(stmt: T, protected stmtID: number, c: Compiler) {
+        constructor(stmt: T, c: Compiler) {
             super(stmt);
             this.child = c.getStmtCompiler(stmt.child);
         }
         
-        declare(): IR.Stmt {
-            return this.child.declare();
+        declareRoot(ctx: CompilerContext): IR.StmtLevelDecl {
+            return this.child.declareRoot(ctx);
+        }
+        declareParent(ctx: CompilerContext): IR.StmtLevelDecl {
+            return this.child.declareParent(ctx);
         }
     }
     
     export class Stmt_Markov extends Stmt_Block<ASG.MarkovStmt> {
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const isConsequential = ifTrue !== IR.PASS || ifFalse !== IR.PASS;
             
-            const flag = IR.NAMES.otherVar(this.stmtID, 'flag'),
-                declFlag = isConsequential ? IR.declVar(flag, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS,
-                setFlagAndContinue = IR.block([
-                    isConsequential ? IR.assign(flag, '=', IR.TRUE) : IR.PASS,
-                    IR.CONTINUE,
-                ]);
+            const flag = ctx.c.ir.flag(),
+                setFlagAndContinue = isConsequential ? IR.seq([flag.set, IR.CONTINUE]) : IR.CONTINUE,
+                childDecls = this.declareChildren(ctx),
+                resetChildren = this.resetChildren(ctx);
             
-            return IR.block([
-                ...this.children.map(child => child.compileReset(c)),
-                declFlag,
-                IR.while_(IR.TRUE, IR.block([
-                    c.checkMaxIterations,
-                    ...this.children.map(child => child.compile(c, setFlagAndContinue, IR.PASS)),
-                    IR.BREAK,
-                ])),
-                isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
-            ]);
+            const body: IR.Stmt[] = [ctx.c.checkMaxIterations];
+            for(const child of this.children) {
+                const [r, newCtx] = child.compile(ctx, setFlagAndContinue, IR.PASS);
+                body.push(r);
+                ctx = newCtx;
+            }
+            body.push(IR.BREAK);
+            
+            return [IR.withDecl(childDecls, IR.seq([
+                // TODO: this is not strictly correct, since it resets out of order
+                resetChildren,
+                IR.withDecl(
+                    isConsequential ? flag.decl : IR.NO_DECL,
+                    IR.seq([
+                        IR.while_(IR.TRUE, IR.seq(body)),
+                        IR.if_(flag.check, ifTrue, ifFalse),
+                    ]),
+                ),
+            ])), ctx];
         }
         
-        compileTransparent(c: Compiler, ifTrue: IR.Stmt): IR.Stmt {
-            const ifTrueContinue = IR.block([ifTrue, IR.CONTINUE]);
-            return IR.while_(IR.TRUE, IR.block([
-                c.checkMaxIterations,
-                ...this.children.map(child => child.compile(c, ifTrueContinue, IR.PASS)),
-                IR.BREAK,
-            ]));
+        compileTransparent(ctx: CompilerContext, ifTrue: IR.Stmt): StmtCompileResult {
+            const ifTrueContinue = IR.seq([ifTrue, IR.CONTINUE]),
+                childDecls = this.declareChildren(ctx),
+                resetChildren = this.resetChildren(ctx);
+            
+            const body: IR.Stmt[] = [ctx.c.checkMaxIterations];
+            for(const child of this.children) {
+                const [r, newCtx] = child.compile(ctx, ifTrueContinue, IR.PASS);
+                body.push(r);
+                ctx = newCtx;
+            }
+            body.push(IR.BREAK);
+            
+            return [
+                IR.withDecl(childDecls, IR.seq([
+                    resetChildren,
+                    IR.while_(IR.TRUE, IR.seq(body)),
+                ])),
+                ctx,
+            ];
         }
     }
     
     export class Stmt_Sequence extends Stmt_Block<ASG.SequenceStmt> {
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt {
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
             const isConsequential = ifTrue !== IR.PASS || ifFalse !== IR.PASS;
             
-            const flag = IR.NAMES.otherVar(this.stmtID, 'flag'),
-                declFlag = isConsequential ? IR.declVar(flag, IR.BOOL_TYPE, IR.FALSE, true) : IR.PASS,
-                setFlag = isConsequential ? IR.assign(flag, '=', IR.TRUE) : IR.PASS;
+            const flag = ctx.c.ir.flag(),
+                setFlag = isConsequential ? flag.set : IR.PASS;
             
-            function _resetChild(child: StmtCompiler): IR.Stmt {
-                return child instanceof Stmt_Limit
-                    ? child.compileResetTransparent(c)
-                    : child.compileReset(c);
+            const out: IR.Stmt[] = [],
+                execChildren: IR.Stmt[] = [];
+            
+            for(const child of this.children) {
+                out.push(
+                    child instanceof Stmt_Limit
+                    ? child.compileResetTransparent(ctx)
+                    : child.compileReset(ctx)
+                );
             }
             
-            function _compileChild(child: StmtCompiler): IR.Stmt {
-                return child instanceof Stmt_Markov || child instanceof Stmt_Limit
-                    ? child.compileTransparent(c, setFlag)
-                    : IR.while_(IR.TRUE, IR.block([
-                        c.checkMaxIterations,
-                        child.compile(c, setFlag, IR.BREAK),
-                    ]));
+            for(const child of this.children) {
+                if(child instanceof Stmt_Markov || child instanceof Stmt_Limit) {
+                    const [r, newCtx] = child.compileTransparent(ctx, setFlag);
+                    execChildren.push(r);
+                    ctx = newCtx;
+                } else {
+                    const [r, newCtx] = child.compile(ctx, setFlag, IR.BREAK);
+                    execChildren.push(IR.while_(IR.TRUE, IR.seq([ctx.c.checkMaxIterations, r])));
+                    ctx = newCtx;
+                }
+            }
+            if(isConsequential) {
+                execChildren.push(IR.if_(flag.check, ifTrue, ifFalse));
             }
             
-            return IR.block([
-                ...this.children.map(_resetChild),
-                declFlag,
-                ...this.children.map(_compileChild),
-                isConsequential ? IR.if_(flag, ifTrue, ifFalse) : IR.PASS,
-            ]);
+            out.push(IR.withDecl(
+                isConsequential ? flag.decl : IR.NO_DECL,
+                IR.seq(execChildren),
+            ));
+            
+            return [
+                IR.withDecl(this.declareChildren(ctx), IR.seq(out)),
+                ctx,
+            ];
         }
     }
     
     export class Stmt_Limit extends Stmt_Modified<ASG.LimitStmt> {
-        readonly limitVar: IR.NameExpr;
+        readonly limitVar: IR.MutVarDecl;
+        readonly initLate: boolean;
         
-        constructor(stmt: ASG.LimitStmt, stmtID: number, c: Compiler) {
-            super(stmt, stmtID, c);
-            this.limitVar = IR.NAMES.limit(stmtID);
+        constructor(stmt: ASG.LimitStmt, c: Compiler) {
+            super(stmt, c);
+            this.initLate = !ASG.exprIsGridIndependent(stmt.limit);
+            this.limitVar = c.ir.varDecl('limit', IR.INT_TYPE);
         }
         
-        compileReset(c: Compiler): IR.Stmt {
-            const init = c.expr(this.stmt.limit);
-            return IR.block([
-                IR.declVar(this.limitVar, IR.INT_TYPE, init, true),
-                this.child.compileReset(c),
+        private _init(ctx: CompilerContext): IR.Stmt {
+            return IR.assign(this.limitVar.name, '=', ctx.expr(this.stmt.limit));
+        }
+        
+        declareParent(ctx: CompilerContext): IR.StmtLevelDecl {
+            return IR.multiDecl([
+                this.initLate ? this.limitVar : IR.initDecl(this.limitVar, this._init(ctx)),
+                this.child.declareParent(ctx),
             ]);
         }
         
-        compileResetTransparent(c: Compiler): IR.Stmt {
-            return this.child.compileReset(c);
+        compileReset(ctx: CompilerContext): IR.Stmt {
+            const child = this.child.compileReset(ctx);
+            
+            return this.initLate ? IR.seq([this._init(ctx), child]) : child;
         }
         
-        compile(c: Compiler, ifTrue: IR.Stmt, ifFalse: IR.Stmt): IR.Stmt {
-            return IR.if_(
-                IR.OP.gt(this.limitVar, IR.ZERO),
-                this.child.compile(c, IR.block([
-                    IR.assign(this.limitVar, '-=', IR.ONE),
-                    ifTrue,
-                ]), ifFalse),
-                ifFalse,
-            );
+        compileResetTransparent(ctx: CompilerContext): IR.Stmt {
+            return this.child.compileReset(ctx);
         }
         
-        compileTransparent(c: Compiler, ifTrue: IR.Stmt): IR.Stmt {
-            const init = c.expr(this.stmt.limit);
+        compile(ctx: CompilerContext, ifTrue: IR.Stmt, ifFalse: IR.Stmt): StmtCompileResult {
+            const limit = this.limitVar.name;
+            const [r, newCtx] = this.child.compile(ctx, IR.seq([
+                IR.assign(limit, '-=', IR.ONE),
+                ifTrue,
+            ]), ifFalse);
+            
+            return [
+                IR.if_(IR.OP.gt(limit, IR.ZERO), r, ifFalse),
+                newCtx,
+            ];
+        }
+        
+        compileTransparent(ctx: CompilerContext, ifTrue: IR.Stmt): StmtCompileResult {
+            const init = ctx.expr(this.stmt.limit);
             if(init === IR.ONE) {
-                return this.child.compile(c, ifTrue, IR.PASS);
+                return this.child.compile(ctx, ifTrue, IR.PASS);
             }
             
-            const loopBody = [c.checkMaxIterations, this.child.compile(c, ifTrue, IR.BREAK)],
-                i = IR.NAMES.otherVar(this.stmtID, 'i');
-            return IR.isInt(init)
-                ? IR.forRange(i, IR.ZERO, init, loopBody)
-                : IR.block([
-                    IR.declVar(this.limitVar, IR.INT_TYPE, init),
-                    IR.forRange(i, IR.ZERO, this.limitVar, loopBody),
-                ]);
+            const c = ctx.c;
+            const [r, newCtx] = this.child.compile(ctx, ifTrue, IR.BREAK);
+            
+            return [
+                c.ir.withConst('max', IR.INT_TYPE, init, max =>
+                    c.ir.forRange('i', IR.ZERO, max, () => IR.seq([
+                        ctx.c.checkMaxIterations,
+                        r,
+                    ])),
+                ),
+                newCtx,
+            ];
         }
     }
 }

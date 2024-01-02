@@ -896,10 +896,10 @@ namespace Resolver {
                 rhs = {kind: 'expr.param', type, flags, otherwise: rhs, name, pos};
             }
             
-            const isMutable = (flags & ASG.ExprFlags.RUNTIME_CONSTANT) === 0;
+            const isMutable = rhs.kind !== 'expr.constant';
             const variable = ctx.makeVariable(name, type, flags, isMutable ? undefined : rhs, decl.isParam, decl.name.pos);
             return [
-                // constants will be folded, or assigned in preamble; not assigned in program body
+                // constants will be folded, so don't emit assignment statements for them
                 isMutable ? {kind: 'stmt.assign', variable, rhs, pos} : undefined,
                 ctx.withVariable(variable, f),
             ];
@@ -1432,7 +1432,7 @@ namespace Resolver {
             const variable = ctx.makeVariable(name.name, Type.GRID, ASG.ExprFlags.CONSTANT, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
             const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children));
             stmts.unshift(
-                {kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos},
+                //{kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos},
                 {kind: 'stmt.use', grid, pos: stmt.pos}
             );
             return {kind: 'stmts', stmts};

@@ -1343,9 +1343,6 @@ var Compiler;
                 case 'expr.decl': {
                     // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
                     const { variable, rhs } = expr.decl;
-                    if (variable.references === 0) {
-                        return this.expr(rhs);
-                    }
                     const decl = this.c.ir.constDecl(variable.name, 
                     // need to pass the type, in case the code generator wants to use a lambda requiring a type annotation
                     this.c.type(variable.type), this.expr(rhs));
@@ -5108,7 +5105,6 @@ var Resolver;
             potentials: [],
             variables: [],
         };
-        uniqueVariableNames = new Set();
         symmetryName = 'all';
         variables = new Map();
         errorVariables = new Set();
@@ -5201,24 +5197,18 @@ var Resolver;
         typeError(expected, expr) {
             this.error(`expected ${quoteJoin(expected, ' | ')}, was '${Type.toStr(expr.type)}'`, expr.pos);
         }
-        makeVariable(name, type, flags, initialiser, isParam, pos) {
+        makeVariable(name, type, flags, constant, isParam, pos) {
             if (this.variables.has(name) || this.errorVariables.has(name)) {
                 this.error(`cannot redeclare name '${name}'`, pos);
             }
             else if (isParam && this.globals.params.has(name)) {
                 this.error(`cannot redeclare parameter '${name}'`, pos);
             }
-            const { uniqueVariableNames } = this;
-            let uniqueName = name, i = 1;
-            while (uniqueVariableNames.has(uniqueName)) {
-                uniqueName = `${name}_${++i}`;
-            }
-            uniqueVariableNames.add(uniqueName);
             if (isParam) {
                 this.globals.params.set(name, type);
             }
             flags |= 4 /* ASG.ExprFlags.LOCALLY_DETERMINISTIC */ | 8 /* ASG.ExprFlags.POSITION_INDEPENDENT */ | 16 /* ASG.ExprFlags.GRID_INDEPENDENT */;
-            return withNextID(this.globals.variables, { name, uniqueName, type, initialiser, flags, references: 0 });
+            return withNextID(this.globals.variables, { name, type, constant, flags });
         }
         withOutGrid(outGrid, inputPatternPos, f) {
             const { grid: inGrid, inputPattern } = this;
@@ -5877,11 +5867,11 @@ var Resolver;
             if (decl.isParam) {
                 rhs = { kind: 'expr.param', type, flags, otherwise: rhs, name, pos };
             }
-            const isMutable = rhs.kind !== 'expr.constant';
-            const variable = ctx.makeVariable(name, type, flags, isMutable ? undefined : rhs, decl.isParam, decl.name.pos);
+            const constant = rhs.kind === 'expr.constant' ? rhs.constant : undefined;
+            const variable = ctx.makeVariable(name, type, flags, constant, decl.isParam, decl.name.pos);
             return [
                 // constants will be folded, so don't emit assignment statements for them
-                isMutable ? { kind: 'stmt.assign', variable, rhs, pos } : undefined,
+                constant === undefined ? { kind: 'stmt.assign', variable, rhs, pos } : undefined,
                 ctx.withVariable(variable, f),
             ];
         },
@@ -6034,14 +6024,10 @@ var Resolver;
                 ctx.error(`no such variable '${name}'`, pos);
                 return undefined;
             }
-            const { type, initialiser } = variable;
-            if (initialiser !== undefined && initialiser.kind === 'expr.constant') {
-                return _makeConstantExpr(type, initialiser.constant.value, pos);
-            }
-            else {
-                ++variable.references;
-                return { kind: 'expr.name.simple', type, flags: variable.flags, variable, pos };
-            }
+            const { type, constant } = variable;
+            return constant !== undefined
+                ? _makeConstantExpr(type, constant.value, pos)
+                : { kind: 'expr.name.simple', type, flags: variable.flags, variable, pos };
         },
         'expr.op.binary': (expr, ctx) => {
             let left = ctx.resolveExpr(expr.left), right = ctx.resolveExpr(expr.right);
@@ -6453,8 +6439,8 @@ var Resolver;
                 return undefined;
             }
             ctx.grid = ctx.globals.grids[grid];
-            const { name, rhs, pos } = stmt.decl;
-            const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ASG.ExprFlags.CONSTANT */, _makeConstantExpr(Type.GRID, grid, rhs.pos), false, name.pos);
+            const { name, pos } = stmt.decl;
+            const variable = ctx.makeVariable(name.name, Type.GRID, 31 /* ASG.ExprFlags.CONSTANT */, _makeConstantValue(Type.GRID, grid), false, name.pos);
             const stmts = ctx.withVariable(variable, () => ctx.resolveStmts(stmt.children));
             stmts.unshift(
             //{kind: 'stmt.assign', variable, rhs: _makeConstantExpr(Type.GRID, grid, rhs.pos), pos},

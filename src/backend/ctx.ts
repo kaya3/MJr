@@ -84,7 +84,6 @@ namespace Compiler {
                 case 'expr.decl': {
                     // TODO: get rid of `expr.decl` in ASG and `expr.letin` in IR, by hoisting assign statements?
                     const {variable, rhs} = expr.decl;
-                    if(variable.references === 0) { return this.expr(rhs); }
                     
                     const decl: IR.ConstDecl = this.c.ir.constDecl(
                         variable.name,

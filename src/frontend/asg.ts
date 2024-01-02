@@ -36,11 +36,9 @@ namespace ASG {
     export interface FormalVariable extends Readonly<{
         id: number,
         name: string,
-        uniqueName: string, // TODO: eliminate this; compiler already handles it
         type: Type.Type,
         flags: ExprFlags,
-        initialiser: Expression | undefined,
-        references: number,
+        constant: Type.ConstantValue | undefined,
     }> {}
     
     export type Node = Expression | Rule | Statement

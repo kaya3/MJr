@@ -134,6 +134,7 @@ namespace Compiler {
                     IR.binaryOp(
                         'float_mult',
                         temperature ?? temperatureInit,
+                        // Need `1 - nextDouble()`, to avoid `math.log2(0)` domain error in Python
                         OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, c.prng.nextDouble()))
                     ),
                     score,
@@ -188,7 +189,7 @@ namespace Compiler {
                             g.write(at.index, getRandomDifferentColour(oldS)),
                             update1x1(at),
                             IR.if_(
-                                OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability),
+                                OP.or(IR.binaryOp('float_gt', score, IR.FLOAT_ZERO), keepWithProbability),
                                 flag.set,
                                 IR.seq([
                                     g.write(at.index, oldS),

@@ -1888,7 +1888,9 @@ var Compiler;
             const { colourArray, c2iArray, c2iOffset, matchesArray, matchesCount, score, temperature, anneal } = this;
             // TODO: can this use integer arithmetic?
             const keepWithProbability = temperatureInit === IR.FLOAT_ZERO ? IR.FALSE
-                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, c.prng.nextDouble()))), score);
+                : IR.binaryOp('float_lt', IR.binaryOp('float_mult', temperature ?? temperatureInit, 
+                // Need `1 - nextDouble()`, to avoid `math.log2(0)` domain error in Python
+                OP.log2(IR.binaryOp('float_minus', IR.FLOAT_ONE, c.prng.nextDouble()))), score);
             const getRandomColour = colourArray.get(c.prng.nextInt(IR.int(output.length)));
             const getRandomDifferentColour = (oldS) => colourArray.get(OP.modConstant(OP.add(c2iArray.get(OP.minusConstant(oldS, c2iOffset)), c.prng.nextInt(IR.int(output.length - 1))), output.length));
             const update1x1 = (at) => g.update(at.x, at.y, IR.ONE, IR.ONE);
@@ -1922,7 +1924,7 @@ var Compiler;
                     IR.assign(score, '=', IR.FLOAT_ZERO),
                     g.write(at.index, getRandomDifferentColour(oldS)),
                     update1x1(at),
-                    IR.if_(OP.or(IR.binaryOp('float_ge', score, IR.FLOAT_ZERO), keepWithProbability), flag.set, IR.seq([
+                    IR.if_(OP.or(IR.binaryOp('float_gt', score, IR.FLOAT_ZERO), keepWithProbability), flag.set, IR.seq([
                         g.write(at.index, oldS),
                         update1x1(at),
                     ])),
